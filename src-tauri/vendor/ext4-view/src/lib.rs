@@ -135,9 +135,16 @@ mod superblock;
 mod timestamp;
 mod util;
 mod uuid;
+mod volume_info;
+mod xattr;
+pub use volume_info::VolumeInfo;
+pub use xattr::ExtendedAttribute;
 
 #[cfg(all(test, feature = "std"))]
 mod test_util;
+
+#[cfg(all(test, feature = "std"))]
+mod audit_tests;
 
 use alloc::boxed::Box;
 use alloc::rc::Rc;
@@ -388,10 +395,32 @@ impl Ext4 {
 /// library be driven by inode index rather than by absolute path so the
 /// caller can keep stable inode-based node IDs across directory walks.
 impl Ext4 {
+    /// Read inode-resident, external-block and EA-inode attributes.
+    pub fn extended_attributes(
+        &self,
+        inode_index: u32,
+    ) -> Result<Vec<ExtendedAttribute>, Ext4Error> {
+        let index = core::num::NonZeroU32::new(inode_index).ok_or(Ext4Error::NotFound)?;
+        let inode = Inode::read(self, index)?;
+        xattr::read(self, &inode)
+    }
+
     /// Filesystem block size in bytes (always a power of two `>= 1024`).
     #[must_use]
     pub fn block_size(&self) -> u32 {
         self.0.superblock.block_size.to_u32()
+    }
+
+    /// Metadata by inode number, without path resolution.
+    pub fn inode_metadata(&self, inode_index: u32) -> Result<Metadata, Ext4Error> {
+        let index = InodeIndex::new(inode_index).ok_or(Ext4Error::NotFound)?;
+        Ok(Inode::read(self, index)?.metadata)
+    }
+
+    /// Read a symbolic link target by inode number without following it.
+    pub fn read_link_inode(&self, inode_index: u32) -> Result<PathBuf, Ext4Error> {
+        let index = InodeIndex::new(inode_index).ok_or(Ext4Error::NotFound)?;
+        Inode::read(self, index)?.symlink_target(self)
     }
 
     /// Read the raw on-disk inode struct (`superblock.inode_size` bytes).

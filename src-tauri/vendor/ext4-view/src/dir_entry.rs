@@ -255,7 +255,11 @@ impl DirEntry {
 
         // Get the full size of the entry.
         let rec_len = read_u16le(bytes, 4);
-        let rec_len = usize::from(rec_len);
+        let rec_len = if fs.block_size() == 65536 && matches!(rec_len, 0 | 65535) {
+            65536
+        } else {
+            usize::from(rec_len)
+        };
 
         // Check that the rec_len is somewhat reasonable. Too small a
         // value could indicate the wrong data is being read. And
@@ -265,6 +269,9 @@ impl DirEntry {
             return Err(CorruptKind::DirEntryRecordTooSmall(inode, rec_len).into());
         }
         // OK to unwrap: above check ensures that `rec_len >= NAME_OFFSET`.
+        if rec_len > bytes.len() || rec_len % 4 != 0 {
+            return Err(CorruptKind::DirEntry(inode).into());
+        }
         let rec_len = NonZero::new(rec_len).unwrap();
 
         // As described above, an inode of zero is used for special
@@ -276,7 +283,16 @@ impl DirEntry {
 
         // Get the size of the entry's name field.
         // OK to unwrap: already checked length.
-        let name_len = *bytes.get(6).unwrap();
+        let has_type =
+            fs.0.superblock
+                .incompatible_features
+                .contains(crate::features::IncompatibleFeatures::FILE_TYPE_IN_DIR_ENTRY);
+        let name_length = if has_type {
+            u16::from(bytes[6])
+        } else {
+            read_u16le(bytes, 6)
+        };
+        let name_len = u8::try_from(name_length).map_err(|_| CorruptKind::DirEntry(inode))?;
         let name_len_usize = usize::from(name_len);
 
         // OK to unwrap: `NAME_OFFSET` is 8 and `name_len_usize` is
@@ -285,19 +301,22 @@ impl DirEntry {
         let name_end: usize = NAME_OFFSET.checked_add(name_len_usize).unwrap();
 
         // Get the entry's name.
+        if name_end > rec_len.get() {
+            return Err(CorruptKind::DirEntry(inode).into());
+        }
         let name_slice = bytes
             .get(NAME_OFFSET..name_end)
             .ok_or(CorruptKind::DirEntryNameTooLarge(inode, name_len))?;
 
-        // Note: this value is only valid if `FILE_TYPE_IN_DIR_ENTRY` is
-        // in the incompatible features set. That requirement is checked
-        // when reading the superblock.
-        //
-        // This requirement could be relaxed in the future by passing in
-        // a filesystem reference and reading the pointed-to inode.
+        // Legacy records have a 16-bit name length. FILETYPE records may
+        // also use UNKNOWN (zero); in both cases consult the target inode.
         let file_type = bytes[7];
-        let file_type = FileType::from_dir_entry(file_type)
-            .map_err(|_| CorruptKind::DirEntryInvalidFileType(inode, file_type))?;
+        let file_type = if !has_type || file_type == 0 {
+            Inode::read(&fs, points_to_inode)?.metadata.file_type
+        } else {
+            FileType::from_dir_entry(file_type)
+                .map_err(|_| CorruptKind::DirEntryInvalidFileType(inode, file_type))?
+        };
 
         let name = DirEntryNameBuf::try_from(name_slice)
             .map_err(|e| CorruptKind::DirEntryInvalidName(inode, e))?;
@@ -545,7 +564,7 @@ mod tests {
         bytes.extend("a".bytes()); // name
         assert_eq!(
             DirEntry::from_bytes(fs.clone(), &bytes, inode1, path.clone()).unwrap_err(),
-            CorruptKind::DirEntryNameTooLarge(inode1, 3),
+            CorruptKind::DirEntry(inode1),
         );
 
         // Error: name contains invalid characters.

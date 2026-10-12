@@ -311,6 +311,12 @@ pub(crate) enum CorruptKind {
     /// The target of a symlink is not a valid path.
     SymlinkTarget(InodeIndex),
 
+    /// Invalid extended attribute table or value.
+    Xattr(InodeIndex),
+
+    /// Inline payload is missing, truncated, or inconsistent.
+    InlineData(InodeIndex),
+
     /// The number of blocks in a file exceeds 2^32.
     TooManyBlocksInFile,
 
@@ -496,6 +502,8 @@ impl Display for CorruptKind {
             Self::InodeTimestamp { inode } => {
                 write!(f, "inode {inode} has invalid timestamp",)
             }
+            Self::Xattr(inode) => write!(f, "invalid extended attributes for inode {inode}"),
+            Self::InlineData(inode) => write!(f, "invalid inline data for inode {inode}"),
             Self::SymlinkTarget(inode) => {
                 write!(f, "inode {inode} has an invalid symlink path")
             }

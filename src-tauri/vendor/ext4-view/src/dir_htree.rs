@@ -619,11 +619,13 @@ mod tests {
             [
                 Extent {
                     start_block: 2543,
+                    unwritten: false,
                     num_blocks: 23,
                     block_within_file: 0,
                 },
                 Extent {
                     start_block: 11,
+                    unwritten: false,
                     num_blocks: 47,
                     block_within_file: 23,
                 }

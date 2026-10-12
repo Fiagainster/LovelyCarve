@@ -11,8 +11,11 @@ pub mod docker;
 pub mod exfat;
 pub mod exfat_recover;
 pub mod ext4;
+pub mod ext4_block_map;
 pub mod ext4_journal;
 pub mod ext4_raw;
+#[cfg(test)]
+mod ext4_tests;
 pub mod ext4_xattr;
 pub mod fat;
 pub mod fat_deleted;

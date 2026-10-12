@@ -20,7 +20,13 @@ use core::num::NonZero;
 pub(crate) struct Superblock {
     pub(crate) block_size: BlockSize,
     pub(crate) blocks_count: u64,
+    pub(crate) blocks_per_group: u32,
+    pub(crate) first_data_block: u32,
+    pub(crate) first_meta_bg: u32,
+    pub(crate) sparse_super2: bool,
+    pub(crate) backup_bgs: [u32; 2],
     pub(crate) inode_size: u16,
+    pub(crate) inode_count: u32,
     pub(crate) inodes_per_block_group: NonZero<u32>,
     pub(crate) block_group_descriptor_size: u16,
     pub(crate) num_block_groups: u32,
@@ -56,7 +62,11 @@ impl Superblock {
         let s_blocks_per_group = read_u32le(bytes, 0x20);
         let s_inodes_per_group = read_u32le(bytes, 0x28);
         let s_magic = read_u16le(bytes, 0x38);
-        let s_inode_size = read_u16le(bytes, 0x58);
+        let s_inode_size = if read_u32le(bytes, 0x4c) == 0 {
+            128
+        } else {
+            read_u16le(bytes, 0x58)
+        };
         let s_feature_compat = read_u32le(bytes, 0x5c);
         let s_feature_incompat = read_u32le(bytes, 0x60);
         let s_feature_ro_compat = read_u32le(bytes, Self::S_FEATURE_RO_COMPAT_OFFSET);
@@ -76,11 +86,18 @@ impl Superblock {
         const S_CHECKSUM_OFFSET: usize = 0x3fc;
         let s_checksum = read_u32le(bytes, S_CHECKSUM_OFFSET);
 
-        let blocks_count = u64_from_hilo(s_blocks_count_hi, s_blocks_count_lo);
+        let blocks_count = if s_feature_incompat & IncompatibleFeatures::IS_64BIT.bits() != 0 {
+            u64_from_hilo(s_blocks_count_hi, s_blocks_count_lo)
+        } else {
+            u64::from(s_blocks_count_lo)
+        };
 
         let block_size = BlockSize::from_superblock_value(s_log_block_size)
             .ok_or(CorruptKind::InvalidBlockSize)?;
 
+        if block_size.to_u32() > 65536 {
+            return Err(CorruptKind::InvalidBlockSize.into());
+        }
         if s_magic != 0xef53 {
             return Err(CorruptKind::SuperblockMagic.into());
         }
@@ -120,7 +137,7 @@ impl Superblock {
             };
 
         // Inodes are not allowed to exceed the block size.
-        if s_inode_size > block_size {
+        if s_inode_size < 128 || !s_inode_size.is_power_of_two() || s_inode_size > block_size {
             return Err(CorruptKind::InodeSize.into());
         }
 
@@ -165,7 +182,13 @@ impl Superblock {
         Ok(Self {
             block_size,
             blocks_count,
+            blocks_per_group: s_blocks_per_group,
+            first_data_block: s_first_data_block,
+            first_meta_bg: read_u32le(bytes, 0x104),
+            sparse_super2: s_feature_compat & 0x200 != 0,
+            backup_bgs: [read_u32le(bytes, 0x24c), read_u32le(bytes, 0x250)],
             inode_size: s_inode_size,
+            inode_count: read_u32le(bytes, 0),
             inodes_per_block_group,
             block_group_descriptor_size,
             num_block_groups,
@@ -193,15 +216,10 @@ fn check_incompat_features(
 
     // TODO: for now, be strict on many incompat features. May be able to
     // relax some of these in the future.
-    let required_features = IncompatibleFeatures::FILE_TYPE_IN_DIR_ENTRY;
+    let required_features = IncompatibleFeatures::empty();
     let disallowed_features = IncompatibleFeatures::COMPRESSION
         | IncompatibleFeatures::SEPARATE_JOURNAL_DEVICE
-        | IncompatibleFeatures::META_BLOCK_GROUPS
-        | IncompatibleFeatures::MULTIPLE_MOUNT_PROTECTION
-        | IncompatibleFeatures::LARGE_EXTENDED_ATTRIBUTES_IN_INODES
-        | IncompatibleFeatures::DATA_IN_DIR_ENTRY
-        | IncompatibleFeatures::LARGE_DIRECTORIES
-        | IncompatibleFeatures::DATA_IN_INODE;
+        | IncompatibleFeatures::DATA_IN_DIR_ENTRY;
 
     let present_required = actual & required_features;
     if present_required != required_features {
@@ -231,7 +249,13 @@ mod tests {
             Superblock {
                 block_size: BlockSize::from_superblock_value(0).unwrap(),
                 blocks_count: 128,
+                blocks_per_group: 8192,
+                first_data_block: 1,
+                first_meta_bg: 0,
+                sparse_super2: false,
+                backup_bgs: [0, 0],
                 inode_size: 256,
+                inode_count: 16,
                 inodes_per_block_group: NonZero::new(16).unwrap(),
                 block_group_descriptor_size: 64,
                 num_block_groups: 1,
@@ -336,10 +360,10 @@ mod tests {
     #[test]
     fn test_unknown_incompat_flags() {
         let mut data = include_bytes!("../test_data/raw_superblock.bin").to_vec();
-        data[0x62] |= 0x02;
+        data[0x62] |= 0x04;
         assert_eq!(
             Superblock::from_bytes(&data).unwrap_err(),
-            IncompatibleKind::UnsupportedFeatures(IncompatibleFeatures::from_bits_retain(0x2_0000))
+            IncompatibleKind::UnsupportedFeatures(IncompatibleFeatures::from_bits_retain(0x4_0000))
         );
     }
 
@@ -371,17 +395,11 @@ mod tests {
 
         // Unknown incompatible bit is an error.
         assert_eq!(
-            check_incompat_features(required | 0x2_0000).unwrap_err(),
-            IncompatibleKind::UnsupportedFeatures(IncompatibleFeatures::from_bits_retain(0x2_0000))
+            check_incompat_features(required | 0x4_0000).unwrap_err(),
+            IncompatibleKind::UnsupportedFeatures(IncompatibleFeatures::from_bits_retain(0x4_0000))
         );
 
-        assert_eq!(
-            check_incompat_features(
-                required & (!IncompatibleFeatures::FILE_TYPE_IN_DIR_ENTRY.bits())
-            )
-            .unwrap_err(),
-            IncompatibleKind::MissingRequiredFeatures(IncompatibleFeatures::FILE_TYPE_IN_DIR_ENTRY)
-        );
+        assert!(check_incompat_features(0).is_ok());
 
         assert_eq!(
             check_incompat_features(

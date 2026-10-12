@@ -38,6 +38,13 @@ pub struct RawInode {
     /// 头紧跟在这段扩展字段之后。
     pub extra_isize: u16,
     pub block: [u8; 60],
+    pub uid: u32,
+    pub gid: u32,
+    pub atime_extra: Option<u32>,
+    pub ctime_extra: Option<u32>,
+    pub mtime_extra: Option<u32>,
+    pub crtime: Option<u32>,
+    pub crtime_extra: Option<u32>,
 }
 
 impl RawInode {
@@ -54,7 +61,25 @@ impl RawInode {
         let mut block = [0u8; 60];
         block.copy_from_slice(&bytes[40..100]);
 
+        let extra_end = 128 + usize::from(read_u16(bytes, 128).unwrap_or(0));
+        if extra_end > bytes.len() {
+            anyhow::bail!("invalid ext4 extra inode size");
+        }
+        let extra = |offset: usize| {
+            (offset + 4 <= extra_end)
+                .then(|| read_u32(bytes, offset).ok())
+                .flatten()
+        };
         Ok(Self {
+            uid: u32::from(read_u16(bytes, 2)?)
+                | (u32::from(read_u16(bytes, 120).unwrap_or(0)) << 16),
+            gid: u32::from(read_u16(bytes, 24)?)
+                | (u32::from(read_u16(bytes, 122).unwrap_or(0)) << 16),
+            atime_extra: extra(140),
+            ctime_extra: extra(132),
+            mtime_extra: extra(136),
+            crtime: extra(144),
+            crtime_extra: extra(148),
             number: inode_number,
             mode,
             links_count,
@@ -83,17 +108,18 @@ impl RawInode {
 
     pub fn timestamps(&self) -> Mactb {
         Mactb {
-            modified: unix_ts(self.mtime),
-            accessed: unix_ts(self.atime),
+            modified: unix_ts(self.mtime, self.mtime_extra),
+            accessed: unix_ts(self.atime, self.atime_extra),
             created: None,
-            mft_changed: unix_ts(self.ctime),
-            birth: None,
+            mft_changed: unix_ts(self.ctime, self.ctime_extra),
+            birth: self
+                .crtime
+                .and_then(|seconds| unix_ts(seconds, self.crtime_extra)),
         }
     }
 
     pub fn uses_extents(&self) -> bool {
         self.flags & EXT4_EXTENTS_FL != 0
-            && read_u16(&self.block, 0).unwrap_or(0) == EXT4_EXTENT_MAGIC
     }
 
     /// 内联数据文件（i_block 里直接存内容，无数据块分配）。
@@ -114,6 +140,7 @@ pub struct PhysExtent {
     pub logical_block: u32,
     pub physical_block: u64,
     pub len_blocks: u16,
+    pub unwritten: bool,
 }
 
 /// Walk the extent tree rooted at the inode's i_block area. Returns the
@@ -148,6 +175,10 @@ where
     }
     let entries = read_u16(node, 2)? as usize;
     let tree_depth = read_u16(node, 6)?;
+    let capacity = read_u16(node, 4)? as usize;
+    if entries > capacity || 12 + entries * 12 > node.len() || tree_depth > 5 {
+        anyhow::bail!("invalid ext4 extent entries or depth");
+    }
     let mut out = Vec::new();
 
     if tree_depth == 0 {
@@ -157,11 +188,19 @@ where
                 break;
             }
             let len_raw = read_u16(node, off + 4)?;
+            if len_raw == 0 {
+                anyhow::bail!("zero-length ext4 extent");
+            }
             out.push(PhysExtent {
                 logical_block: read_u32(node, off)?,
                 physical_block: ((read_u16(node, off + 6)? as u64) << 32)
                     | read_u32(node, off + 8)? as u64,
-                len_blocks: len_raw & 0x7FFF,
+                len_blocks: if len_raw > 0x8000 {
+                    len_raw - 0x8000
+                } else {
+                    len_raw
+                },
+                unwritten: len_raw > 0x8000,
             });
         }
     } else {
@@ -171,7 +210,13 @@ where
                 break;
             }
             let leaf = read_u32(node, off + 4)? as u64 | ((read_u16(node, off + 8)? as u64) << 32);
-            let child = load_block(leaf * block_size)?;
+            let child = load_block(
+                leaf.checked_mul(block_size)
+                    .ok_or_else(|| anyhow::anyhow!("ext4 extent offset overflow"))?,
+            )?;
+            if read_u16(&child, 6)?.checked_add(1) != Some(tree_depth) {
+                anyhow::bail!("ext4 extent child depth mismatch");
+            }
             out.extend(extents_from_tree_inner(
                 &child,
                 depth + 1,
@@ -197,13 +242,16 @@ pub fn data_runs_from_inode<F>(
 where
     F: FnMut(u64) -> anyhow::Result<Vec<u8>>,
 {
-    if inode.size == 0 {
+    if inode.size == 0 || inode.is_inline_data() {
         return Ok(Vec::new());
     }
 
     let mut runs = Vec::new();
     if inode.uses_extents() {
         for extent in extents_from_tree_inner(&inode.block, 0, block_size, &mut load_block)? {
+            if extent.unwritten {
+                continue;
+            }
             let logical_offset = extent.logical_block as u64 * block_size;
             if logical_offset >= inode.size {
                 continue;
@@ -211,26 +259,21 @@ where
             let extent_len = extent.len_blocks as u64 * block_size;
             runs.push(FsDataRun {
                 logical_offset,
-                physical_offset: base_offset + extent.physical_block * block_size,
+                physical_offset: extent
+                    .physical_block
+                    .checked_mul(block_size)
+                    .and_then(|offset| base_offset.checked_add(offset))
+                    .ok_or_else(|| anyhow::anyhow!("ext4 physical extent offset overflow"))?,
                 length: extent_len.min(inode.size - logical_offset),
             });
         }
     } else {
-        for i in 0..12 {
-            let block_ptr = read_u32(&inode.block, i * 4)? as u64;
-            if block_ptr == 0 {
-                continue;
-            }
-            let logical_offset = i as u64 * block_size;
-            if logical_offset >= inode.size {
-                break;
-            }
-            runs.push(FsDataRun {
-                logical_offset,
-                physical_offset: base_offset + block_ptr * block_size,
-                length: block_size.min(inode.size - logical_offset),
-            });
-        }
+        runs = crate::core::filesystem::volumes::ext4_block_map::data_runs(
+            inode,
+            base_offset,
+            block_size,
+            &mut load_block,
+        )?;
     }
 
     runs.sort_by_key(|run| run.logical_offset);
@@ -332,14 +375,16 @@ fn slack_walk(
     }
 }
 
-fn unix_ts(value: u32) -> Option<String> {
-    if value == 0 {
-        None
-    } else {
-        Utc.timestamp_opt(value as i64, 0)
-            .single()
-            .map(|dt| dt.to_rfc3339())
+fn unix_ts(value: u32, extra: Option<u32>) -> Option<String> {
+    if value == 0 && extra.unwrap_or(0) == 0 {
+        return None;
     }
+    let seconds = i64::from(i32::from_le_bytes(value.to_le_bytes()))
+        + (i64::from(extra.unwrap_or(0) & 3) << 32);
+    let nanoseconds = extra.unwrap_or(0) >> 2;
+    Utc.timestamp_opt(seconds, nanoseconds)
+        .single()
+        .map(|date| date.to_rfc3339())
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> anyhow::Result<u16> {
@@ -429,6 +474,31 @@ pub(crate) fn plan_data_pieces(runs: &[FsDataRun], size: u64, image_len: u64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extent_length_boundary_distinguishes_initialized_and_unwritten() {
+        let mut node = [0; 60];
+        node[..2].copy_from_slice(&EXT4_EXTENT_MAGIC.to_le_bytes());
+        node[2..4].copy_from_slice(&2u16.to_le_bytes());
+        node[4..6].copy_from_slice(&4u16.to_le_bytes());
+        node[16..18].copy_from_slice(&0x8000u16.to_le_bytes());
+        node[28..30].copy_from_slice(&0x8001u16.to_le_bytes());
+        let extents = extents_from_tree(&node, 0, 1024, |_| unreachable!()).unwrap();
+        assert_eq!(
+            extents
+                .into_iter()
+                .map(|extent| (extent.len_blocks, extent.unwritten))
+                .collect::<Vec<_>>(),
+            [(32768, false), (1, true)]
+        );
+        node[6..8].copy_from_slice(&1u16.to_le_bytes());
+        assert!(extents_from_tree(&node, 0, 1024, |_| {
+            let mut child = vec![0; 1024];
+            child[6..8].copy_from_slice(&u16::MAX.to_le_bytes());
+            Ok(child)
+        })
+        .is_err());
+    }
 
     fn run(logical_offset: u64, physical_offset: u64, length: u64) -> FsDataRun {
         FsDataRun {

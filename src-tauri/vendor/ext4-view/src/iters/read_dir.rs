@@ -23,6 +23,7 @@ use core::fmt::{self, Debug, Formatter};
 /// Iterator over each [`DirEntry`] in a directory inode.
 pub struct ReadDir {
     fs: Ext4,
+    inline_entries: Option<alloc::vec::IntoIter<DirEntry>>,
 
     /// Path of the directory. This is stored in an `Rc` so that it can
     /// be shared with each `DirEntry` without cloning the path data.
@@ -72,9 +73,61 @@ impl ReadDir {
             return Err(Ext4Error::Encrypted);
         }
 
+        let path = Rc::new(path);
+        let inline_entries = if inode.flags.contains(InodeFlags::INLINE_DATA) {
+            let data = crate::xattr::inline_payload(&fs, inode)?;
+            let parent = crate::util::read_u32le(&data, 0);
+            if parent == 0 {
+                return Err(CorruptKind::InlineData(inode.index).into());
+            }
+            let mut entries = Vec::new();
+            for (number, name) in [
+                (inode.index.get(), b".".as_slice()),
+                (parent, b"..".as_slice()),
+            ] {
+                let mut bytes = vec![0; 12];
+                bytes[..4].copy_from_slice(&number.to_le_bytes());
+                bytes[4..6].copy_from_slice(&12u16.to_le_bytes());
+                bytes[6] = name.len() as u8;
+                if fs
+                    .0
+                    .superblock
+                    .incompatible_features
+                    .contains(crate::features::IncompatibleFeatures::FILE_TYPE_IN_DIR_ENTRY)
+                {
+                    bytes[7] = 2;
+                }
+                bytes[8..8 + name.len()].copy_from_slice(name);
+                if let Some(entry) =
+                    DirEntry::from_bytes(fs.clone(), &bytes, inode.index, path.clone())?.0
+                {
+                    entries.push(entry);
+                }
+            }
+            // Each resident region has its own record boundary; a dirent cannot span them.
+            for region in [&data[4..60], &data[60..]] {
+                let mut offset = 0;
+                while offset < region.len() {
+                    let (entry, length) = DirEntry::from_bytes(
+                        fs.clone(),
+                        &region[offset..],
+                        inode.index,
+                        path.clone(),
+                    )?;
+                    if let Some(entry) = entry {
+                        entries.push(entry);
+                    }
+                    offset += length.get();
+                }
+            }
+            Some(entries.into_iter())
+        } else {
+            None
+        };
         Ok(Self {
+            inline_entries,
             fs: fs.clone(),
-            path: Rc::new(path),
+            path,
             file_blocks: FileBlocks::new(fs.clone(), inode)?,
             block_index: None,
             is_first_block: true,
@@ -88,6 +141,11 @@ impl ReadDir {
     }
 
     fn next_impl(&mut self) -> Result<Option<DirEntry>, Ext4Error> {
+        if let Some(entries) = &mut self.inline_entries {
+            let entry = entries.next();
+            self.is_done = entry.is_none();
+            return Ok(entry);
+        }
         // Get the block index, or get the next one if not set.
         let block_index = if let Some(block_index) = self.block_index {
             block_index

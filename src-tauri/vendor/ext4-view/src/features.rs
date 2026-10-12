@@ -45,6 +45,7 @@ bitflags! {
         const LARGE_DIRECTORIES = 0x4000;
         const DATA_IN_INODE = 0x8000;
         const ENCRYPTED_INODES = 0x1_0000;
+        const CASEFOLD = 0x2_0000;
     }
 
     /// File system features that do not prevent read-only access to the data.

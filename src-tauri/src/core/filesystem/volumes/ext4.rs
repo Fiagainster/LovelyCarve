@@ -20,9 +20,7 @@ use crate::core::filesystem::tree::fs_tree::{FsDataRun, FsNode, NodeKind};
 use crate::core::filesystem::volumes::ext4_raw::{
     data_runs_from_inode, plan_data_pieces, recover_slack_entries, DataPiece, RawInode, SlackEntry,
 };
-use crate::core::filesystem::volumes::ext4_xattr::{
-    parse_inode_xattrs, parse_xattr_block, Ext4Xattr,
-};
+use crate::core::filesystem::volumes::ext4_xattr::Ext4Xattr;
 use crate::core::filesystem::volumes::lvm::LvmVolume;
 
 pub type Ext4Inode = RawInode;
@@ -142,33 +140,25 @@ impl Ext4Volume {
         self.base_offset
     }
 
-    /// Journal inode number from the superblock's `s_journal_inum` (+0xE0).
-    /// Returns `None` when the filesystem has no internal journal (external
-    /// journal device, or `^has_journal`). ext4-view does not surface this
-    /// field, so read it straight from the superblock at `base_offset + 1024`.
-    pub fn journal_inode(&self) -> anyhow::Result<Option<u64>> {
-        let sb = self.image.read_range(self.base_offset + 1024, 0x100)?;
-        if sb.len() < 0xE0 + 4 {
-            anyhow::bail!("ext4 superblock truncated");
-        }
-        let inum = u32::from_le_bytes([sb[0xE0], sb[0xE1], sb[0xE2], sb[0xE3]]);
-        Ok((inum != 0).then_some(inum as u64))
+    /// Filesystem identity, feature masks, counts and mount history.
+    pub fn volume_info(&self) -> anyhow::Result<ext4_view::VolumeInfo> {
+        self.fs
+            .volume_info()
+            .map_err(|error| anyhow::anyhow!("ext volume information: {error}"))
     }
 
-    /// Unallocated bytes in this volume, from the ext4 superblock's free-block
-    /// count. ext4-view does not surface `s_free_blocks_count`, so read it
-    /// straight from the superblock at `base_offset + 1024`: the low 32 bits at
-    /// +12 and the high 32 bits at +0x158 (64-bit feature; zero otherwise),
-    /// combined and scaled by the block size. Exact and cheap (one 4 KiB read).
+    /// Internal journal inode; external journals have no usable internal inode.
+    pub fn journal_inode(&self) -> anyhow::Result<Option<u64>> {
+        let number = self.volume_info()?.journal_inode;
+        Ok((number != 0).then_some(u64::from(number)))
+    }
+
+    /// Unallocated bytes from the superblock's free block count.
     pub fn free_bytes(&self) -> anyhow::Result<u64> {
-        let sb = self.image.read_range(self.base_offset + 1024, 512)?;
-        if sb.len() < 0x158 + 4 {
-            anyhow::bail!("ext4 superblock truncated");
-        }
-        let lo = u32::from_le_bytes([sb[12], sb[13], sb[14], sb[15]]) as u64;
-        let hi = u32::from_le_bytes([sb[0x158], sb[0x159], sb[0x15a], sb[0x15b]]) as u64;
-        let free_blocks = (hi << 32) | lo;
-        Ok(free_blocks.saturating_mul(self.block_size))
+        self.volume_info()?
+            .free_block_count
+            .checked_mul(self.block_size)
+            .ok_or_else(|| anyhow::anyhow!("ext4 free byte count overflow"))
     }
 
     pub fn children(
@@ -240,9 +230,7 @@ impl Ext4Volume {
         seen: &mut HashSet<(u64, String)>,
         out: &mut Vec<FsNode>,
     ) -> anyhow::Result<()> {
-        let runs = data_runs_from_inode(parent, self.base_offset, self.block_size, |offset| {
-            self.read_partition_range(offset, self.block_size as usize)
-        })?;
+        let runs = self.data_runs(parent)?;
         let block_size = self.block_size as usize;
         for run in runs {
             let mut consumed = 0u64;
@@ -331,11 +319,10 @@ impl Ext4Volume {
     /// 快速符号链接的目标内联在 inode 的 i_block 60 字节里——判定沿用内核
     /// `ext4_inode_is_fast_symlink`：扣除扩展属性块后 `i_blocks` 为 0；
     /// 慢速符号链接的目标在数据块里，走既有的 extent/直接块映射读取。
-    /// 任何取不到或不可信（加密、内联超长、疑似损坏）的情况都返回 `None`，
+    /// 任何取不到或不可信（加密、疑似损坏）的情况都返回 `None`，
     /// 列表里只是不显示指向——宁缺勿错，绝不把噪声当目标展示。
     pub fn symlink_target(&self, inode: &Ext4Inode) -> Option<String> {
         const EXT4_ENCRYPT_FL: u32 = 0x0000_0800;
-        const EXT4_INLINE_DATA_FL: u32 = 0x1000_0000;
 
         if inode.kind() != NodeKind::Symlink {
             return None;
@@ -358,16 +345,14 @@ impl Ext4Volume {
             0
         };
         let is_fast = inode.blocks_lo.saturating_sub(ea_blocks) == 0;
-        let bytes = if len <= 60 && is_fast {
+        let bytes = if inode.is_inline_data() {
+            self.fs
+                .read_link_inode(inode_number_to_u32(inode.number).ok()?)
+                .ok()?
+                .as_ref()
+                .to_vec()
+        } else if len <= 60 && is_fast {
             inode.block[..len].to_vec()
-        } else if inode.flags & EXT4_INLINE_DATA_FL != 0 {
-            // 内联数据符号链接：≤60 字节时与 i_block 字节一致；更长的部分
-            // 存在 inode 内 xattr 区，这里没有解析它的机器——宁可不显示。
-            if len <= 60 {
-                inode.block[..len].to_vec()
-            } else {
-                return None;
-            }
         } else {
             // 慢速符号链接。无 extent 标志且长度本可内联（≤60）的 inode
             // 不走直接块回退：那会把 i_block 里的路径字节/簇账目当块指针
@@ -403,25 +388,11 @@ impl Ext4Volume {
         RawInode::parse(inode_number, &bytes)
     }
 
-    /// Decode the inode-resident and external-block extended attributes for
-    /// one inode. Unknown EA-inode values are skipped rather than guessed.
+    /// Read checked attributes, including values stored in EA inodes.
     pub fn extended_attributes(&self, inode_number: u64) -> anyhow::Result<Vec<Ext4Xattr>> {
-        let idx = inode_number_to_u32(inode_number)?;
-        let bytes = self
-            .fs
-            .read_raw_inode(idx)
-            .map_err(|err| anyhow::anyhow!("read_raw_inode {inode_number}: {err}"))?;
-        let inode = RawInode::parse(inode_number, &bytes)?;
-        let mut attributes = parse_inode_xattrs(&bytes, inode.extra_isize);
-        let block_number = inode.xattr_block();
-        if block_number != 0 {
-            let offset = block_number.checked_mul(self.block_size).ok_or_else(|| {
-                anyhow::anyhow!("ext4 xattr block offset overflow: {block_number}")
-            })?;
-            let block = self.read_partition_range(offset, self.block_size as usize)?;
-            attributes.extend(parse_xattr_block(&block));
-        }
-        Ok(attributes)
+        self.fs
+            .extended_attributes(inode_number_to_u32(inode_number)?)
+            .map_err(|error| anyhow::anyhow!("ext4 inode {inode_number} attributes: {error}"))
     }
 
     pub fn read_inode_data(&self, inode: &Ext4Inode, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
@@ -446,20 +417,26 @@ impl Ext4Volume {
         if offset >= end {
             return Ok(Vec::new());
         }
+        if inode.flags & 0x800 != 0 {
+            anyhow::bail!("ext4 inode {} is encrypted", inode.number);
+        }
         if inode.is_inline_data() {
-            // 内联数据：内容直接存在 i_block 里（≤60 字节），与流式读同一片。
-            let data = &inode.block[..usize::try_from(inode.size)?.min(inode.block.len())];
-            let start = usize::try_from(offset)?.min(data.len());
-            let stop = usize::try_from(end)?.min(data.len());
-            return Ok(data[start..stop].to_vec());
+            let mut file = self
+                .fs
+                .open_inode_by_index(inode_number_to_u32(inode.number)?)?;
+            file.seek_to(offset)?;
+            let mut out = vec![0; usize::try_from(end - offset)?];
+            let mut filled = 0;
+            while filled < out.len() {
+                let read = file.read_bytes(&mut out[filled..])?;
+                if read == 0 {
+                    anyhow::bail!("ext4 inode {} ended before EOF", inode.number);
+                }
+                filled += read;
+            }
+            return Ok(out);
         }
-        if !inode.uses_extents() {
-            // 旧式间接块文件（ext4 上稀有）：走 ext4-view 的块级读，正确性优先。
-            let prefix = self.read_inode_data_blockwise(inode, usize::try_from(end)?)?;
-            let start = usize::try_from(offset)?.min(prefix.len());
-            return Ok(prefix[start..].to_vec());
-        }
-        // 空洞片与镜像外的字节保持 vec![0] 的零值，与流式读补零一致。
+        // 真实空洞与未写入区段保留零值；已分配范围由 data_runs 校验卷边界。
         let mut out = vec![0u8; usize::try_from(end - offset)?];
         let runs = self.data_runs(inode)?;
         let mut logical = 0u64;
@@ -471,9 +448,10 @@ impl Ext4Volume {
                 if from < to {
                     let dst =
                         &mut out[usize::try_from(from - offset)?..usize::try_from(to - offset)?];
-                    // 短读（片已按镜像长度裁过，只剩异常来源）的余下字节保持零值，
-                    // 与流式读对短读补零一致。
-                    self.image.read_into(physical + (from - logical), dst)?;
+                    // 来源短读必须报错，避免导出或哈希把补零当成完整证据。
+                    if self.image.read_into(physical + (from - logical), dst)? != dst.len() {
+                        anyhow::bail!("short ext4 inode {} range read", inode.number);
+                    }
                 }
             }
             logical = piece_end;
@@ -484,33 +462,26 @@ impl Ext4Volume {
         Ok(out)
     }
 
-    /// 旧式间接块 inode 的块级读（ext4-view 逐块循环）。仅非 extent 文件走
-    /// 这里，行为与改写前的实现一致。
-    fn read_inode_data_blockwise(&self, inode: &Ext4Inode, len: usize) -> anyhow::Result<Vec<u8>> {
-        let idx = inode_number_to_u32(inode.number)?;
-        let mut file = self
-            .fs
-            .open_inode_by_index(idx)
-            .map_err(|err| anyhow::anyhow!("open inode {}: {err}", inode.number))?;
-        let mut out = vec![0u8; len];
-        let mut filled = 0usize;
-        while filled < len {
-            let read = file
-                .read_bytes(&mut out[filled..])
-                .map_err(|err| anyhow::anyhow!("read inode {}: {err}", inode.number))?;
-            if read == 0 {
-                break;
-            }
-            filled += read;
-        }
-        out.truncate(filled);
-        Ok(out)
-    }
-
     pub fn data_runs(&self, inode: &Ext4Inode) -> anyhow::Result<Vec<FsDataRun>> {
-        data_runs_from_inode(inode, self.base_offset, self.block_size, |offset| {
+        let runs = data_runs_from_inode(inode, self.base_offset, self.block_size, |offset| {
             self.read_partition_range(offset, self.block_size as usize)
-        })
+        })?;
+        let volume_end = self
+            .base_offset
+            .checked_add(self.length_bytes)
+            .ok_or_else(|| anyhow::anyhow!("ext4 volume boundary overflow"))?
+            .min(self.image.len());
+        for run in &runs {
+            if run.physical_offset < self.base_offset
+                || run
+                    .physical_offset
+                    .checked_add(run.length)
+                    .is_none_or(|end| end > volume_end)
+            {
+                anyhow::bail!("ext4 inode {} data run exceeds the volume", inode.number);
+            }
+        }
+        Ok(runs)
     }
 
     /// 按数据段（`data_runs`）流式读 inode 内容，每段一次底层大读；空洞段补
@@ -536,14 +507,11 @@ impl Ext4Volume {
         if inode.size == 0 {
             return Ok(0);
         }
-        if inode.is_inline_data() {
-            // 内联数据：内容直接存在 i_block 里（≤60 字节），一次发出。
-            let data = &inode.block[..(inode.size as usize).min(inode.block.len())];
-            visitor(data)?;
-            return Ok(data.len() as u64);
+        if inode.flags & 0x800 != 0 {
+            anyhow::bail!("ext4 inode {} is encrypted", inode.number);
         }
-        if !inode.uses_extents() {
-            // 旧式间接块文件：块级流，行为与改写前一致。
+        if inode.is_inline_data() {
+            // 内联内容由 checked reader 拼接 i_block 与 system.data。
             let idx = inode_number_to_u32(inode.number)?;
             let mut file = self
                 .fs
@@ -560,6 +528,9 @@ impl Ext4Volume {
                 }
                 visitor(&buf[..read])?;
                 total += read as u64;
+            }
+            if total != inode.size {
+                anyhow::bail!("ext4 inode {} ended before EOF", inode.number);
             }
             return Ok(total);
         }
@@ -580,8 +551,10 @@ impl Ext4Volume {
                 match physical.as_mut() {
                     Some(offset) => {
                         let read = self.image.read_into(*offset, &mut buf[..part])?;
-                        // 片已按镜像长度裁过；异常来源的短读补零，逻辑位置不变。
-                        buf[read..part].fill(0);
+                        // 已分配片短读不能冒充完整内容。
+                        if read != part {
+                            anyhow::bail!("short ext4 inode {} stream read", inode.number);
+                        }
                         *offset += part as u64;
                         buf_zeroed = false;
                     }

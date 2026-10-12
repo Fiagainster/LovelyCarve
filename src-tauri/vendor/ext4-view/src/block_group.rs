@@ -59,11 +59,44 @@ impl BlockGroupDescriptor {
             .block_size
             .to_u32()
             .checked_div(u32::from(sb.block_group_descriptor_size))?;
-        let block_index = bgd_start_block.checked_add(bgd_index.checked_div(bgd_per_block)?)?;
+        let descriptor_block = bgd_index.checked_div(bgd_per_block)?;
+        let block_index = if sb
+            .incompatible_features
+            .contains(IncompatibleFeatures::META_BLOCK_GROUPS)
+            && descriptor_block >= sb.first_meta_bg
+        {
+            let first_group = descriptor_block.checked_mul(bgd_per_block)?;
+            let has_super = if first_group == 0 {
+                true
+            } else if sb.sparse_super2 {
+                sb.backup_bgs.contains(&first_group)
+            } else if !sb
+                .read_only_compatible_features
+                .contains(ReadOnlyCompatibleFeatures::SPARSE_SUPERBLOCKS)
+            {
+                true
+            } else {
+                first_group == 1
+                    || [3u32, 5, 7].into_iter().any(|base| {
+                        let mut group = first_group;
+                        while group > 1 && group % base == 0 {
+                            group /= base;
+                        }
+                        group == 1
+                    })
+            };
+            u64::from(first_group)
+                .checked_mul(u64::from(sb.blocks_per_group))?
+                .checked_add(u64::from(sb.first_data_block))?
+                .checked_add(u64::from(has_super))?
+        } else {
+            u64::from(bgd_start_block.checked_add(descriptor_block)?)
+        };
+
         let offset_within_block = (bgd_index.checked_rem(bgd_per_block)?)
             .checked_mul(u32::from(sb.block_group_descriptor_size))?;
 
-        u64::from(block_index)
+        block_index
             .checked_mul(sb.block_size.to_u64())?
             .checked_add(u64::from(offset_within_block))
     }
@@ -108,9 +141,20 @@ impl BlockGroupDescriptor {
             .read_only_compatible_features
             .contains(ReadOnlyCompatibleFeatures::GROUP_DESCRIPTOR_CHECKSUMS)
         {
-            // TODO: prior to general checksum metadata being added,
-            // there was a separate feature just for block group
-            // descriptors. Add support for that here.
+            const ALGORITHM: crc::Algorithm<u16> = crc::Algorithm {
+                init: 0xffff,
+                ..crc::CRC_16_ARC
+            };
+            let crc = crc::Crc::<u16>::new(&ALGORITHM);
+            let mut checksum = crc.digest();
+            checksum.update(&sb.uuid.0);
+            checksum.update(&bgd_index.to_le_bytes());
+            checksum.update(&data[..Self::BG_CHECKSUM_OFFSET]);
+            // Legacy CRC16 skips, rather than zeroes, the checksum field.
+            checksum.update(&data[Self::BG_CHECKSUM_OFFSET + 2..]);
+            if checksum.finalize() != block_group_descriptor.checksum {
+                return Err(CorruptKind::BlockGroupDescriptorChecksum(bgd_index).into());
+            }
         }
 
         Ok(block_group_descriptor)

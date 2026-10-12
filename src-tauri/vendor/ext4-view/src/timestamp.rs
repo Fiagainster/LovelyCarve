@@ -32,7 +32,7 @@ impl Timestamp {
     /// Decode a timestamp from the base field in the classic 128-byte
     /// inode, plus the corresponding `*_extra` field if present.
     pub(crate) fn from_raw(secs: u32, extra: Option<u32>) -> Result<Self, TimestampError> {
-        let mut seconds = i64::from(i32::try_from(secs).map_err(|_| TimestampError)?);
+        let mut seconds = i64::from(i32::from_le_bytes(secs.to_le_bytes()));
         let mut nanoseconds = 0;
 
         if let Some(extra) = extra {

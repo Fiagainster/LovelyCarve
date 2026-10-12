@@ -85,6 +85,9 @@ impl NodeHeader {
             return Err(CorruptKind::ExtentMagic(inode).into());
         }
 
+        if eh_entries > eh_max {
+            return Err(CorruptKind::ExtentNotEnoughData(inode).into());
+        }
         if eh_depth > 5 {
             return Err(CorruptKind::ExtentDepth(inode).into());
         }
@@ -207,6 +210,9 @@ impl Extents {
         if item.depth == 0 {
             let ee_block = read_u32le(entry, 0);
             let ee_len = read_u16le(entry, 4);
+            if ee_len == 0 {
+                return Err(CorruptKind::ExtentBlock(self.inode).into());
+            }
             let ee_start_hi = read_u16le(entry, 6);
             let ee_start_low = read_u32le(entry, 8);
 
@@ -215,7 +221,12 @@ impl Extents {
             return Ok(Some(Extent {
                 block_within_file: ee_block,
                 start_block,
-                num_blocks: ee_len,
+                num_blocks: if ee_len > 0x8000 {
+                    ee_len - 0x8000
+                } else {
+                    ee_len
+                },
+                unwritten: ee_len > 0x8000,
             }));
         } else {
             let ei_leaf_lo = read_u32le(entry, 4);

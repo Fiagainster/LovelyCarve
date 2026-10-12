@@ -22,6 +22,7 @@ use extents_blocks::ExtentsBlocks;
 enum FileBlocksInner {
     ExtentsBlocks(ExtentsBlocks),
     BlockMap(BlockMap),
+    Inline,
 }
 
 /// Iterator over blocks in a file.
@@ -32,7 +33,9 @@ pub(crate) struct FileBlocks(FileBlocksInner);
 
 impl FileBlocks {
     pub(crate) fn new(fs: Ext4, inode: &Inode) -> Result<Self, Ext4Error> {
-        if inode.flags.contains(InodeFlags::EXTENTS) {
+        if inode.flags.contains(InodeFlags::INLINE_DATA) {
+            Ok(Self(FileBlocksInner::Inline))
+        } else if inode.flags.contains(InodeFlags::EXTENTS) {
             Ok(Self(FileBlocksInner::ExtentsBlocks(ExtentsBlocks::new(
                 fs, inode,
             )?)))
@@ -50,6 +53,7 @@ impl Iterator for FileBlocks {
         match self {
             Self(FileBlocksInner::ExtentsBlocks(iter)) => iter.next(),
             Self(FileBlocksInner::BlockMap(iter)) => iter.next(),
+            Self(FileBlocksInner::Inline) => None,
         }
     }
 }

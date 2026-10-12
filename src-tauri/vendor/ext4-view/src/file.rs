@@ -9,12 +9,13 @@
 use crate::Ext4;
 use crate::block_index::FsBlockIndex;
 use crate::error::Ext4Error;
-use crate::inode::Inode;
+use crate::inode::{Inode, InodeFlags};
 use crate::iters::file_blocks::FileBlocks;
 use crate::metadata::Metadata;
 use crate::path::Path;
 use crate::resolve::FollowSymlinks;
 use crate::util::usize_from_u32;
+use alloc::vec::Vec;
 use core::fmt::{self, Debug, Formatter};
 
 #[cfg(feature = "std")]
@@ -25,6 +26,7 @@ pub struct File {
     fs: Ext4,
     inode: Inode,
     file_blocks: FileBlocks,
+    resident: Option<Vec<u8>>,
 
     /// Current byte offset within the file.
     position: u64,
@@ -56,7 +58,16 @@ impl File {
     /// type of `inode` to be opened, including directories and
     /// symlinks. This is used by `Ext4::read_inode_file`.
     pub(crate) fn open_inode(fs: &Ext4, inode: Inode) -> Result<Self, Ext4Error> {
+        if inode.flags.contains(InodeFlags::DIRECTORY_ENCRYPTED) {
+            return Err(Ext4Error::Encrypted);
+        }
+        let resident = if inode.flags.contains(InodeFlags::INLINE_DATA) {
+            Some(crate::xattr::inline_payload(fs, &inode)?)
+        } else {
+            None
+        };
         Ok(Self {
+            resident,
             fs: fs.clone(),
             position: 0,
             file_blocks: FileBlocks::new(fs.clone(), &inode)?,
@@ -114,6 +125,16 @@ impl File {
             }
         }
 
+        if let Some(data) = &self.resident {
+            let start = usize::try_from(self.position).map_err(|_| Ext4Error::FileTooLarge)?;
+            let source = data
+                .get(start..start + buf.len())
+                .ok_or(crate::error::CorruptKind::InlineData(self.inode.index))?;
+            buf.copy_from_slice(source);
+            self.position += buf.len() as u64;
+            return Ok(buf.len());
+        }
+
         let block_size = self.fs.0.superblock.block_size;
 
         // Get the block to read from.
@@ -123,7 +144,10 @@ impl File {
             // OK to unwrap: already checked that the position is not at
             // the end of the file, so there must be at least one more
             // block to read.
-            let block_index = self.file_blocks.next().unwrap()?;
+            let block_index = self
+                .file_blocks
+                .next()
+                .ok_or(crate::error::CorruptKind::ExtentBlock(self.inode.index))??;
 
             self.block_index = Some(block_index);
 
@@ -198,15 +222,25 @@ impl File {
     ///
     /// Seeking past the end of the file is allowed.
     pub fn seek_to(&mut self, position: u64) -> Result<(), Ext4Error> {
+        if self.resident.is_some() {
+            self.position = position;
+            return Ok(());
+        }
         // Reset iteration.
         self.file_blocks = FileBlocks::new(self.fs.clone(), &self.inode)?;
         self.block_index = None;
 
         // Advance the block iterator by the number of whole blocks in
         // `position`.
-        let num_blocks = position / self.fs.0.superblock.block_size.to_nz_u64();
+        let num_blocks = (position / self.fs.0.superblock.block_size.to_nz_u64())
+            .min(u64::from(self.inode.file_size_in_blocks()));
         for _ in 0..num_blocks {
-            self.file_blocks.next();
+            match self.file_blocks.next() {
+                Some(block) => {
+                    block?;
+                }
+                None => break,
+            }
         }
 
         self.position = position;

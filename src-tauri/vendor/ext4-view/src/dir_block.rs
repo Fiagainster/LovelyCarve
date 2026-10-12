@@ -68,7 +68,7 @@ impl DirBlock<'_> {
         let actual_checksum = if block_type == DirBlockType::Leaf {
             self.calc_leaf_checksum(block)
         } else {
-            self.calc_internal_checksum(block, block_type)
+            self.calc_internal_checksum(block, block_type)?
         };
 
         if actual_checksum.finalize() == expected_checksum {
@@ -100,7 +100,11 @@ impl DirBlock<'_> {
     }
 
     /// Calculate the checksum of a non-leaf block.
-    fn calc_internal_checksum(&self, block: &[u8], block_type: DirBlockType) -> Checksum {
+    fn calc_internal_checksum(
+        &self,
+        block: &[u8],
+        block_type: DirBlockType,
+    ) -> Result<Checksum, Ext4Error> {
         let tail_entry_size = 8;
 
         // OK to unwrap: minimum block size is 1024.
@@ -125,11 +129,15 @@ impl DirBlock<'_> {
             .unwrap();
 
         let mut checksum = self.checksum_base.clone();
-        checksum.update(&block[..num_bytes]);
+        let bytes = block
+            .get(..num_bytes)
+            .filter(|_| num_bytes <= tail_entry_offset)
+            .ok_or(CorruptKind::DirBlockChecksum(self.dir_inode))?;
+        checksum.update(bytes);
         checksum.update_u32_le(read_u32le(block, tail_entry_offset));
         checksum.update_u32_le(0);
 
-        checksum
+        Ok(checksum)
     }
 
     fn get_block_type(&self, block: &[u8]) -> DirBlockType {
@@ -146,7 +154,9 @@ impl DirBlock<'_> {
         // Other internal nodes are identified by the first record
         // having a length equal to the whole block.
         let first_rec_len = read_u16le(block, 4);
-        if first_rec_len == self.fs.0.superblock.block_size {
+        if first_rec_len == self.fs.0.superblock.block_size
+            || (self.fs.block_size() == 65536 && matches!(first_rec_len, 0 | 65535))
+        {
             DirBlockType::Internal
         } else {
             DirBlockType::Leaf

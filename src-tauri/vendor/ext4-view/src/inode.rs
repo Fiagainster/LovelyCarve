@@ -214,25 +214,28 @@ impl Inode {
             (0, 0)
         };
 
-        // Extra timestamps fields & creation time if inode large enough.
-        let (i_atime_extra, i_ctime_extra, i_mtime_extra, crtime) =
-            if data.len() >= Self::I_CRTIME_EXTRA_OFFSET + 4 {
-                let i_atime_extra = read_u32le(data, Self::I_ATIME_EXTRA_OFFSET);
-                let i_ctime_extra = read_u32le(data, Self::I_CTIME_EXTRA_OFFSET);
-                let i_mtime_extra = read_u32le(data, Self::I_MTIME_EXTRA_OFFSET);
-                let i_crtime = read_u32le(data, Self::I_CRTIME_OFFSET);
-                let i_crtime_extra = read_u32le(data, Self::I_CRTIME_EXTRA_OFFSET);
-                let crtime = Timestamp::from_raw(i_crtime, Some(i_crtime_extra))
-                    .map_err(|_| CorruptKind::InodeTimestamp { inode: index })?;
-                (
-                    Some(i_atime_extra),
-                    Some(i_ctime_extra),
-                    Some(i_mtime_extra),
-                    Some(crtime),
-                )
-            } else {
-                (None, None, None, None)
-            };
+        let extra_end = if data.len() > 128 {
+            128usize + usize::from(read_u16le(data, 128))
+        } else {
+            128
+        };
+        if extra_end > data.len() || extra_end % 4 != 0 {
+            return Err(CorruptKind::InodeTruncated {
+                inode: index,
+                size: data.len(),
+            }
+            .into());
+        }
+        let extra = |offset: usize| (offset + 4 <= extra_end).then(|| read_u32le(data, offset));
+        let i_atime_extra = extra(Self::I_ATIME_EXTRA_OFFSET);
+        let i_ctime_extra = extra(Self::I_CTIME_EXTRA_OFFSET);
+        let i_mtime_extra = extra(Self::I_MTIME_EXTRA_OFFSET);
+        let crtime = extra(Self::I_CRTIME_OFFSET)
+            .map(|seconds| {
+                Timestamp::from_raw(seconds, extra(Self::I_CRTIME_EXTRA_OFFSET))
+                    .map_err(|_| CorruptKind::InodeTimestamp { inode: index })
+            })
+            .transpose()?;
 
         let atime = Timestamp::from_raw(i_atime, i_atime_extra)
             .map_err(|_| CorruptKind::InodeTimestamp { inode: index })?;
@@ -264,6 +267,25 @@ impl Inode {
                 // OK to unwap, we know `i_block` is 60 bytes.
                 inline_data: i_block.try_into().unwrap(),
                 metadata: Metadata {
+                    links: read_u16le(data, 26),
+                    deletion_time: match read_u32le(data, 20) {
+                        0 => None,
+                        seconds => Some(
+                            Timestamp::from_raw(seconds, None)
+                                .map_err(|_| CorruptKind::InodeTimestamp { inode: index })?,
+                        ),
+                    },
+                    device: if matches!(i_mode & 0xf000, 0x2000 | 0x6000) {
+                        let old = read_u32le(i_block, 0);
+                        let new = read_u32le(i_block, 4);
+                        Some(if old != 0 {
+                            ((old >> 8) & 0xff, old & 0xff)
+                        } else {
+                            ((new >> 8) & 0xfff, (new & 0xff) | ((new >> 12) & 0xfff00))
+                        })
+                    } else {
+                        None
+                    },
                     size_in_bytes,
                     mode,
                     uid,
@@ -371,7 +393,12 @@ impl Inode {
         // targets are stored as regular file data.
         const MAX_INLINE_SYMLINK_LEN: u64 = 59;
 
-        if self.metadata.size_in_bytes <= MAX_INLINE_SYMLINK_LEN {
+        if self.flags.contains(InodeFlags::DIRECTORY_ENCRYPTED) {
+            return Err(Ext4Error::Encrypted);
+        }
+        if self.metadata.size_in_bytes <= MAX_INLINE_SYMLINK_LEN
+            && !self.flags.contains(InodeFlags::INLINE_DATA)
+        {
             // OK to unwrap since we checked the size above.
             let len = usize::try_from(self.metadata.size_in_bytes).unwrap();
             let target = &self.inline_data[..len];
@@ -402,6 +429,9 @@ impl Inode {
 /// data associated with the inode.
 fn get_inode_location(ext4: &Ext4, inode: InodeIndex) -> Result<(FsBlockIndex, u32), Ext4Error> {
     let sb = &ext4.0.superblock;
+    if inode.get() > sb.inode_count {
+        return Err(Ext4Error::NotFound);
+    }
 
     // OK to unwrap: `inode` is nonzero.
     let inode_minus_1 = inode.get().checked_sub(1).unwrap();

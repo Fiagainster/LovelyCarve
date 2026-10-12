@@ -28,7 +28,14 @@ pub(crate) fn get_dir_entry_inode_by_name(
         return Err(Ext4Error::Encrypted);
     }
 
-    if dir_inode.flags.contains(InodeFlags::DIRECTORY_HTREE) {
+    if dir_inode.flags.contains(InodeFlags::DIRECTORY_HTREE)
+        && !dir_inode.flags.contains(InodeFlags::INLINE_DATA)
+        && !fs
+            .0
+            .superblock
+            .incompatible_features
+            .contains(crate::features::IncompatibleFeatures::CASEFOLD)
+    {
         let entry = get_dir_entry_via_htree(fs, dir_inode, name)?;
         return Inode::read(fs, entry.inode);
     }

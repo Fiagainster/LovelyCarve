@@ -19,4 +19,5 @@ pub(crate) struct Extent {
 
     // Number of blocks (both within the file, and on the filesystem).
     pub(crate) num_blocks: u16,
+    pub(crate) unwritten: bool,
 }

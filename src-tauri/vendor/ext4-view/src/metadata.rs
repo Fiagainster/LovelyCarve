@@ -40,6 +40,9 @@ pub struct Metadata {
     /// Creation time.
     /// Only present if inode is large enough.
     pub(crate) crtime: Option<Timestamp>,
+    pub(crate) links: u16,
+    pub(crate) deletion_time: Option<Timestamp>,
+    pub(crate) device: Option<(u32, u32)>,
 }
 
 impl Metadata {
@@ -116,6 +119,36 @@ impl Metadata {
     #[must_use]
     pub fn modified(&self) -> Timestamp {
         self.mtime
+    }
+
+    /// Last inode change time.
+    #[must_use]
+    pub fn changed(&self) -> Timestamp {
+        self.ctime
+    }
+
+    /// Raw POSIX mode, including file type bits.
+    #[must_use]
+    pub fn raw_mode(&self) -> u16 {
+        self.mode.bits()
+    }
+
+    /// Number of hard links (one may indicate an unknown directory count).
+    #[must_use]
+    pub fn links(&self) -> u16 {
+        self.links
+    }
+
+    /// Deletion time; on an orphan inode this field can instead be a list pointer.
+    #[must_use]
+    pub fn deletion_time(&self) -> Option<Timestamp> {
+        self.deletion_time
+    }
+
+    /// Device major/minor numbers for character and block devices.
+    #[must_use]
+    pub fn device(&self) -> Option<(u32, u32)> {
+        self.device
     }
 
     /// Creation time.

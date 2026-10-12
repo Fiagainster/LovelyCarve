@@ -2,6 +2,10 @@
 
 本文汇总文件系统实现需要检查的行为。当前适配器、会话与索引路径见 [架构说明](ARCHITECTURE.md)。
 
+ext2/3/4 的完整 libfsext 对照、内联数据、EA-inode、meta_bg、时间戳与验证边界见 [EXT](EXT.md)。
+内联数据必须拼接 `i_block` 和 inode 内 `system.data`；内联目录的两段记录不可跨边界。
+已分配正文范围越过 ext 卷或短读时失败，真实空洞与 unwritten 返回零；所有层级的间接块与 extent 使用同一逻辑片计划。
+
 ReFS 使用本地纯 Rust `refs-reader`，正式构建不需要 librefs DLL；旧 DLL 仅供显式对照。候选调查、移植来源、公开镜像及验证范围见 [ReFS Rust 后端与替换验证](REFS.md)。普通文件和快照流共用 extent 映射执行范围读取，未写入区间返回零，链接读取返回 UTF-8 目标文本。
 
 ## 时间戳

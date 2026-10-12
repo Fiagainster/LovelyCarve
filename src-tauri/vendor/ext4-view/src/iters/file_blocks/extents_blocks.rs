@@ -158,7 +158,7 @@ impl ExtentsBlocks {
         // function), so adding 1 cannot fail.
         self.block_within_file = self.block_within_file.checked_add(1).unwrap();
 
-        Ok(Some(block))
+        Ok(Some(if extent.unwritten { 0 } else { block }))
     }
 }
 
