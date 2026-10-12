@@ -78,10 +78,8 @@ fn count_zero_bytes_32(key: &[u8]) -> u32 {
         return 0;
     }
     let mut total: u32 = 0;
-    for chunk in key[..32].chunks_exact(8) {
-        let lane = u64::from_le_bytes([
-            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
-        ]);
+    for chunk in key[..32].as_chunks::<8>().0 {
+        let lane = u64::from_le_bytes(*chunk);
         let zeros = lane.wrapping_sub(0x0101_0101_0101_0101) & !lane & 0x8080_8080_8080_8080;
         total += zeros.count_ones();
     }

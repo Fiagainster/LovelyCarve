@@ -123,19 +123,11 @@ export default defineConfig({
     holdUntilCrawlEnd: false,
   },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
-  // Flyfish File Viewer 的 map 渲染器（maplibre-gl）源码里有 BigInt 字面量，
-  // esbuild 无法把字面量语法降级到 safari13（硬错误）。标记 bigint 为「已支持」：
-  // 其余语法照常按 target 降级，仅 BigInt 字面量原样保留——只有打开 map/shp 等
-  // 格式且 WebKit < Safari 14 时才受影响，应用其余部分的地板不变。
-  // 注意：vite 8 的转换走 oxc，构建时会提示「esbuild options will be ignored」，
-  // 但 `build.minify: 'esbuild'` 的压缩阶段仍读取这里——删掉后 safari13 目标会在
-  // 压缩 maplibre 时报 BigInt 硬错误。
-  esbuild: {
-    supported: { bigint: true },
-  },
   build: {
     target: process.env.TAURI_ENV_PLATFORM === 'windows' ? 'chrome105' : 'safari13',
-    minify: !process.env.TAURI_ENV_DEBUG ? 'esbuild' : false,
+    // Vite 8 自带 Oxc；esbuild 已是可选依赖，干净安装不保证存在。
+    // Oxc 保留 maplibre 的 BigInt 字面量，map/shp 预览仍需 Safari 14+。
+    minify: !process.env.TAURI_ENV_DEBUG ? 'oxc' : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
     // The rich-preview viewer (`@file-viewer/vue3-full`) is a lazy chunk that
     // the vite-plugin splits further into per-renderer chunks (pdfjs, three,

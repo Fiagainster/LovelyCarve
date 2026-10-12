@@ -128,9 +128,7 @@ impl<'a> BtrfsVolume<'a> {
             } => {
                 if *ram_bytes > INLINE_MAX_BYTES {
                     bail!(
-                        "btrfs: inline extent ram_bytes {} > sanity cap {}",
-                        ram_bytes,
-                        INLINE_MAX_BYTES
+                        "btrfs: inline extent ram_bytes {ram_bytes} > sanity cap {INLINE_MAX_BYTES}"
                     );
                 }
                 let decoded = decompress(
@@ -159,9 +157,7 @@ impl<'a> BtrfsVolume<'a> {
                         .logical_to_physical(*disk_bytenr + *offset)
                         .ok_or_else(|| {
                             anyhow!(
-                                "btrfs: extent at logical 0x{:x}+0x{:x} is not chunk-mapped",
-                                disk_bytenr,
-                                offset
+                                "btrfs: extent at logical 0x{disk_bytenr:x}+0x{offset:x} is not chunk-mapped"
                             )
                         })?;
                     let phys = self.base_offset + map.physical;
@@ -170,8 +166,7 @@ impl<'a> BtrfsVolume<'a> {
                 } else {
                     let map = self.logical_to_physical(*disk_bytenr).ok_or_else(|| {
                         anyhow!(
-                            "btrfs: compressed extent at logical 0x{:x} is not chunk-mapped",
-                            disk_bytenr
+                            "btrfs: compressed extent at logical 0x{disk_bytenr:x} is not chunk-mapped"
                         )
                     })?;
                     let phys = self.base_offset + map.physical;

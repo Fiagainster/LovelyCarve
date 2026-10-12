@@ -111,12 +111,14 @@ fn utf16_bytes(text: &str, little_endian: bool) -> Vec<u8> {
 /// UTF-16 字节 → 文本；奇数尾字节丢弃，残缺代理对以 U+FFFD 填充。
 fn decode_utf16_bytes(bytes: &[u8], little_endian: bool) -> String {
     let units = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             if little_endian {
-                u16::from_le_bytes([pair[0], pair[1]])
+                u16::from_le_bytes(*pair)
             } else {
-                u16::from_be_bytes([pair[0], pair[1]])
+                u16::from_be_bytes(*pair)
             }
         })
         .collect::<Vec<_>>();

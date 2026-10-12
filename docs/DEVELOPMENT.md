@@ -8,7 +8,7 @@
 | --- | --- |
 | Rust | stable，最低版本以 `src-tauri/Cargo.toml` 的 `rust-version` 为准，当前为 1.99 |
 | Bun | 版本以 `package.json` 的 `packageManager` 为准 |
-| Windows 桌面 | PowerShell 7、Visual Studio C++ x64 工具、Windows SDK、LLVM 工具组件（`lld-link`）、OpenSSL 开发文件、WebView2 |
+| Windows 桌面 | PowerShell 7、Visual Studio C++ x64 工具、Windows SDK、OpenSSL 开发文件、WebView2 |
 | macOS | Xcode Command Line Tools；桌面检查另需相应 Tauri 系统依赖 |
 | Linux | 编译工具链、WebKitGTK、OpenSSL 等 Tauri 系统依赖 |
 | CLI smoke 测试 | Python 3 |
@@ -42,7 +42,7 @@ just dev
 | `opencv_contrib` | `OPENCV_CONTRIB` | 仓库下 `opencv_contrib-4.x\opencv_contrib-4.x\modules` |
 | `opencv_install` | `OPENCV_INSTALL` | 与 `opencv_dir` 相同 |
 
-轻量 Rust 检查只配置 OpenSSL。桌面及发布 CLI 构建初始化 VS x64 环境和 LLVM，只有 `*-full` 入口配置 OpenCV / libclang。Cargo 并发由工具链默认值决定，可通过 `CARGO_BUILD_JOBS` 限制，内存不足时设为 1 或 2。
+轻量 Rust 检查只配置 OpenSSL。桌面及发布 CLI 构建初始化 VS x64 环境，使用 MSVC 默认链接器。只有 `*-full` 入口配置 OpenCV / libclang，需另装 Visual Studio LLVM 工具组件以提供 libclang。Cargo 并发由工具链默认值决定，可通过 `CARGO_BUILD_JOBS` 限制，内存不足时设为 1 或 2。
 
 SQLCipher 配方设置 `OPENSSL_NO_VENDOR=1` 和 `OPENSSL_STATIC=1`，使用本机 OpenSSL 开发文件。若改为源码编译 OpenSSL，准备 Windows Perl 与 NASM。静态链接标记不保证没有 DLL 依赖：导入库仍可能需要运行库，调整 `OPENSSL_LIBS` 或分发 DLL 前检查实际二进制依赖。
 
@@ -104,5 +104,7 @@ Unix `build-cli-full` 启用 `qrcode-wechat ocr`（CPU OCR），需自行配置�
 先审查清单约束，再用 `update-fe`、`update-rust` 或 `update-plugins` 更新对应锁文件。`update-tauri` 同步前后端 Tauri 包族；各包独立发布，不强求补丁版本号一致。vendor 的来源与补丁见 [UPSTREAM.md](../src-tauri/vendor/UPSTREAM.md)，用对应读取器配方验证。
 
 Vue 类型检查通过 `typescript` 的 npm 别名接入 `typescript-native-bridge@6.0.3-bridge.18.tsgo.7.0.2`，兼容 `vue-tsc` 所需的经典编译器 API。别名与 override 固定为同一完整版本；不要直接替换为 `typescript@7`。`just typecheck` 会显示 `TNB ACTIVE`。普通组件测试默认关闭动效，动效专用测试单独验证开关与收尾。
+
+前端生产构建使用 Vite 8 自带的 Oxc 压缩器，不依赖额外安装 esbuild。旧配置中的 `build.minify: 'esbuild'` 会在干净安装后触发 `Failed to load transformWithEsbuild`；使用更新后的 `vite.config.ts`，再运行 `just bootstrap` 和 `just build-fe`。非 Windows 的 Safari 13 构建目标保持不变，但地图渲染器依赖 BigInt，map/shp 预览需要 Safari 14 或更新的 WebKit。
 
 升级后按改动范围执行前端、Rust、插件与读取器验证。不要将本机路径、依赖目录、案件、缓存、导出结果和签名凭据提交仓库；`.gitignore` 为回归样本保留例外。

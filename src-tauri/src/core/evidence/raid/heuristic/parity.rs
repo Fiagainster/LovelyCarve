@@ -214,8 +214,8 @@ impl SampleCache {
 /// XOR-fold a block to a single 64-bit word (linear under XOR).
 pub(super) fn fold64(b: &[u8]) -> u64 {
     let mut acc = 0u64;
-    for chunk in b.chunks_exact(8) {
-        acc ^= u64::from_le_bytes(chunk.try_into().unwrap_or([0; 8]));
+    for chunk in b.as_chunks::<8>().0 {
+        acc ^= u64::from_le_bytes(*chunk);
     }
     acc
 }

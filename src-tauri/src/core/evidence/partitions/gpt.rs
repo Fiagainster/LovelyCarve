@@ -455,8 +455,11 @@ pub(crate) fn uuid_from_disk_bytes(bytes: &[u8]) -> Option<Uuid> {
 
 fn parse_utf16_name(bytes: &[u8]) -> Option<String> {
     let chunks = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .copied()
+        .map(u16::from_le_bytes)
         .take_while(|&u| u != 0)
         .collect::<Vec<_>>();
     if chunks.is_empty() {

@@ -139,16 +139,22 @@ pub fn parse_v1_2(buf: &[u8]) -> Option<MdadmSuperblock> {
     let role_table_end = 256usize.saturating_add(role_table_bytes);
     let dev_roles = if role_table_end <= buf.len() {
         buf[256..role_table_end]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .copied()
+            .map(u16::from_le_bytes)
             .collect()
     } else {
         // Truncated SB: read whatever full role entries are present so the
         // caller still has the role for low-numbered members (which is the
         // common case).
         buf[256..]
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .copied()
+            .map(u16::from_le_bytes)
             .collect()
     };
 

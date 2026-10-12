@@ -26,12 +26,11 @@ if ($VisualStudio) {
     }
     Import-Module (Join-Path $VsPath 'Common7/Tools/Microsoft.VisualStudio.DevShell.dll')
     Enter-VsDevShell -VsInstallPath $VsPath -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64' | Out-Null
-    $llvmBin = Join-Path $VsPath 'VC/Tools/Llvm/x64/bin'
-    if (-not (Test-Path -LiteralPath (Join-Path $llvmBin 'lld-link.exe'))) {
-        throw 'Install the Visual Studio LLVM tools component (lld-link).'
+    if ($OpenCV) {
+        $llvmBin = Join-Path $VsPath 'VC/Tools/Llvm/x64/bin'
+        $env:PATH = $llvmBin + ';' + $env:PATH
+        $env:LIBCLANG_PATH = $llvmBin
     }
-    $env:PATH = $llvmBin + ';' + $env:PATH
-    if ($OpenCV) { $env:LIBCLANG_PATH = $llvmBin }
 }
 
 if (-not $OpenSSLLib) { $OpenSSLLib = Join-Path $OpenSSLDir 'lib/VC/x64/MT' }

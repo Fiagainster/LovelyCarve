@@ -287,7 +287,7 @@ pub fn directory_stats(
     Ok(FsDirStats {
         node_id: node_id.to_string(),
         path: if path_hint.is_empty() {
-            format!("/{}", start_name)
+            format!("/{start_name}")
         } else {
             path_hint.to_string()
         },

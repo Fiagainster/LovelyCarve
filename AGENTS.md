@@ -4,9 +4,11 @@ This file guides AI agents and contributors working in this repository. Follow t
 
 ## Project Overview
 
-`lovelycarve` is a Tauri v2 desktop forensic disk-image tool. The backend is Rust with async tasks, memory-mapped raw image access, pure Rust EWF/VMDK/VHD/VHDX/BitLocker/ReFS readers. The frontend is Vue 3 (Composition API), TypeScript, and Vite. The app targets Windows, macOS, and Linux. UI copy is Chinese-first and written inline (there is no i18n layer).
+`lovelycarve` is a Tauri v2 desktop forensic evidence tool with a window-free CLI. The backend is Rust with async tasks, memory-mapped raw image access, and pure Rust image, filesystem and encrypted-container readers. Evidence includes disk images, folders, archives, AD1 logical images, iOS local backups, physical disks and assembled RAID arrays. The frontend is Vue 3 (Composition API), TypeScript, and Vite. The app targets Windows, macOS, and Linux, but the current desktop development and release recipes are Windows-only; macOS/Linux artifacts need separate verification. UI copy is Chinese-first and written inline (there is no i18n layer).
 
 Core workflow: open or create a case, load evidence, detect partitions, browse filesystem data, preview native file types, hash / export / carve, build volume snapshots, run global search and timeline projections, and run LPP plugins. Read `docs/ARCHITECTURE.md` before adding backend modules. Read `docs/FRONTEND.md` (the frontend spec: principles, tokens and contrast, type scale, spacing, primitives, states and feedback, tables, dialogs and layering, motion, copy, accessibility, review checklist) before changing UI; the design system itself is the CSS tokens in `src/styles/themes.css` plus the shared `ui-*` primitives in `src/styles/ui.css` and the motion layer in `src/styles/motion.css` — read them too.
+
+Use `docs/README.md` for the documentation map and `CONTRIBUTING.md` / `docs/DEVELOPMENT.md` for setup and verification. Before changing readers, read `docs/FILESYSTEM_NOTES.md` and the relevant capability/limitation guide: `docs/NTFS.md`, `docs/EXT.md`, `docs/FAT.md`, `docs/MBR.md`, `docs/LUKS.md`, `docs/REFS.md` or `docs/IOS_BACKUPS.md`. Vendored sources and local patches are recorded in `src-tauri/vendor/UPSTREAM.md`; third-party licenses and attribution belong in `THIRD_PARTY_NOTICES.md` and the corresponding vendor directory.
 
 ## Project Structure
 
@@ -16,6 +18,7 @@ Core workflow: open or create a case, load evidence, detect partitions, browse f
 - `src/components/`: shared `ui/`, `feedback/`, `layout/`, and `display/` components; no business state dependencies.
 - `src/composables/`: generic reactive capabilities such as theme, motion, persistence, notifications, and confirmation; business state lives in its feature's `composables/` (no global store).
 - `src/lib/models/`: shared pure contracts such as file-location targets; transport types remain under IPC.
+- `src/utils/`: shared pure helpers for formatting, safe HTML, CSV and similar concerns.
 - `src/views/`: secondary app windows (the detached `FilePreviewWindow.vue`). The main shell is `src/AuthorizedApp.vue`.
 - `src/lib/ipc/`: the typed IPC service layer — `client.ts` (sole `invoke` wrapper), `events.ts` (`onEvent`/`emitEvent`), and per-domain command modules. Components/composables call this layer, not Tauri `invoke`/`listen` directly.
 - `src/styles/themes.css`: all theme tokens for `light`, `dark`, and `pink`.
@@ -24,8 +27,10 @@ Core workflow: open or create a case, load evidence, detect partitions, browse f
 - `src-tauri/src/`: Rust backend.
 - `src-tauri/src/commands/`: per-domain `#[tauri::command]` handlers.
 - `src-tauri/src/app/`: startup, shutdown, shared application access/error types, and cross-domain workflows.
+- `src-tauri/src/bin/` and `src-tauri/src/cli/`: CLI entry, input, shell, workflows and command discovery; dispatch is generated from the desktop command registry.
 - `src-tauri/src/core/`: forensic engines, parsers, indexing, filesystems, search, timeline, carving, and plugin runtime.
 - `src-tauri/src/state.rs`: shared application state.
+- `src-tauri/src/task_manager.rs` and `src-tauri/src/task_manager/`: immediate task registration, cancellation, resource limits and task models.
 - `src-tauri/vendor/`: vendored filesystem and parser crates.
 - `src-tauri/examples/`: standalone probes for partition and filesystem work.
 - `plugins/`: Git submodule pointing to `LovelyTeams/LovelyCarve-Plugins`, with a separate Cargo workspace — `sdk` (crate `lovelycarve-plugin`: C ABI, LPP wire types, Rust plugin API; also a host dependency), `host` (`lc-plugin-host`, the process-isolation loader), and the single bundled analyzer (`linuxinfo`), a `cdylib` next to its `plugin.toml`. Initialize with `just bootstrap`; commit and push plugin changes before updating the main repository's submodule pointer.
@@ -33,8 +38,11 @@ Core workflow: open or create a case, load evidence, detect partitions, browse f
 
 ## Build, Test, and Development Commands
 
-Use the repository-root `Justfile` as the task entry point. Do not replace an existing recipe with a direct `bun`, `cargo`, or Tauri command. `bun install --frozen-lockfile` is the bootstrap exception because dependency installation has no recipe. Run `just --list` when the available tasks may have changed.
+Use the repository-root `Justfile` as the task entry point. Do not replace an existing recipe with a direct `bun`, `cargo`, or Tauri command. Run `just bootstrap` for initial setup; it initializes the pinned plugin submodule and installs frontend dependencies with the frozen lockfile. Run `just --list` when the available tasks may have changed, and use `just --show <recipe>` or `just --dry-run <recipe>` to inspect platform-specific commands and dependencies. Prerequisites and environment overrides are documented in `docs/DEVELOPMENT.md`; toolchain versions come from `src-tauri/Cargo.toml` and `package.json`.
 
+- `just verify-fe`: run IPC and structure checks, type-checking, frontend tests and the production build.
+- `just verify-rust`: run `fmt`, `check`, `clippy` and backend tests.
+- `just verify-plugins`: run formatting, plugin linting and plugin tests.
 - `just dev-fe`: run the Vite frontend, including the file-viewer asset preparation step.
 - `just dev`: run the Tauri desktop app without QR/OCR using the configured Visual Studio and OpenSSL environment; `just dev-full` also enables QR/OCR and configures OpenCV.
 - `just typecheck`: run `vue-tsc --noEmit`.
@@ -53,18 +61,38 @@ Use the repository-root `Justfile` as the task entry point. Do not replace an ex
 - `just test-vhd` / `just test-vhdx`: test the vendored Rust VHD/VHDX readers and committed image fixtures.
 - `just test-vmdk`: test the vendored pure Rust VMDK reader and committed image fixtures.
 - `just test-qcow2` / `just test-vdi`: test the standalone vendored image readers.
+- `just test-vsc`: test the Volume Shadow Copy reader; set `VSC_ORACLE_IMAGE` for the external pyvshadow oracle.
+- `just test-refs` / `just clippy-refs`: test / lint the standalone pure Rust ReFS reader.
+- `just test-ad1`: test the AD1 reader; set `AD1_USERBSS` for the real-image stored-hash oracle.
+- `just test-ios-backup`: test the iOS backup reader, auditor and independent encrypted fixtures.
+- `just test-sqlite-core`: test SQLite record recovery; oracle tests need `sqlite3` on PATH or `SQLITE3_BIN`.
+- `just test-vendor <directory> [args]`: run library tests for a vendored crate without a dedicated reader recipe, such as `fatfs`, `exfat` or `ext4-view`.
 - `just build-plugins [--release]`: build the plugin workspace (`lc-plugin-host` and the plugin libraries) and copy each library next to its `plugin.toml`; `just dev`, `just build-release` and `just pack-cli` run it first.
 - `just test-plugins` / `just clippy-plugins`: test / lint the plugin workspace.
 - `just build` / `just build-full`: build the backend without / with QR/OCR. Cargo default features are empty.
-- `just build-release` / `just build-release-full`: create the release desktop bundle without / with QR/OCR; the full entry merges `src-tauri/tauri.full.conf.json` for OpenCV and models.
+- `just build-release` / `just build-release-full`: create the Windows release desktop bundle without / with QR/OCR; both merge `src-tauri/tauri.plugins.conf.json`, and the full entry also merges `src-tauri/tauri.full.conf.json` for OpenCV and models.
 - `just run-example probe_partitions <image-path>`: run the standalone partition probe.
+- `just run-example probe_partitions <image-path> --mbr`: inspect raw MBR/EBR slots, provenance and recovery warnings.
+- `just run-example-fast <name> [args]`: run a probe with `release-fast` and one Cargo build job.
 - `just run-cli [args]`: run the window-free `lovelycarve-cli` shell / complete command surface (development build without QR/OCR). See `docs/CLI.md`.
 - `just build-cli`: build the QR/OCR-free release CLI; `just build-cli-full` enables QR/OCR. `just pack-cli` / `just pack-cli-full` package the matching Windows CLI.
 - `just test-cli`: build and smoke-test CLI navigation, JSONL sessions, encrypted-volume unlock/export, carving and clean shutdown.
-- `just test-luks` / `just test-veracrypt`: test the standalone vendored encrypted-container readers.
+- `just smoke-cli <executable>`: smoke-test an existing CLI binary; `just repack-cli` packages an existing Windows release according to its actual capabilities.
+- `just test-luks` / `just clippy-luks` / `just test-veracrypt`: test / lint the standalone vendored encrypted-container readers.
+- `just pack-plugins`: build and package the bundled analyzer and its process-isolation host for Windows.
 - `just pack` / `just repack`: create or recreate the portable Windows archive without QR/OCR; use `just pack-full` / `just repack-full` for a full-featured build.
 - `cd src-tauri; cargo sort -w`: sort Rust manifests after dependency edits; this is allowed directly because no `just` recipe currently wraps it.
 - `just bench-filedb-store`: synthetic filedb metadata-index benchmark (`release-fast` profile).
+- `just update-fe` / `just update-rust` / `just update-plugins`: refresh dependencies within reviewed manifest constraints.
+- `just update-tauri`: update the frontend and backend Tauri package families together; their patch versions need not match.
+- `just update-file-viewer <version> [args]`: update both viewer packages to the same exact version and refresh offline assets.
+- `just icons`: regenerate platform icons and frontend brand variants from `src-tauri/icons/source*.png`.
+
+Windows `*-full` builds enable `qrcode-wechat,ocr-cuda` (CUDA OCR with CPU fallback); Unix `build-cli-full` enables `qrcode-wechat,ocr`. Default builds need neither OpenCV nor CUDA. Windows recipes use the default MSVC linker and load `scripts/windows-env.ps1` in the same shell; LLVM/libclang is configured only for OpenCV builds. Override paths through the documented environment or just variables rather than hard-coding local paths into recipes.
+
+Vue type-checking uses the `typescript` npm alias for `typescript-native-bridge`, with the alias and override pinned to the same complete version. Preserve compatibility with `vue-tsc`; do not replace it directly with `typescript@7`. Rich previews use matching `@file-viewer/vue3-full` / `@file-viewer/vite-plugin` versions and offline assets; generated `public/file-viewer/` resources are not committed.
+
+Frontend builds use Vite 8's bundled Oxc minifier. Do not restore `build.minify: 'esbuild'` or obsolete `esbuild.supported` settings without explicitly managing the optional dependency. Preserve the existing platform targets; the map renderer's BigInt dependency still requires Safari 14+ for map/shp previews.
 
 The shipping `release` profile is size-first (`opt-level = "s"`, fat LTO). Byte-crunching crates (hashers, zstd / xz / bzip2 / zlib, SQLCipher, memchr / aho-corasick / regex-automata) get `opt-level = 3` through `[profile.release.package.*]` overrides in `src-tauri/Cargo.toml`. Add a new hot-path dependency there, and compare against `--profile release-fast` when tuning.
 
@@ -84,25 +112,34 @@ ReFS uses the vendored pure Rust `refs-reader`; production builds do not load or
 
 `AppState.images` stores `Arc<core::filesystem::evidence_session::EvidenceSession>`. A session owns lazy Docker and deleted-NTFS projections and external volume handles; `core::evidence::image::DiskImage` owns source bytes, read caches and decryptors. Byte-only operations borrow `session.disk_image()`. Native filesystem readers accept the byte reader; filesystem traversal accepts the session. External providers implement `filesystem::external_volume::ExternalVolume`; its registry must be drained before asynchronous close. Keep concrete plugin handles out of the byte reader.
 
+Native decrypted partition views are attached to `EvidenceSession` with the source image and partition IDs preserved; filesystem dispatch resolves the attached view. Do not replace source identity or geometry with decrypted offsets. Verified `index_only` sessions may browse persisted directory metadata when the original evidence is missing, but byte reads must fail explicitly; do not start automatic snapshot, hash or platform-detection work on them.
+
 Plugin execution, analysis publication, timeline projection and result cleanup are wired through `app/workflows/scheduler.rs`. The persistent scheduler calls the existing `TaskRunner` contract; it does not open analysis or timeline stores. Validated JSON/IPC analysis models live under `core/analysis/results/models.rs`; LPP and ABI definitions remain in the plugin SDK.
 
 `src-tauri/src/core/` contains twelve domain engines: evidence, filesystem, catalog, casework, analysis, carving, search, timeline, preview, extensions, platform, and common. Place new code in its owning domain; core must not depend on app, commands, state, cli, or Tauri. Keep each file focused on one concern. Add new parsers, filesystems, or scanners as explicit modules or trait implementations instead of growing broad switch statements. The current `mod.rs` files are existing exceptions; do not create new `mod.rs` paths for new modules.
 
 Long tasks should return a task identifier or useful result and propagate errors to the UI. Progress or completion events must be intentional and documented by the command that emits them.
 
+CLI command discovery and dispatch are generated from the registered Rust handlers during the build. Keep command names, argument serialization and help groups stable, and verify CLI behavior when changing a shared command or workflow. Do not edit generated dispatch output.
+
 ### Backend invariants
 
 These are easy to break silently; check them when touching the related code.
 
 - **Cancellation.** Long work registers through `state.tasks` (`TaskManager`) and receives a `tokio_util::sync::CancellationToken`. Pass `&CancellationToken` straight into blocking code and poll `is_cancelled()` — it is `Sync` and needs no runtime. Do not add a polling thread that mirrors the token into an `AtomicBool`. (`bde_vmk` / BitLocker unlock still take `&AtomicBool` on purpose to stay tokio-agnostic.)
-- **Whole-image readers.** Anything that streams the full image (hash, RAW export, decrypted export) must fail when it ends with `offset != total`. A short read must never produce a "complete" digest or image.
+- **Read integrity.** Anything that streams the full image (hash, RAW export, decrypted export) must fail when it ends with `offset != total`. Validate file logical lengths, extent/run/cluster bounds and offset arithmetic too. A short read must never produce a "complete" digest or export. Format-defined holes, unwritten extents and uninitialized tails return zeroes; allocated data beyond the volume or a truncated source is an error.
+- **Read-fault audit.** Tolerant evidence backends may synthesize zeroes for source bad sectors only with recorded `BadRegion` provenance. Preserve operation-scoped fault collection and the `bad_regions`, `synthetic_bytes` and `read_faults_detected` result fields in hash/export workflows; do not silently treat those bytes as authentic source content. See `docs/ARCHITECTURE.md`.
 - **Evidence path identity.** Compare evidence paths only through `core::casework::case::evidence_path_key` (case-insensitive, separator-normalised on Windows). This covers the `image_load` single-flight lock, runtime-id reuse, and case evidence lookup.
 - **Image unload.** `app::workflows::evidence::remove_image_runtime` is best-effort: it keeps cleaning after a failure and returns the first error. Every per-image cache in `AppState` (preview sessions, `flat_walk_cache`, media temp, session snapshots, plugin registries, Dokan mounts) must be purged there. Add new per-image state to that function in the same change.
-- **Ranged file reads.** `fs_dispatch::Volume::read_range` is the seekable read path. NTFS and ext4 implement it (ext4 maps the range through the same extent piece plan as its stream, so both paths return identical bytes), and `FsSession::read_range_direct` also serves contiguous image spans (`unalloc:` / `diskgap:` / `sysfile:` / `deleted:run:`). Other filesystems return `Ok(None)` and `FsSession::read_file_range` / `FsSession::stream_file_range` fall back to streaming, which costs O(offset). Implement `read_range` when adding or touching a filesystem whose extent / run / cluster map allows seeking.
+- **Ranged file reads.** `fs_dispatch::Volume::read_range` is the seekable read path. NTFS, ext2/3/4, FAT/exFAT and ReFS implement it; full, streamed and ranged reads must return identical logical bytes. `FsSession::read_range_direct` also serves contiguous image spans (`unalloc:` / `diskgap:` / `sysfile:` / `deleted:run:`) and AD1 block ranges. Adapters without seeking return `Ok(None)` and fall back to streaming, which costs O(offset). Implement `read_range` when the extent/run/cluster map allows seeking; FAT range reads still traverse cluster metadata and are not O(1).
+- **Partition provenance.** Preserve MBR/EBR raw slots, type bytes, boot flags, CHS and record offsets separately from the refined filesystem kind. Validate complete data/link ranges, bound traversal, and report cycles, malformed records and limits; never wrap partition IDs. See `docs/MBR.md`.
+- **Filesystem metadata.** Preserve timestamp role, precision and timezone evidence; unknown FAT/exFAT local time must not be labelled UTC. Keep same-name deleted records distinct and validate recoverable content separately from directory identity. ext inline data/EA-inode and indirect/extent maps must obey their format boundaries. See `docs/FILESYSTEM_NOTES.md`, `docs/EXT.md` and `docs/FAT.md`.
+- **Encrypted containers.** Verify recovered LUKS master keys against the header digest; LUKS2 keyslot-area and volume-key sizes are independent. Unsupported segments, integrity or reencryption layouts must fail explicitly. Random and sequential decryption must agree, regardless of cache or call order. See `docs/LUKS.md`.
 - **Host file names.** Names from evidence written to the host go through `fs_tree_export::sanitize_export_component` (illegal characters, trailing dots / spaces, Win32 device names such as `aux.c` / `CON`). Create export files with `create_new`, never truncate an existing host file.
 - **Partial outputs.** Snapshot builders declare `volume_snapshot::PartialOutput` before creating the output file and call `keep()` only after the encoder finishes, so errors and cancellation never leave a truncated `.dirz`.
 - **Large reads bypass the block cache.** `DiskImage::read_into` requests of at least 1 MiB skip the 64 KiB located cache for FFI-backed images, so bulk scans do not evict hot metadata blocks. Keep small, random metadata reads below that size.
 - **Plugins.** Every discovered plugin is trusted and dispatchable; there is no approval or trust store. The directory fingerprint is display-only and computed lazily (`PluginDefinition::fingerprint`, blocking). Never hash plugin directories during startup. Plugins are libraries behind the C ABI in `plugins/sdk/src/abi.rs`; both isolation modes (`lc-plugin-host` over LPP frames, or in-process) go through `PluginConnection` and must carry the same methods and limits. A loaded library is never unloaded, and an in-process instance is destroyed only after its last call returns.
+- **CSV exports.** Use `commands::quote_csv_field` in Rust or the shared frontend CSV export helpers in `src/utils/exportFormat.ts`; both neutralize formula prefixes while preserving plain negative numbers. Do not add a separate quoting implementation.
 
 ## IPC Contract
 
@@ -177,10 +214,14 @@ The frontend uses Vitest with colocated `*.test.ts` files (e.g. `src/composables
 Use this minimum local verification matrix:
 
 - Frontend-only changes: `just typecheck`, `just test-fe`, and `just build-fe`; structural changes also need `just frontend-structure-check` and `just ipc-check`.
-- Rust-only changes: `just fmt`, `just check`, `just clippy`, and `just test`.
+- Rust-only changes: `just fmt`, `just check`, `just clippy`, and `just test`; module moves or public reader-interface changes also need `just check-examples`.
 - IPC changes: all relevant frontend and Rust checks above, plus `just ipc-check`.
 - Plugin workspace changes (`plugins/`): `just fmt`, `just clippy-plugins`, `just test-plugins`; SDK changes also need the Rust checks above, since the host depends on the SDK.
-- Vendored QCOW2/VDI changes: `just fmt` plus `just test-qcow2` and/or `just test-vdi`.
+- Vendored reader changes: `just fmt` plus the corresponding `just test-*` recipe, or `just test-vendor <directory>` when none exists; host integration changes also need Rust checks. Use reader lint recipes where available.
+- CLI command/workflow changes: relevant Rust checks plus `just test-cli`, or `just smoke-cli <executable>` when verifying an already-built binary.
+- Documentation-only changes: check relative links, referenced paths, recipe names and descriptions against the current implementation; application builds are not required.
+
+The `verify-fe`, `verify-rust` and `verify-plugins` recipes collect the corresponding checks; they do not replace reader, example or CLI checks required by the changed scope. Use minimal synthetic fixtures and independent known outputs for parser, addressing and corruption regressions. Keep public fixture provenance, licenses and hashes; never commit real evidence, credentials, local case/cache/export directories or machine-specific paths. Distinguish source/API comparisons from actually executed oracle tests, and report any skipped or unavailable verification accurately.
 
 ## Logging and Output
 

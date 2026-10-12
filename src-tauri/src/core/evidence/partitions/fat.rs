@@ -347,7 +347,7 @@ fn looks_like_fat_root_dir_sector(bytes: &[u8]) -> bool {
 
     let mut valid_entries = 0usize;
     let mut has_volume_or_directory = false;
-    for entry in bytes.chunks_exact(32) {
+    for entry in bytes.as_chunks::<32>().0 {
         match entry[0] {
             0x00 => break,
             0xE5 => continue,
