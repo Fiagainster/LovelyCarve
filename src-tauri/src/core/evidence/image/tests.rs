@@ -6,6 +6,35 @@ use std::sync::Barrier;
 use std::time::Duration;
 
 #[test]
+fn opens_raw_gpt_with_crc_validated_geometry_and_backup_recovery() {
+    for sector_size in [512, 1024, 2048, 4096] {
+        for populated in [0, 1] {
+            for wipe_primary in [false, true] {
+                let mut bytes = partitions::gpt::fixture(sector_size, 4, 128, populated);
+                if wipe_primary {
+                    bytes[sector_size..2 * sector_size].fill(0);
+                }
+                let mut file = NamedTempFile::new().expect("GPT fixture");
+                file.write_all(&bytes).expect("write fixture");
+                file.flush().expect("flush fixture");
+                let image = DiskImage::open(file.path()).expect("open GPT image");
+                assert_eq!(image.sector_size, sector_size);
+                assert_eq!(image.table_scheme, Some(TableScheme::Gpt));
+                assert_eq!(
+                    image.disk_id.as_deref(),
+                    Some("12345678-1122-3344-5566-778899AABBCC")
+                );
+                assert_eq!(image.partitions.len(), populated);
+                if populated != 0 {
+                    assert_eq!(image.partitions[0].start_lba, 200);
+                    assert_eq!(image.partitions[0].length_lba, 1);
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn mbr_geometry_inference_does_not_override_a_detected_gpt() {
     let mut bytes = vec![0; 200 * 512];
     bytes[510..512].copy_from_slice(&[0x55, 0xaa]);

@@ -9,6 +9,8 @@
 
 ### Added
 
+- 补齐 GPT 原始槽位、类型/唯一 GUID、属性、UTF-16 名称、主备头校验与有界 seek/read，增加分区探针 `--gpt` 及 libvsgpt 全部 42 个公开 API 对照。
+
 - 补齐 MBR/EBR 原始类型、启动标志、CHS、槽位来源和有边界限制的 seek/read 接口，提供分区探针 `--mbr` 及 libvsmbr 全部 38 个公开 API 的能力对照。
 
 - 补齐 LUKS 的 AES-CBC/ECB、Blowfish、Serpent、ARC4、更多 IV 和 SHA-224/384，提供 LUKS1/2 主密钥解锁入口及 libluksde 全部 36 个公开 API 的能力对照。
@@ -22,6 +24,8 @@
 - 插件 SDK、隔离宿主与 `linuxinfo` 改由独立的 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 子模块维护；源码构建需递归克隆或运行 `just bootstrap` 初始化子模块。
 
 ### Fixed
+
+- GPT 优先采用头与数组 CRC 完整的副本，磁盘 GUID 与分区保持同一来源；修复 1024/2048/4096 字节几何、单扇区分区和完整范围校验，超过 256 个可浏览分区明确报错，避免 ID 回绕。
 
 - 修复 Vite 8 干净安装后前端构建因缺少 esbuild 失败，改用内置 Oxc 压缩器。
 - Windows 默认构建恢复 MSVC 链接器，移除对额外 LLVM 链接器的强制要求；完整 QR/OCR 构建仍需 libclang。

@@ -1,17 +1,19 @@
-//! Partition-detection probe. Usage: just run-example probe_partitions <image> [--mbr]
+//! Partition-detection probe. Usage: just run-example probe_partitions <image> [--mbr|--gpt]
 use std::env;
 
 use lovelycarve_lib::core::evidence::image::DiskImage;
+use lovelycarve_lib::core::evidence::partitions::gpt::GptTable;
 use lovelycarve_lib::core::evidence::partitions::mbr::MbrTable;
 
 fn main() -> anyhow::Result<()> {
     let mut arguments = env::args().skip(1);
     let path = arguments
         .next()
-        .ok_or_else(|| anyhow::anyhow!("usage: probe_partitions <image> [--mbr]"))?;
-    let show_mbr = match arguments.next().as_deref() {
-        None => false,
-        Some("--mbr") => true,
+        .ok_or_else(|| anyhow::anyhow!("usage: probe_partitions <image> [--mbr|--gpt]"))?;
+    let mode = match arguments.next().as_deref() {
+        None => None,
+        Some("--mbr") => Some("mbr"),
+        Some("--gpt") => Some("gpt"),
         Some(argument) => anyhow::bail!("unknown argument: {argument}"),
     };
     anyhow::ensure!(arguments.next().is_none(), "too many arguments");
@@ -40,7 +42,7 @@ fn main() -> anyhow::Result<()> {
             label = p.label
         );
     }
-    if show_mbr {
+    if mode == Some("mbr") {
         if let Some(table) = MbrTable::read(&image, info.sector_size)? {
             for record in &table.records {
                 println!(
@@ -56,6 +58,31 @@ fn main() -> anyhow::Result<()> {
             }
         } else {
             println!("no MBR table");
+        }
+    }
+    if mode == Some("gpt") {
+        if let Some(table) = GptTable::read(&image, info.sector_size)? {
+            println!(
+                "GPT selected_lba={} disk_guid={}",
+                table.header().read_lba,
+                table.header().disk_guid
+            );
+            for header in &table.headers {
+                println!("  header_lba={} current_lba={} backup_lba={} usable={}..={} entries_lba={} entry_count={} entry_size={} header_crc_valid={} entries_crc_valid={} verified={}",
+                    header.read_lba, header.current_lba, header.backup_lba, header.first_usable_lba,
+                    header.last_usable_lba, header.entries_lba, header.entry_count, header.entry_size,
+                    header.header_crc_valid, header.entries_crc_valid, header.verified);
+            }
+            for entry in &table.entries {
+                println!("  slot={} entry_offset={} type_guid={} unique_guid={} attributes=0x{:016X} range={}..={} valid={} name={:?}",
+                    entry.entry_index, entry.entry_offset, entry.type_guid, entry.unique_guid,
+                    entry.attributes, entry.first_lba, entry.last_lba, entry.valid, entry.name());
+            }
+            for warning in &table.warnings {
+                println!("warning: {warning}");
+            }
+        } else {
+            println!("no recoverable GPT table");
         }
     }
     Ok(())

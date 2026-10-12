@@ -159,6 +159,21 @@ pub trait PartParser: Sync {
         TableScheme::Volume
     }
     fn try_parse(&self, ctx: &DetectCtx<'_>) -> anyhow::Result<Option<Vec<Partition>>>;
+
+    /// Return table identity from the same parse as the partitions. Parsers
+    /// with multiple recoverable copies must override this so metadata cannot
+    /// come from a different copy. Ordinary probes need no disk identifier.
+    fn try_parse_with_meta(&self, ctx: &DetectCtx<'_>) -> anyhow::Result<Option<DetectedTable>> {
+        Ok(self.try_parse(ctx)?.map(|partitions| DetectedTable {
+            partitions,
+            scheme: Some(self.scheme()),
+            disk_id: if self.scheme() == TableScheme::Mbr {
+                mbr::read_disk_signature(ctx.head)
+            } else {
+                None
+            },
+        }))
+    }
 }
 
 /// Priority-ordered parser table. Containers and modern partition layouts
@@ -231,29 +246,13 @@ pub fn detect_partitions_with_meta(
         .context("reading partition header probe")?;
     let ctx = DetectCtx::for_source(source, &head, sector_size);
     for parser in PARSERS {
-        if let Some(partitions) = parser.try_parse(&ctx)? {
+        if let Some(table) = parser.try_parse_with_meta(&ctx)? {
             tracing::debug!(
                 parser = parser.name(),
-                count = partitions.len(),
+                count = table.partitions.len(),
                 "partition parser matched"
             );
-            let scheme = parser.scheme();
-            let disk_id = match scheme {
-                TableScheme::Gpt => gpt::read_disk_guid(&ctx),
-                TableScheme::Mbr => mbr::read_disk_signature(&head),
-                TableScheme::Firmware
-                | TableScheme::Apm
-                | TableScheme::Bsd
-                | TableScheme::Luks
-                | TableScheme::Mdadm
-                | TableScheme::Lvm2
-                | TableScheme::Volume => None,
-            };
-            return Ok(DetectedTable {
-                partitions,
-                scheme: Some(scheme),
-                disk_id,
-            });
+            return Ok(table);
         }
     }
     Ok(DetectedTable {

@@ -165,19 +165,30 @@ impl DiskImage {
                     bad_regions: &bad_regions,
                 };
                 progress(OpenProgress::DetectingPartitions);
+                let can_infer_geometry = matches!(
+                    &source,
+                    ImageSource::Raw { .. }
+                        | ImageSource::Dmg { .. }
+                        | ImageSource::Vmdk { .. }
+                        | ImageSource::Qcow2 { .. }
+                        | ImageSource::Assembled { .. }
+                        | ImageSource::Ldplayer { .. }
+                );
+                if sector_size == 512 && can_infer_geometry {
+                    let inferred = partitions::gpt::infer_sector_size(&probe_source, sector_size)?;
+                    if inferred != sector_size {
+                        tracing::info!(
+                            sector_size = inferred,
+                            "adopting CRC-validated GPT geometry"
+                        );
+                        sector_size = inferred;
+                    }
+                }
                 let mut detected =
                     partitions::detect_partitions_with_meta(&probe_source, sector_size)?;
                 if sector_size == 512
                     && matches!(detected.scheme, Some(TableScheme::Mbr) | None)
-                    && matches!(
-                        &source,
-                        ImageSource::Raw { .. }
-                            | ImageSource::Dmg { .. }
-                            | ImageSource::Vmdk { .. }
-                            | ImageSource::Qcow2 { .. }
-                            | ImageSource::Assembled { .. }
-                            | ImageSource::Ldplayer { .. }
-                    )
+                    && can_infer_geometry
                 {
                     let inferred = partitions::mbr::infer_sector_size(&probe_source, sector_size)?;
                     if inferred != sector_size {
@@ -195,7 +206,11 @@ impl DiskImage {
                 // finds nothing but the image is actually 4Kn, the GPT/MBR/BSD
                 // tables sit at 4096-relative LBAs and were missed — retry at
                 // 4096 and adopt it only when that genuinely yields a table.
-                if detected.partitions.is_empty() && sector_size == 512 {
+                if detected.partitions.is_empty()
+                    && sector_size == 512
+                    && can_infer_geometry
+                    && detected.scheme != Some(TableScheme::Gpt)
+                {
                     if let Ok(retry) = partitions::detect_partitions_with_meta(&probe_source, 4096)
                     {
                         if !retry.partitions.is_empty() {

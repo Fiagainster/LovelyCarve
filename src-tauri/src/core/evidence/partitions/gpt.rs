@@ -1,38 +1,26 @@
-//! GPT detection.
-//!
-//! The standard layout (header at LBA 1) is delegated to the vendored `gpt`
-//! crate (`vendor/gpt`): it reads the primary header, validates header CRC32
-//! and partition-table CRC32, parses every entry's type GUID + UTF-16 name,
-//! and exposes the canonical `partition_types::*` registry. We only translate
-//! its `Partition` records into our `Partition`/`PartitionKind` enum.
-//!
-//! When the library refuses an image — bad CRC, unusual entry size, or no
-//! header at LBA 1 — we fall back to a permissive manual scan using
-//! a multi-LBA candidate list (`1, 0, 7, 8`) and the strict
-//! 128-byte entry size check. Forensic images frequently have the GPT
-//! signature without consistent CRCs. GPT is checked before MBR so these
-//! images are not misread as ordinary DOS partition tables.
+//! Read-only GPT analysis and detection. See `docs/GPT.md` for recovery policy.
 
-use std::io::{self, Read, Seek, SeekFrom};
+mod metadata;
+mod reader;
+mod table;
 
-use anyhow::Result;
-use binrw::BinRead;
-use uuid::Uuid;
+pub use metadata::{has_gpt_signature, GptEntry, GptHeader};
+pub use reader::GptPartitionReader;
+#[cfg(test)]
+pub(crate) use table::tests::fixture;
+pub use table::{infer_sector_size, GptTable};
 
 use crate::core::evidence::partitions::{
-    DetectCtx, PartParser, Partition, PartitionKind, SectorSource, TableScheme,
+    DetectCtx, DetectedTable, PartParser, Partition, PartitionKind, TableScheme,
 };
+use anyhow::Result;
+use uuid::Uuid;
 
 const GPT_SIGNATURE: &[u8; 8] = b"EFI PART";
+#[cfg(test)]
 const GPT_ENTRY_SIZE: u32 = 128;
 const GPT_HEADER_BYTES: usize = 92;
-/// Forensic candidate LBAs to probe when the library rejects LBA 1.
 const GPT_FALLBACK_LBAS: [u64; 4] = [1, 0, 7, 8];
-/// Upper bound on the bytes read for the partition-entry array (P1-10). A
-/// standard table is 128 × 128 = 16 KiB; the 1 MiB cap (8192 entries) keeps a
-/// corrupt `num_parts` from triggering a multi-GiB allocation while still
-/// reading the entire array straight from the source rather than the 16-sector
-/// head probe — which only covers ~56 of the 128 entries.
 const GPT_ENTRY_ARRAY_CAP: usize = 1024 * 1024;
 
 /// BitLocker partition GUID (`AEAFCA3B-61C1-40E0-87A3-47D1AF93A9FC`). Not
@@ -87,269 +75,28 @@ impl PartParser for GptParser {
     fn name(&self) -> &'static str {
         "gpt"
     }
-
     fn scheme(&self) -> TableScheme {
         TableScheme::Gpt
     }
-
     fn try_parse(&self, ctx: &DetectCtx<'_>) -> Result<Option<Vec<Partition>>> {
-        if has_gpt_signature_at(ctx, 1) {
-            if let Some(out) = parse_with_gpt_crate(ctx) {
-                return Ok(Some(out));
-            }
-        }
-        for &lba in &GPT_FALLBACK_LBAS {
-            if has_gpt_signature_at(ctx, lba) {
-                if let Some(out) = parse_manual(ctx, lba) {
-                    return Ok(Some(out));
-                }
-            }
-        }
-        // Primary header (and the forensic leading-LBA candidates) failed or
-        // produced an out-of-bounds table. Fall back to the backup GPT header
-        // mirrored at the last LBA of the disk — `gpt.c` does the same after
-        // exhausting the primary table and alternate sector sizes (P1-9).
-        if let Some(out) = parse_backup(ctx) {
-            return Ok(Some(out));
-        }
-        Ok(None)
+        Ok(self.try_parse_with_meta(ctx)?.map(|table| table.partitions))
     }
-}
 
-/// Read the disk GUID (header offset 56) from whichever GPT header location
-/// holds a valid signature, probing the same candidates as `try_parse`: the
-/// forensic leading LBAs first, then the backup header at the last LBA. The
-/// entry-locator fields are validated via `parse_header_fields` so a stray
-/// `EFI PART` signature with garbage at offset 56 cannot mint a bogus GUID.
-/// Best effort — `None` when no plausible header is readable or the GUID is
-/// all-zero.
-pub(crate) fn read_disk_guid(ctx: &DetectCtx<'_>) -> Option<String> {
-    let mut candidates: Vec<u64> = GPT_FALLBACK_LBAS.to_vec();
-    if let Some(max_sector) = max_sector(ctx) {
-        if max_sector >= 3 {
-            candidates.push(max_sector - 1);
+    fn try_parse_with_meta(&self, ctx: &DetectCtx<'_>) -> Result<Option<DetectedTable>> {
+        if !matches!(ctx.sector_size, 512 | 1024 | 2048 | 4096) {
+            return Ok(None);
         }
-    }
-    for lba in candidates {
-        let offset = lba.checked_mul(ctx.sector_size as u64)?;
-        let Ok(header) = ctx.source.read(offset, GPT_HEADER_BYTES) else {
-            continue;
+        let Some(table) = GptTable::read(ctx.source, ctx.sector_size)? else {
+            return Ok(None);
         };
-        let Some(fields) = parse_header_fields(&header) else {
-            continue;
-        };
-        let Some(guid) = uuid_from_disk_bytes(&fields.disk_guid) else {
-            continue;
-        };
-        if !guid.is_nil() {
-            return Some(guid.to_string().to_uppercase());
+        for warning in &table.warnings {
+            tracing::warn!("{warning}");
         }
-    }
-    None
-}
-
-fn has_gpt_signature_at(ctx: &DetectCtx<'_>, lba: u64) -> bool {
-    let Some(start) = (lba as usize).checked_mul(ctx.sector_size) else {
-        return false;
-    };
-    let end = start.saturating_add(GPT_SIGNATURE.len());
-    if let Some(slice) = ctx.head.get(start..end) {
-        return slice == GPT_SIGNATURE;
-    }
-    // The candidate LBA falls past the 16-sector head probe — true for 4Kn
-    // LBA 7/8 (bytes 28672/32768 > 0x2000). Read the signature straight from
-    // the source so the forensic leading-LBA recovery is not silently dead on
-    // 4Kn images.
-    match ctx.source.read(start as u64, GPT_SIGNATURE.len()) {
-        Ok(bytes) => bytes == GPT_SIGNATURE,
-        Err(_) => false,
-    }
-}
-
-/// Drive the vendored `gpt` crate against the standard LBA-1 layout. Returns
-/// `None` when the library can't make sense of the disk (unsupported sector
-/// size, header CRC mismatch, partition CRC mismatch, non-128-byte entries) so
-/// the caller can fall through to the permissive manual scanner.
-fn parse_with_gpt_crate(ctx: &DetectCtx<'_>) -> Option<Vec<Partition>> {
-    let lb_size = sector_size_to_lb(ctx.sector_size)?;
-    let mut device = SectorCursor::new(ctx.source);
-    let header = gpt::header::read_header_from_arbitrary_device(&mut device, lb_size).ok()?;
-    if header.part_size != GPT_ENTRY_SIZE {
-        return None;
-    }
-    let parts = gpt::partition::file_read_partitions(&mut device, &header, lb_size).ok()?;
-    let mut out = Vec::with_capacity(parts.len());
-    for (_id, p) in parts.into_iter() {
-        if p.last_lba <= p.first_lba {
-            continue;
-        }
-        let Some(length_lba) = p
-            .last_lba
-            .checked_sub(p.first_lba)
-            .and_then(|span| span.checked_add(1))
-        else {
-            continue;
-        };
-        out.push(Partition {
-            // Sequential over emitted partitions — see `parse_entries`.
-            id: out.len() as u8,
-            kind: guid_to_kind(p.part_type_guid.guid),
-            start_lba: p.first_lba,
-            length_lba,
-            label: if p.name.is_empty() {
-                None
-            } else {
-                Some(p.name)
-            },
-            unique_guid: (!p.part_guid.is_nil()).then(|| *p.part_guid.as_bytes()),
-        });
-    }
-    // The crate already validated both CRCs, so the table is genuine: clamp
-    // any entry past the image end (e.g. a 4Kn image opened at 512) rather
-    // than rejecting the whole — and a recognised-but-empty table is still a
-    // GPT match, so always return `Some`.
-    Some(clamp_to_image(out, max_sector(ctx)))
-}
-
-/// Permissive manual entry walker: read partition_entry_lba / num_entries / entry_size from the
-/// 92-byte header at the candidate LBA, then read and iterate the entry array
-/// directly from the source (P1-10) — the 16-sector head probe only covers
-/// ~56 of a standard 128-entry table, so entries 57..128 were silently lost.
-/// No CRC validation — forensic images frequently disagree with their own
-/// checksums — but out-of-bounds tables are rejected so a stray `EFI PART`
-/// in a random sector does not yield garbage partitions (P1-11).
-fn parse_manual(ctx: &DetectCtx<'_>, header_lba: u64) -> Option<Vec<Partition>> {
-    let header_off = header_lba.checked_mul(ctx.sector_size as u64)?;
-    let header = ctx.source.read(header_off, GPT_HEADER_BYTES).ok()?;
-    let fields = parse_header_fields(&header)?;
-    let entries = read_entry_array(ctx, &fields)?;
-    let parts = parse_entries(&entries, fields.num_parts, fields.entry_size);
-    enforce_image_bounds(parts, max_sector(ctx))
-}
-
-/// Backup-header fallback (P1-9). The backup GPT header is mirrored at the last
-/// LBA of the disk and points at its own entry-array copy near the disk tail.
-/// When the primary header (and the forensic leading-LBA candidates) are
-/// unreadable or out of bounds, recover the table from the backup the way
-/// `gpt.c` reads `(size/bs) - 1` after exhausting the primary.
-fn parse_backup(ctx: &DetectCtx<'_>) -> Option<Vec<Partition>> {
-    let max_sector = max_sector(ctx)?;
-    // lba0: protective MBR, lba1: primary header, .., last lba: backup header.
-    if max_sector < 3 {
-        return None;
-    }
-    let backup_lba = max_sector - 1;
-    let header_off = backup_lba.checked_mul(ctx.sector_size as u64)?;
-    let header = ctx.source.read(header_off, GPT_HEADER_BYTES).ok()?;
-    let fields = parse_header_fields(&header)?;
-    let entries = read_entry_array(ctx, &fields)?;
-    let parts = parse_entries(&entries, fields.num_parts, fields.entry_size);
-    enforce_image_bounds(parts, Some(max_sector))
-}
-
-struct GptHeaderFields {
-    disk_guid: [u8; 16],
-    part_start_lba: u64,
-    num_parts: u32,
-    entry_size: u32,
-}
-
-#[derive(Debug, BinRead)]
-#[br(little, magic = b"EFI PART")]
-struct RawGptHeaderFields {
-    #[br(seek_before = SeekFrom::Start(56))]
-    disk_guid: [u8; 16],
-    part_start_lba: u64,
-    num_parts: u32,
-    entry_size: u32,
-}
-
-#[derive(Debug, BinRead)]
-#[br(little)]
-struct RawGptEntry {
-    type_guid: [u8; 16],
-    unique_guid: [u8; 16],
-    first_lba: u64,
-    last_lba: u64,
-    _attributes: u64,
-    name: [u8; 72],
-}
-
-/// Validate the `EFI PART` signature and pull the entry-array locator fields
-/// out of a 92-byte GPT header. Returns `None` for a missing signature, a
-/// non-128-byte entry size, or a zero entry count.
-fn parse_header_fields(header: &[u8]) -> Option<GptHeaderFields> {
-    if header.len() < GPT_HEADER_BYTES {
-        return None;
-    }
-    let raw = RawGptHeaderFields::read(&mut io::Cursor::new(header)).ok()?;
-    if raw.entry_size != GPT_ENTRY_SIZE || raw.num_parts == 0 {
-        return None;
-    }
-    Some(GptHeaderFields {
-        disk_guid: raw.disk_guid,
-        part_start_lba: raw.part_start_lba,
-        num_parts: raw.num_parts,
-        entry_size: raw.entry_size,
-    })
-}
-
-/// Read the partition-entry array straight from the source at the LBA the
-/// header points to, capped at [`GPT_ENTRY_ARRAY_CAP`] so a corrupt
-/// `num_parts` cannot trigger a huge allocation.
-fn read_entry_array(ctx: &DetectCtx<'_>, fields: &GptHeaderFields) -> Option<Vec<u8>> {
-    let entries_start = fields.part_start_lba.checked_mul(ctx.sector_size as u64)?;
-    if entries_start >= ctx.size {
-        return None;
-    }
-    let want = (fields.num_parts as u64)
-        .checked_mul(fields.entry_size as u64)?
-        .min(GPT_ENTRY_ARRAY_CAP as u64) as usize;
-    let bytes = ctx.source.read(entries_start, want).ok()?;
-    (!bytes.is_empty()).then_some(bytes)
-}
-
-/// Maximum addressable sector of the image (`size / sector_size`), used as the
-/// out-of-bounds threshold for partition starts. `None` for a zero sector size.
-fn max_sector(ctx: &DetectCtx<'_>) -> Option<u64> {
-    (ctx.sector_size != 0).then(|| ctx.size / ctx.sector_size as u64)
-}
-
-/// Filter out-of-image entries from a CRC-validated table. The `gpt` crate has
-/// already proven the table genuine, so a stray entry past the image end (e.g.
-/// a 4Kn image opened with a 512-byte sector assumption) is dropped rather than
-/// rejecting the whole table.
-fn clamp_to_image(parts: Vec<Partition>, max_sector: Option<u64>) -> Vec<Partition> {
-    match max_sector {
-        Some(max_sector) => parts
-            .into_iter()
-            .filter(|p| p.start_lba < max_sector)
-            .collect(),
-        None => parts,
-    }
-}
-
-/// Bounds gate for the permissive (no-CRC) manual / backup paths (P1-11). Drops
-/// entries past the image end and rejects the whole table when either of its
-/// first two non-empty entries is out of bounds — `gpt.c`/`dos.c` apply the
-/// same `i < 2` leading-entry sanity check so a random sector that merely
-/// contains `EFI PART` cannot mint garbage partitions. Returns `None` (try the
-/// next candidate / parser) when the table is rejected or empty.
-fn enforce_image_bounds(parts: Vec<Partition>, max_sector: Option<u64>) -> Option<Vec<Partition>> {
-    if let Some(max_sector) = max_sector {
-        if parts.iter().take(2).any(|p| p.start_lba >= max_sector) {
-            return None;
-        }
-    }
-    let kept = clamp_to_image(parts, max_sector);
-    (!kept.is_empty()).then_some(kept)
-}
-
-fn sector_size_to_lb(sector_size: usize) -> Option<gpt::disk::LogicalBlockSize> {
-    match sector_size {
-        512 => Some(gpt::disk::LogicalBlockSize::Lb512),
-        4096 => Some(gpt::disk::LogicalBlockSize::Lb4096),
-        _ => None,
+        Ok(Some(DetectedTable {
+            partitions: table.project()?,
+            scheme: Some(TableScheme::Gpt),
+            disk_id: table.disk_id(),
+        }))
     }
 }
 
@@ -357,6 +104,10 @@ fn guid_to_kind(guid: Uuid) -> PartitionKind {
     use gpt::partition_types as t;
     if guid == t::LINUX_LVM.guid {
         PartitionKind::Lvm
+    } else if guid == t::LINUX_RAID.guid {
+        PartitionKind::Mdadm
+    } else if guid == t::LINUX_LUKS.guid {
+        PartitionKind::Luks
     } else if guid == t::LINUX_SWAP.guid {
         PartitionKind::Swap
     } else if guid == t::BIOS.guid {
@@ -381,62 +132,6 @@ fn guid_to_kind(guid: Uuid) -> PartitionKind {
     }
 }
 
-fn parse_entries(entries: &[u8], num_parts: u32, entry_size: u32) -> Vec<Partition> {
-    let mut out = Vec::with_capacity((num_parts as usize).min(128));
-    for index in 0..num_parts as usize {
-        let Some(base) = index.checked_mul(entry_size as usize) else {
-            break;
-        };
-        let end = base.saturating_add(entry_size as usize);
-        if end > entries.len() {
-            break;
-        }
-        let entry = &entries[base..end];
-        let Some(raw) = RawGptEntry::read(&mut io::Cursor::new(entry)).ok() else {
-            continue;
-        };
-        if raw.type_guid.iter().all(|&b| b == 0) {
-            continue;
-        }
-        let Some(type_guid) = uuid_from_disk_bytes(&raw.type_guid) else {
-            continue;
-        };
-        let first_lba = raw.first_lba;
-        let last_lba = raw.last_lba;
-        if last_lba <= first_lba {
-            continue;
-        }
-        // Checked arithmetic: a corrupt / planted EndingLBA near u64::MAX
-        // passes the `last_lba > first_lba` guard but would overflow
-        // `last_lba - first_lba + 1` (debug panic, release wrap-to-0). Skip
-        // such entries rather than minting a bogus zero-length partition —
-        // this runs before `enforce_image_bounds`, so the bounds gate cannot
-        // catch it.
-        let Some(length_lba) = last_lba
-            .checked_sub(first_lba)
-            .and_then(|span| span.checked_add(1))
-        else {
-            continue;
-        };
-        out.push(Partition {
-            // Sequential over emitted partitions, not the raw slot index — a
-            // populated entry at slot ≥256 (the 1 MiB array cap allows up to
-            // 8192 slots) would wrap `index as u8` and collide.
-            id: out.len() as u8,
-            kind: guid_to_kind(type_guid),
-            start_lba: first_lba,
-            length_lba,
-            label: parse_utf16_name(&raw.name),
-            // 唯一分区 GUID 在条目偏移 16（与类型 GUID 同样的磁盘混合端序），
-            // 解码成 canonical 字节，便于与 MountedDevices 的 DMIO 项比对。
-            unique_guid: uuid_from_disk_bytes(&raw.unique_guid)
-                .filter(|u| !u.is_nil())
-                .map(|u| *u.as_bytes()),
-        });
-    }
-    out
-}
-
 /// Decode the on-disk GPT type-GUID byte order (3 little-endian fields + an
 /// 8-byte big-endian tail) into a canonical [`Uuid`]. `pub(crate)` so the
 /// drive-letter recovery (`core::analysis::identify::win_drive_letters`) can decode the GUID that
@@ -451,78 +146,6 @@ pub(crate) fn uuid_from_disk_bytes(bytes: &[u8]) -> Option<Uuid> {
         arr[8], arr[9], arr[10], arr[11], arr[12], arr[13], arr[14], arr[15],
     ];
     Some(Uuid::from_fields(d1, d2, d3, &d4))
-}
-
-fn parse_utf16_name(bytes: &[u8]) -> Option<String> {
-    let chunks = bytes
-        .as_chunks::<2>()
-        .0
-        .iter()
-        .copied()
-        .map(u16::from_le_bytes)
-        .take_while(|&u| u != 0)
-        .collect::<Vec<_>>();
-    if chunks.is_empty() {
-        None
-    } else {
-        String::from_utf16(&chunks).ok()
-    }
-}
-
-/// `Read + Seek` adapter around a `SectorSource`. The vendored `gpt` crate
-/// only ever reads the primary GPT header (LBA 1) and the partition-entry
-/// table starting at `header.part_start`, so the adapter pulls bytes through
-/// the underlying source on demand instead of materialising the whole disk
-/// into memory.
-struct SectorCursor<'a> {
-    source: &'a dyn SectorSource,
-    pos: u64,
-    size: u64,
-}
-
-impl<'a> SectorCursor<'a> {
-    fn new(source: &'a dyn SectorSource) -> Self {
-        Self {
-            size: source.size(),
-            source,
-            pos: 0,
-        }
-    }
-}
-
-impl Read for SectorCursor<'_> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.pos >= self.size || buf.is_empty() {
-            return Ok(0);
-        }
-        let want = (buf.len() as u64).min(self.size - self.pos) as usize;
-        let bytes = self
-            .source
-            .read(self.pos, want)
-            .map_err(|err| io::Error::other(err.to_string()))?;
-        let copied = bytes.len();
-        buf[..copied].copy_from_slice(&bytes);
-        self.pos += copied as u64;
-        Ok(copied)
-    }
-}
-
-impl Seek for SectorCursor<'_> {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let target = match pos {
-            SeekFrom::Start(off) => off as i128,
-            SeekFrom::Current(delta) => self.pos as i128 + delta as i128,
-            SeekFrom::End(delta) => self.size as i128 + delta as i128,
-        };
-        if target < 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "GPT cursor seek before start",
-            ));
-        }
-        self.pos = target as u64;
-        Ok(self.pos)
-    }
 }
 
 #[cfg(test)]
@@ -702,6 +325,8 @@ mod tests {
     fn maps_known_type_guids() {
         use gpt::partition_types as t;
         assert_eq!(guid_to_kind(t::LINUX_LVM.guid), PartitionKind::Lvm);
+        assert_eq!(guid_to_kind(t::LINUX_RAID.guid), PartitionKind::Mdadm);
+        assert_eq!(guid_to_kind(t::LINUX_LUKS.guid), PartitionKind::Luks);
         assert_eq!(guid_to_kind(t::LINUX_SWAP.guid), PartitionKind::Swap);
         assert_eq!(guid_to_kind(t::BIOS.guid), PartitionKind::BiosBoot);
         assert_eq!(
@@ -730,10 +355,10 @@ mod tests {
         entry[16..32].copy_from_slice(&on_disk_unique);
         entry[32..40].copy_from_slice(&100u64.to_le_bytes());
         entry[40..48].copy_from_slice(&199u64.to_le_bytes());
-        let parts = parse_entries(&entry, 1, GPT_ENTRY_SIZE);
-        assert_eq!(parts.len(), 1);
+        let raw = GptEntry::decode(&entry, 0, 0).expect("entry");
+        let partition = raw.project(0).expect("partition");
         let expected = uuid_from_disk_bytes(&on_disk_unique).unwrap();
-        assert_eq!(parts[0].unique_guid, Some(*expected.as_bytes()));
+        assert_eq!(partition.unique_guid, Some(*expected.as_bytes()));
     }
 
     #[test]
