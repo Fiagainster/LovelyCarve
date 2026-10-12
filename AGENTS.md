@@ -28,7 +28,7 @@ Core workflow: open or create a case, load evidence, detect partitions, browse f
 - `src-tauri/src/state.rs`: shared application state.
 - `src-tauri/vendor/`: vendored filesystem and parser crates.
 - `src-tauri/examples/`: standalone probes for partition and filesystem work.
-- `plugins/`: separate Cargo workspace for DLL plugins — `sdk` (crate `lovelycarve-plugin`: C ABI, LPP wire types, Rust plugin API; also a host dependency), `host` (`lc-plugin-host`, the process-isolation loader), and the single bundled analyzer (`linuxinfo`), each a `cdylib` next to its `plugin.toml`.
+- `plugins/`: Git submodule pointing to `LovelyTeams/LovelyCarve-Plugins`, with a separate Cargo workspace — `sdk` (crate `lovelycarve-plugin`: C ABI, LPP wire types, Rust plugin API; also a host dependency), `host` (`lc-plugin-host`, the process-isolation loader), and the single bundled analyzer (`linuxinfo`), a `cdylib` next to its `plugin.toml`. Initialize with `just bootstrap`; commit and push plugin changes before updating the main repository's submodule pointer.
 - `docs/`: architecture, development, protocols, and verification guides.
 
 ## Build, Test, and Development Commands

@@ -1,6 +1,6 @@
 # Linux 基本信息插件
 
-`plugins/linuxinfo` 是仓库唯一内置的分析插件。插件 ID 为 `org.lovelycarve.linuxinfo`，检材级 analyzer 为 `linuxbaseinfo`，版本以 `plugin.toml` 为准。`plugins/sdk` 是 C ABI / LPP SDK，`plugins/host` 是进程隔离加载器。
+`plugins/linuxinfo` 是仓库唯一内置的分析插件，当前版本 `1.0.0`。插件 ID 为 `org.lovelycarve.linuxinfo`，检材级 analyzer 为 `linuxbaseinfo`，版本以 `plugin.toml` 为准。`plugins/sdk` 是 C ABI / LPP SDK，`plugins/host` 是进程隔离加载器，随 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 子模块提供。
 
 ## 构建与部署
 

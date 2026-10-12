@@ -17,6 +17,10 @@ import { fileURLToPath } from 'node:url';
 
 const release = process.argv.includes('--release');
 const workspace = fileURLToPath(new URL('../plugins', import.meta.url));
+if (!existsSync(join(workspace, 'Cargo.toml'))) {
+  console.error('[build-plugins] plugin submodule is missing; run just bootstrap or git submodule update --init --recursive');
+  process.exit(1);
+}
 const cargoArgs = ['build', '--locked', '--manifest-path', join(workspace, 'Cargo.toml')];
 const pluginIndex = process.argv.indexOf('--plugin');
 const selected = pluginIndex === -1 ? null : process.argv[pluginIndex + 1];

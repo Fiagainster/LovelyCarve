@@ -14,7 +14,9 @@
 
 ## 本地验证
 
-在干净检出中执行 `bun install --frozen-lockfile`，然后按 [贡献指南](../CONTRIBUTING.md#验证) 完成前端、Rust、IPC 和结构检查。修改插件或读取器时执行其专用配方。涉及 example 的公共接口需要 `just check-examples`。
+在干净的递归克隆中执行 `just bootstrap`，然后按 [贡献指南](../CONTRIBUTING.md#验证) 完成前端、Rust、IPC 和结构检查。修改插件或读取器时执行其专用配方。涉及 example 的公共接口需要 `just check-examples`。
+
+发布前确保 `plugins/` 的固定提交已推送到公开 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins)。GitHub 自动生成的主仓库源码 ZIP / tar.gz 不包含子模块，在发行说明中提供 `git clone --recurse-submodules` 和初始化步骤。
 
 发布完整功能版本还需构建 QR/OCR，并在目标 Windows 环境检查模型加载、CPU 回退、离线文件预览、插件宿主和 DLL 加载。安装包和便携包分别做启动、建案、添加合成证据、浏览、哈希、导出及关闭验证；挂载功能需要 Dokany 驱动和对应的实际挂载测试。macOS / Linux 只有完成该平台验证后才提供相应产物。
 

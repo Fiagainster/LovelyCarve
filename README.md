@@ -31,7 +31,7 @@ LovelyCarve 是基于 Rust、Tauri v2 和 Vue 3 的桌面磁盘取证工具，�
 默认构建关闭二维码识别和 OCR，不需要 OpenCV 或 CUDA。准备 Rust stable（最低 **1.99**）、Bun（版本见 `package.json`）、just、PowerShell 7、Visual Studio C++ x64 工具、Windows SDK、LLVM 工具组件、OpenSSL 开发文件和 WebView2。
 
 ```text
-git clone https://github.com/LovelyTeams/LovelyCarve.git
+git clone --recurse-submodules https://github.com/LovelyTeams/LovelyCarve.git
 cd LovelyCarve
 just bootstrap
 just --list
@@ -70,12 +70,14 @@ src-tauri/src/app/       启停与跨域工作流
 src-tauri/src/commands/  Tauri 命令
 src-tauri/src/core/      取证核心引擎
 src-tauri/vendor/        维护中的解析器、读取器和来源声明
-plugins/                SDK、隔离宿主与 linuxinfo
+plugins/                LovelyCarve-Plugins 子模块：SDK、隔离宿主与 linuxinfo
 scripts/                构建、资源准备与验证脚本
 docs/                   开发、架构、协议和使用说明
 ```
 
 开发前阅读 [架构说明](docs/ARCHITECTURE.md)、[前端规范](docs/FRONTEND.md) 和 [仓库约定](AGENTS.md)。专题入口见 [文档导航](docs/README.md)。
+
+插件由独立仓库 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 维护，当前内置 `linuxinfo 1.0.0`。已有克隆运行 `git submodule update --init --recursive` 或 `just bootstrap` 获取固定版本。GitHub 自动生成的源码压缩包不包含子模块，开发请使用递归克隆。
 
 ## 反馈与许可
 

@@ -1,6 +1,6 @@
 # 开发指南
 
-统一在仓库根目录通过 `just` 执行任务。首次运行 `just bootstrap`（`bun install --frozen-lockfile`），再用 `just --list` 查看当前入口。建议使用 just 1.53 或更新版本。
+统一在仓库根目录通过 `just` 执行任务。首次运行 `just bootstrap`，初始化插件子模块并执行 `bun install --frozen-lockfile`，再用 `just --list` 查看当前入口。建议使用 just 1.53 或更新版本。
 
 ## 环境
 
@@ -79,7 +79,9 @@ just run-example probe_partitions '"D:\Evidence Files\disk.E01"'
 
 ## 插件与资源
 
-插件工作区只包含 `sdk`、`host` 与 `linuxinfo`。`build-plugins` 按提交的锁文件构建宿主和 linuxinfo，把动态库复制到清单旁。`dev` 使用开发插件；`build-release` 与 CLI 打包先构建发布插件。
+`plugins/` 是 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 的 Git 子模块，只包含 `sdk`、`host` 与 `linuxinfo`。主仓库固定插件提交；递归克隆或运行 `just bootstrap` 初始化，已有克隆可运行 `git submodule update --init --recursive`。GitHub 标签源码压缩包不包含子模块，应使用 Git 克隆获取完整开发源码。
+
+`build-plugins` 按提交的锁文件构建宿主和 linuxinfo，把动态库复制到清单旁。`dev` 使用开发插件；`build-release` 与 CLI 打包先构建发布插件。改动插件时先在插件仓库提交、推送，再在主仓库提交子模块引用；不要仅提交主仓库指针而漏推插件提交。
 
 安装包和便携包读取同一份 `src-tauri/tauri.plugins.conf.json`：主程序旁放置 `lc-plugin-host.exe`，插件目录包含 `plugins/linuxinfo/plugin.toml` 和 DLL。插件不嵌入主程序。单独部署使用 `just pack-plugins`，更换文件前退出应用，重启后重新发现。接口与分析来源见 [PLUGIN_PROTOCOL.md](PLUGIN_PROTOCOL.md) 和 [LINUXINFO.md](LINUXINFO.md)。
 

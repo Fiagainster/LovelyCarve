@@ -27,9 +27,10 @@ cli_executable := if os() == "windows" { "src-tauri/target/debug/lovelycarve-cli
 default:
     @just --list --unsorted
 
-# Install the frontend dependencies from the committed lockfile.
+# Initialize the pinned plugin submodule and install frontend dependencies.
 [group("setup")]
 bootstrap:
+    git submodule update --init --recursive
     bun install --frozen-lockfile
 
 # Run the complete frontend checks required for a contribution.
