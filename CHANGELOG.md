@@ -9,6 +9,8 @@
 
 ### Added
 
+- 补齐 MBR/EBR 原始类型、启动标志、CHS、槽位来源和有边界限制的 seek/read 接口，提供分区探针 `--mbr` 及 libvsmbr 全部 38 个公开 API 的能力对照。
+
 - 补齐 LUKS 的 AES-CBC/ECB、Blowfish、Serpent、ARC4、更多 IV 和 SHA-224/384，提供 LUKS1/2 主密钥解锁入口及 libluksde 全部 36 个公开 API 的能力对照。
 
 - 补齐 FAT/exFAT 文件范围读取、原始属性与目录项偏移等后端元数据接口，并记录 libfsfat 全部 53 个公开 API 的能力对照。
@@ -20,6 +22,8 @@
 - 插件 SDK、隔离宿主与 `linuxinfo` 改由独立的 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 子模块维护；源码构建需递归克隆或运行 `just bootstrap` 初始化子模块。
 
 ### Fixed
+
+- 修复含主数据分区的 1024/2048/4096 字节扇区 MBR 几何识别，支持多个扩展入口及分叉 EBR，并校验完整分区/链接范围；循环、损坏和遍历限额提供告警，分区 ID 不再回绕。
 
 - LUKS 密钥材料按扇区补齐，LUKS2 密钥槽支持与卷主密钥不同的长度；解密 seek 溢出、无效 PBKDF2 轮数和不合法的算法组合明确报错。
 

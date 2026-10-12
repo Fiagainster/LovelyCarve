@@ -167,6 +167,29 @@ impl DiskImage {
                 progress(OpenProgress::DetectingPartitions);
                 let mut detected =
                     partitions::detect_partitions_with_meta(&probe_source, sector_size)?;
+                if sector_size == 512
+                    && matches!(detected.scheme, Some(TableScheme::Mbr) | None)
+                    && matches!(
+                        &source,
+                        ImageSource::Raw { .. }
+                            | ImageSource::Dmg { .. }
+                            | ImageSource::Vmdk { .. }
+                            | ImageSource::Qcow2 { .. }
+                            | ImageSource::Assembled { .. }
+                            | ImageSource::Ldplayer { .. }
+                    )
+                {
+                    let inferred = partitions::mbr::infer_sector_size(&probe_source, sector_size)?;
+                    if inferred != sector_size {
+                        tracing::info!(
+                            sector_size = inferred,
+                            "adopting MBR geometry validated by EBR"
+                        );
+                        sector_size = inferred;
+                        detected =
+                            partitions::detect_partitions_with_meta(&probe_source, sector_size)?;
+                    }
+                }
                 // 4Kn fallback (P1-14): mmap-backed Raw/DMG/VMDK report no real
                 // sector size, so they default to 512. If a 512-sector scan
                 // finds nothing but the image is actually 4Kn, the GPT/MBR/BSD

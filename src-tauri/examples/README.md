@@ -9,6 +9,8 @@
 
 `probe_partitions`, `probe_raid`, `probe_raid_nometa`, `probe_physical_disk`, `probe_evidence_names`, `probe_evidence_path`, `probe_lvm_meta`
 
+`just run-example probe_partitions <image> --mbr` 额外输出 MBR/EBR 原始四槽、磁盘签名、启动标志、CHS、记录与槽位偏移，以及受损表恢复告警。格式范围和 libvsmbr 完整对照见 [MBR/EBR](../../docs/MBR.md)。
+
 ## filesystem
 
 `fs_dispatch_smoke`, `probe_access_bitmap`, `probe_apfs`, `probe_btrfs`, `probe_cdfs`, `probe_docker`, `probe_docker_fs`, `probe_exfat`, `probe_ext4`, `probe_fat_deleted`, `probe_hfsplus`, `probe_lvm_active`, `probe_refs`, `probe_squashfs`, `probe_ufs`, `probe_xfs`, `probe_xfs_magic`, `probe_zfs`

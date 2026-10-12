@@ -5,9 +5,15 @@
 //! explicit visited-set guard and a follow
 //! cap so cyclic EBR chains terminate.
 
-use anyhow::Context;
-use binrw::{BinRead, BinReaderExt};
-use std::io::Cursor;
+mod metadata;
+mod reader;
+
+pub use metadata::{has_boot_signature, ChsAddress, MbrBootRecord, MbrEntry};
+pub use reader::MbrPartitionReader;
+
+use anyhow::{ensure, Context};
+use std::collections::HashSet;
+use tokio_util::sync::CancellationToken;
 
 use crate::core::evidence::partitions::{
     volume_probe::probe_volume, DetectCtx, PartParser, Partition, PartitionKind, PartitionSlice,
@@ -18,41 +24,127 @@ const MBR_MAGIC: [u8; 2] = [0x55, 0xAA];
 const MBR_PART_TABLE_OFFSET: usize = 0x1BE;
 const MBR_PART_ENTRY_SIZE: usize = 16;
 const MBR_ENTRY_COUNT: usize = 4;
-const MAX_EBR_FOLLOW: usize = 64;
-/// NT disk signature lives at bytes 440..444 of the boot sector.
-const MBR_DISK_SIGNATURE_OFFSET: usize = 440;
+const MAX_EBR_FOLLOW: usize = 256;
 
 /// Read the 32-bit NT disk signature out of the boot sector. Best effort —
 /// `None` when the sector is short or the signature was never stamped (zero).
 pub(crate) fn read_disk_signature(head: &[u8]) -> Option<String> {
-    let bytes = head.get(MBR_DISK_SIGNATURE_OFFSET..MBR_DISK_SIGNATURE_OFFSET + 4)?;
-    let signature = Cursor::new(bytes).read_le::<u32>().ok()?;
+    let signature = MbrBootRecord::decode(head, 0)?.disk_signature;
     (signature != 0).then(|| format!("0x{signature:08X}"))
 }
 
 pub struct MbrParser;
 
-#[derive(Debug, Clone, Copy)]
-struct MbrEntry {
-    type_byte: u8,
-    start_lba: u64,
-    length_lba: u64,
+/// Infer geometry only from a structurally valid first EBR. Primary-only MBRs
+/// contain no sector-size field, so retain the caller's geometry if ambiguous.
+/// Callers with authoritative container/device geometry must not use this.
+pub fn infer_sector_size(source: &dyn SectorSource, preferred: usize) -> anyhow::Result<usize> {
+    ensure!(
+        matches!(preferred, 512 | 1024 | 2048 | 4096),
+        "unsupported MBR sector size: {preferred}"
+    );
+    let head = source.read(0, 512).context("reading MBR geometry probe")?;
+    let Some(record) = MbrBootRecord::decode(&head, 0) else {
+        return Ok(preferred);
+    };
+    if !record.has_signature || !record.valid_indicators() {
+        return Ok(preferred);
+    }
+    for sector_size in std::iter::once(preferred).chain(
+        [512, 1024, 2048, 4096]
+            .into_iter()
+            .filter(|size| *size != preferred),
+    ) {
+        let max_sector = source.size() / sector_size as u64;
+        if record
+            .entries
+            .iter()
+            .filter(|entry| entry.is_populated())
+            .any(|entry| {
+                entry.start_lba == 0
+                    || u64::from(entry.start_lba) + u64::from(entry.length_lba) > max_sector
+            })
+        {
+            continue;
+        }
+        for entry in &record.entries {
+            let base = u64::from(entry.start_lba);
+            let end = base + u64::from(entry.length_lba);
+            if !entry.is_extended() || base == 0 || entry.length_lba == 0 || end > max_sector {
+                continue;
+            }
+            let offset = base
+                .checked_mul(sector_size as u64)
+                .context("MBR geometry offset overflow")?;
+            let bytes = source
+                .read(offset, 512)
+                .with_context(|| format!("reading EBR geometry probe at {offset}"))?;
+            let Some(ebr) = MbrBootRecord::decode(&bytes, base) else {
+                continue;
+            };
+            if ebr.has_signature
+                && ebr.valid_indicators()
+                && ebr.entries.iter().any(|entry| {
+                    entry.is_populated()
+                        && entry.start_lba != 0
+                        && base + u64::from(entry.start_lba) + u64::from(entry.length_lba) <= end
+                })
+            {
+                return Ok(sector_size);
+            }
+        }
+    }
+    Ok(preferred)
 }
 
-#[derive(Debug, BinRead)]
-#[br(little)]
-struct RawMbrEntry {
-    _status: u8,
-    _first_chs: [u8; 3],
-    type_byte: u8,
-    _last_chs: [u8; 3],
-    start_lba: u32,
-    length_lba: u32,
+/// Accepted data partition and its exact on-disk origin. Container entries
+/// remain in `MbrTable::records`, not in the browsable partition list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MbrPartition {
+    pub partition: Partition,
+    pub entry: MbrEntry,
+    pub record_lba: u64,
+    pub slot: u8,
 }
 
-impl MbrEntry {
-    fn is_extended(&self) -> bool {
-        matches!(self.type_byte, 0x05 | 0x0F | 0x85)
+/// Read-only MBR analysis. Records preserve all four slots (including empty,
+/// extended and rejected entries); warnings describe incomplete recovery.
+#[derive(Debug, Clone)]
+pub struct MbrTable {
+    pub sector_size: usize,
+    pub records: Vec<MbrBootRecord>,
+    pub partitions: Vec<MbrPartition>,
+    pub warnings: Vec<String>,
+}
+
+impl MbrTable {
+    pub fn read(source: &dyn SectorSource, sector_size: usize) -> anyhow::Result<Option<Self>> {
+        Self::read_cancellable(source, sector_size, &CancellationToken::new())
+    }
+
+    /// The caller owns cancellation. Blocking traversal polls the token
+    /// directly and never publishes a partial result after cancellation.
+    pub fn read_cancellable(
+        source: &dyn SectorSource,
+        sector_size: usize,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<Option<Self>> {
+        ensure!(!cancel.is_cancelled(), "MBR analysis cancelled");
+        let head = source.read(0, 512).context("reading MBR boot record")?;
+        parse_table(
+            &DetectCtx {
+                source,
+                head: &head,
+                sector_size,
+                size: source.size(),
+            },
+            cancel,
+        )
+    }
+
+    fn warn(&mut self, message: String) {
+        tracing::warn!("{message}");
+        self.warnings.push(message);
     }
 }
 
@@ -66,91 +158,92 @@ impl PartParser for MbrParser {
     }
 
     fn try_parse(&self, ctx: &DetectCtx<'_>) -> anyhow::Result<Option<Vec<Partition>>> {
-        let head = ctx.head;
-        if head.len() < 512 {
-            return Ok(None);
-        }
-        // Volume boot sectors also end in 0x55AA. Their boot code and text
-        // overlap the primary table, and on large images even those bogus
-        // LBAs can fall in bounds. Every table slot must have a legal boot
-        // indicator before interpreting any bytes as partitions.
-        if head[MBR_PART_TABLE_OFFSET..510]
-            .as_chunks::<MBR_PART_ENTRY_SIZE>()
-            .0
-            .iter()
-            .any(|entry| !matches!(entry[0], 0x00 | 0x80))
-        {
-            return Ok(None);
-        }
-        let has_magic = head[510..512] == MBR_MAGIC;
-        if !has_magic && !plausible_unsigned_mbr(ctx)? {
-            return Ok(None);
-        }
-        if !has_magic {
-            tracing::warn!(
-                "recovering MBR partition table with missing 0x55AA signature after structural and volume-signature validation"
-            );
-        }
-        // Largest addressable sector. A real primary table never starts a
-        // partition at or past this; a random sector that merely ends in
-        // 0x55AA does (P1-11). `0` means we cannot judge, so skip the gate.
-        let max_sector = (ctx.sector_size != 0).then(|| ctx.size / ctx.sector_size as u64);
-
-        let mut out = Vec::with_capacity(MBR_ENTRY_COUNT);
-        let mut next_id: u8 = 0;
-        let mut extended_base: Option<u64> = None;
-
-        for index in 0..MBR_ENTRY_COUNT {
-            let base = MBR_PART_TABLE_OFFSET + index * MBR_PART_ENTRY_SIZE;
-            let entry = &head[base..base + MBR_PART_ENTRY_SIZE];
-            let Some(parsed) = parse_mbr_entry(entry) else {
-                continue;
-            };
-            // Leading-entry bounds sanity: if either of the first two primary entries
-            // starts past the image, reject the whole table so the dispatcher
-            // moves on rather than minting garbage from a stray boot sector.
-            if let Some(max_sector) = max_sector {
-                if index < 2 && parsed.start_lba >= max_sector {
-                    return Ok(None);
-                }
-            }
-            if parsed.is_extended() {
-                if extended_base.is_none() {
-                    extended_base = Some(parsed.start_lba);
-                }
-                continue;
-            }
-            // Drop trailing entries (index 2/3) that start past the image; the
-            // leading ones already rejected the table above.
-            if max_sector.is_some_and(|max| parsed.start_lba >= max) {
-                continue;
-            }
-            out.push(Partition {
-                id: next_id,
-                kind: mbr_type_to_kind(parsed.type_byte),
-                start_lba: parsed.start_lba,
-                length_lba: parsed.length_lba,
-                label: None,
-                unique_guid: None,
-            });
-            next_id = next_id.wrapping_add(1);
-        }
-
-        if let Some(extended_base) = extended_base {
-            follow_ebr_chain(
-                ctx.source,
-                ctx.sector_size,
-                extended_base,
-                max_sector,
-                &mut out,
-                &mut next_id,
-            )?;
-        }
-        if out.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(out))
+        Ok(
+            parse_table(ctx, &CancellationToken::new())?.and_then(|table| {
+                (!table.partitions.is_empty()).then(|| {
+                    table
+                        .partitions
+                        .into_iter()
+                        .map(|entry| entry.partition)
+                        .collect()
+                })
+            }),
+        )
     }
+}
+
+fn parse_table(
+    ctx: &DetectCtx<'_>,
+    cancel: &CancellationToken,
+) -> anyhow::Result<Option<MbrTable>> {
+    ensure!(
+        matches!(ctx.sector_size, 512 | 1024 | 2048 | 4096),
+        "unsupported MBR sector size: {}",
+        ctx.sector_size
+    );
+    let Some(record) = MbrBootRecord::decode(ctx.head, 0) else {
+        return Ok(None);
+    };
+    // Volume boot sectors also end in 0x55AA. Their boot code and text
+    // overlap the primary table, and on large images even those bogus
+    // LBAs can fall in bounds. Every table slot must have a legal boot
+    // indicator before interpreting any bytes as partitions.
+    if !record.valid_indicators() {
+        return Ok(None);
+    }
+    let has_magic = record.has_signature;
+    if !has_magic && !plausible_unsigned_mbr(ctx)? {
+        return Ok(None);
+    }
+    // Largest addressable sector. A real primary table never starts a
+    // partition at or past this; a random sector that merely ends in
+    // 0x55AA does (P1-11).
+    let max_sector = ctx.size / ctx.sector_size as u64;
+    let mut table = MbrTable {
+        sector_size: ctx.sector_size,
+        records: vec![record.clone()],
+        partitions: Vec::new(),
+        warnings: Vec::new(),
+    };
+    if !has_magic {
+        table.warn(
+            "recovering MBR with missing 0x55AA signature after structural and volume validation"
+                .into(),
+        );
+    }
+    let mut extended = Vec::new();
+
+    for (index, parsed) in record.entries.iter().copied().enumerate() {
+        ensure!(!cancel.is_cancelled(), "MBR analysis cancelled");
+        if !parsed.is_populated() {
+            continue;
+        }
+        // Leading-entry bounds sanity: if either of the first two primary entries
+        // starts past the image, reject the whole table so the dispatcher
+        // moves on rather than minting garbage from a stray boot sector.
+        if index < 2 && u64::from(parsed.start_lba) >= max_sector {
+            return Ok(None);
+        }
+        let start = u64::from(parsed.start_lba);
+        let end = start + u64::from(parsed.length_lba);
+        if start == 0 || end > max_sector {
+            table.warn(format!(
+                "MBR slot {index} range {start}..{end} exceeds usable evidence range"
+            ));
+            continue;
+        }
+        if parsed.is_extended() {
+            extended.push((start, end));
+            continue;
+        }
+        append_partition(&mut table, parsed, 0, index, start)?;
+    }
+    let mut visited = HashSet::new();
+    for (base, end) in extended {
+        follow_ebr_chain(ctx.source, base, end, &mut table, &mut visited, cancel)?;
+    }
+    ensure!(!cancel.is_cancelled(), "MBR analysis cancelled");
+    Ok(Some(table))
 }
 
 /// Recover a damaged MBR whose final `0x55AA` marker was erased. Without the
@@ -194,13 +287,7 @@ fn plausible_unsigned_mbr(ctx: &DetectCtx<'_>) -> anyhow::Result<bool> {
 
         populated += 1;
         ranges.push((start_lba, end_lba));
-        if !(MbrEntry {
-            type_byte,
-            start_lba,
-            length_lba,
-        })
-        .is_extended()
-        {
+        if !matches!(type_byte, 0x05 | 0x0f | 0x85) {
             let slice = PartitionSlice::new(
                 ctx.source,
                 start_lba * ctx.sector_size as u64,
@@ -217,45 +304,74 @@ fn plausible_unsigned_mbr(ctx: &DetectCtx<'_>) -> anyhow::Result<bool> {
     Ok(ranges.windows(2).all(|pair| pair[0].1 <= pair[1].0))
 }
 
-fn parse_mbr_entry(entry: &[u8]) -> Option<MbrEntry> {
-    let raw = RawMbrEntry::read(&mut Cursor::new(entry)).ok()?;
-    if raw.type_byte == 0 {
-        return None;
-    }
-    let start_lba = u64::from(raw.start_lba);
-    let length_lba = u64::from(raw.length_lba);
-    if length_lba == 0 {
-        return None;
-    }
-    Some(MbrEntry {
-        type_byte: raw.type_byte,
-        start_lba,
-        length_lba,
-    })
+fn append_partition(
+    table: &mut MbrTable,
+    entry: MbrEntry,
+    record_lba: u64,
+    slot: usize,
+    start_lba: u64,
+) -> anyhow::Result<()> {
+    let id = u8::try_from(table.partitions.len())
+        .context("MBR has more than 256 partitions; partition IDs cannot represent this table")?;
+    table.partitions.push(MbrPartition {
+        partition: Partition {
+            id,
+            kind: mbr_type_to_kind(entry.type_byte),
+            start_lba,
+            length_lba: u64::from(entry.length_lba),
+            label: None,
+            unique_guid: None,
+        },
+        entry,
+        record_lba,
+        slot: slot as u8,
+    });
+    Ok(())
 }
 
 fn follow_ebr_chain(
     source: &dyn SectorSource,
-    sector_size: usize,
     extended_base: u64,
-    max_sector: Option<u64>,
-    out: &mut Vec<Partition>,
-    next_id: &mut u8,
+    extended_end: u64,
+    table: &mut MbrTable,
+    visited: &mut HashSet<u64>,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
-    let mut current = extended_base;
-    let mut visited: Vec<u64> = Vec::with_capacity(8);
-    for _ in 0..MAX_EBR_FOLLOW {
+    let mut pending = vec![extended_base];
+    while let Some(current) = pending.pop() {
+        ensure!(!cancel.is_cancelled(), "MBR analysis cancelled");
+        if current < extended_base || current >= extended_end {
+            table.warn(format!("EBR at LBA {current} is outside extended partition {extended_base}..{extended_end}"));
+            continue;
+        }
         if visited.contains(&current) {
+            table.warn(format!("cyclic or duplicate EBR link at LBA {current}"));
+            continue;
+        }
+        if visited.len() >= MAX_EBR_FOLLOW {
+            table.warn(format!(
+                "EBR traversal stopped after {MAX_EBR_FOLLOW} records"
+            ));
             break;
         }
-        visited.push(current);
-
+        visited.insert(current);
         let sector_offset = current
-            .checked_mul(sector_size as u64)
+            .checked_mul(table.sector_size as u64)
             .context("EBR offset overflow")?;
-        let sector = source.read(sector_offset, sector_size)?;
-        if sector.len() < 512 || sector[510..512] != MBR_MAGIC {
-            break;
+        let sector = source
+            .read(sector_offset, 512)
+            .with_context(|| format!("reading EBR at LBA {current}"))?;
+        let Some(record) = MbrBootRecord::decode(&sector, current) else {
+            table.warn(format!("short EBR read at LBA {current}"));
+            continue;
+        };
+        let valid = record.has_signature && record.valid_indicators();
+        table.records.push(record.clone());
+        if !valid {
+            table.warn(format!(
+                "invalid EBR signature or boot indicator at LBA {current}"
+            ));
+            continue;
         }
 
         // Walk all four entries in the EBR rather than only the first data +
@@ -263,282 +379,54 @@ fn follow_ebr_chain(
         // logical partition in slot 2/3, and those were being silently
         // dropped. Data entries are addressed relative to this EBR sector;
         // the link (extended) entry is relative to the primary extended base.
-        let mut next: Option<u64> = None;
-        for index in 0..MBR_ENTRY_COUNT {
-            let base = MBR_PART_TABLE_OFFSET + index * MBR_PART_ENTRY_SIZE;
-            let entry = &sector[base..base + MBR_PART_ENTRY_SIZE];
-            let Some(parsed) = parse_mbr_entry(entry) else {
+        let mut links = Vec::new();
+        for (index, parsed) in record.entries.iter().copied().enumerate() {
+            if !parsed.is_populated() {
                 continue;
-            };
+            }
             if parsed.is_extended() {
-                // First extended link wins; chasing more than one per table
-                // would fork the iterative chain traversal.
-                if next.is_none() && parsed.start_lba != 0 {
-                    next = Some(extended_base + parsed.start_lba);
+                let next = extended_base + u64::from(parsed.start_lba);
+                if next < extended_end && next + u64::from(parsed.length_lba) <= extended_end {
+                    links.push(next);
+                } else {
+                    table.warn(format!(
+                        "EBR link in LBA {current} slot {index} exceeds extended partition"
+                    ));
                 }
                 continue;
             }
-            let start_lba = current + parsed.start_lba;
-            // A partition starting past the image is unreadable noise; drop it.
-            if max_sector.is_some_and(|max| start_lba >= max) {
+            let start_lba = current + u64::from(parsed.start_lba);
+            if parsed.start_lba == 0 || start_lba + u64::from(parsed.length_lba) > extended_end {
+                table.warn(format!("logical partition in LBA {current} slot {index} exceeds extended partition or overlaps its EBR"));
                 continue;
             }
-            out.push(Partition {
-                id: *next_id,
-                kind: mbr_type_to_kind(parsed.type_byte),
-                start_lba,
-                length_lba: parsed.length_lba,
-                label: None,
-                unique_guid: None,
-            });
-            *next_id = next_id.wrapping_add(1);
+            append_partition(table, parsed, current, index, start_lba)?;
         }
-
-        let Some(next) = next else {
-            break;
-        };
-        current = next;
+        pending.extend(links.into_iter().rev());
     }
     Ok(())
 }
 
 fn mbr_type_to_kind(type_byte: u8) -> PartitionKind {
     match type_byte {
-        0x07 => PartitionKind::Ntfs,
-        0x0B | 0x0C => PartitionKind::Fat32,
-        0x04 | 0x06 | 0x0E => PartitionKind::Fat16,
+        0x01 | 0x11 => PartitionKind::Fat12,
+        0x07 | 0x17 | 0x27 => PartitionKind::Ntfs,
+        0x0B | 0x0C | 0x1B | 0x1C => PartitionKind::Fat32,
+        0x04 | 0x06 | 0x0E | 0x14 | 0x16 | 0x1E => PartitionKind::Fat16,
         0x05 | 0x0F | 0x85 => PartitionKind::Extended,
         0x82 => PartitionKind::Swap,
         0x83 => PartitionKind::Unknown,
         0x8E => PartitionKind::Lvm,
-        0xA5 | 0xA6 | 0xA9 => PartitionKind::Bsd,
-        0xAF => PartitionKind::ApfsContainer,
+        0x9F | 0xA5 | 0xA6 | 0xA9 | 0xB7 => PartitionKind::Bsd,
+        0xA8 => PartitionKind::Ufs,
+        0xAF => PartitionKind::HfsPlus,
+        0xFD => PartitionKind::Mdadm,
         _ => PartitionKind::Unknown,
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::core::evidence::partitions::{
-        detect_partitions, detect_partitions_with_meta, test_support::BufSource, HEADER_PROBE_BYTES,
-    };
+mod tests;
 
-    #[test]
-    fn detects_large_ntfs_volume_with_boot_messages_as_volume() {
-        // Logical acquisitions can retain the source disk's 2 TB size while
-        // beginning directly with a smaller NTFS volume. These actual Windows
-        // boot messages form four nonzero, in-bounds pseudo-partitions.
-        struct LargeVolumeSource(BufSource);
-        impl SectorSource for LargeVolumeSource {
-            fn read(&self, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
-                self.0.read(offset, len)
-            }
-
-            fn size(&self) -> u64 {
-                3_907_024_065 * 512
-            }
-        }
-
-        let mut head = vec![0u8; HEADER_PROBE_BYTES];
-        head[..11].copy_from_slice(b"\xeb\x52\x90NTFS    ");
-        head[11..13].copy_from_slice(&512u16.to_le_bytes());
-        head[13] = 8;
-        head[40..48].copy_from_slice(&537_894_911u64.to_le_bytes());
-        head[48..56].copy_from_slice(&786_432u64.to_le_bytes());
-        head[MBR_PART_TABLE_OFFSET..510].copy_from_slice(
-            b"\r\nBOOTMGR is compressed\0\r\nPress Ctrl+Alt+Del to restart\r\n\0\x8c\xa9\xbe\xd6\0\0",
-        );
-        head[510..512].copy_from_slice(&MBR_MAGIC);
-        let source = LargeVolumeSource(BufSource(head));
-        let detected = detect_partitions_with_meta(&source, 512).expect("detect NTFS volume");
-
-        assert_eq!(
-            (detected.scheme, detected.disk_id, detected.partitions),
-            (
-                Some(TableScheme::Volume),
-                None,
-                vec![Partition {
-                    id: 0,
-                    kind: PartitionKind::Ntfs,
-                    start_lba: 0,
-                    length_lba: 3_907_024_065,
-                    label: None,
-                    unique_guid: None,
-                }],
-            )
-        );
-    }
-
-    #[test]
-    fn rejects_signed_table_with_invalid_boot_indicator_in_any_slot() {
-        for invalid_slot in 0..MBR_ENTRY_COUNT {
-            let mut head = vec![0u8; 512 * 64];
-            head[510..512].copy_from_slice(&MBR_MAGIC);
-            for slot in 0..MBR_ENTRY_COUNT {
-                let base = MBR_PART_TABLE_OFFSET + slot * MBR_PART_ENTRY_SIZE;
-                head[base] = if slot == invalid_slot { 0x7f } else { 0x00 };
-                head[base + 4] = 0x07;
-                head[base + 8..base + 12].copy_from_slice(&(1 + slot as u32 * 8).to_le_bytes());
-                head[base + 12..base + 16].copy_from_slice(&8u32.to_le_bytes());
-            }
-            let source = BufSource(head);
-            let ctx = DetectCtx {
-                source: &source,
-                head: &source.0,
-                sector_size: 512,
-                size: source.size(),
-            };
-            assert_eq!(MbrParser.try_parse(&ctx).expect("parse MBR"), None);
-        }
-    }
-
-    #[test]
-    fn parses_mbr_with_primary_partitions() {
-        // Image large enough that LBA 2048 + 10 stays in bounds (P1-11).
-        let mut buf = vec![0u8; 512 * 2100];
-        buf[510] = 0x55;
-        buf[511] = 0xAA;
-        let e0 = MBR_PART_TABLE_OFFSET;
-        buf[e0] = 0x80;
-        buf[e0 + 4] = 0x07;
-        buf[e0 + 8..e0 + 12].copy_from_slice(&2048u32.to_le_bytes());
-        buf[e0 + 12..e0 + 16].copy_from_slice(&10u32.to_le_bytes());
-        let src = BufSource(buf);
-        let parts = detect_partitions(&src, 512).expect("detect");
-        assert_eq!(parts.len(), 1);
-        assert_eq!(parts[0].kind, PartitionKind::Ntfs);
-        assert_eq!(parts[0].start_lba, 2048);
-    }
-
-    #[test]
-    fn follows_ebr_chain() {
-        let sector = 512usize;
-        let ext_base_lba = 2048u32;
-        let mut buf = vec![0u8; sector * (ext_base_lba as usize + 200)];
-        buf[510] = 0x55;
-        buf[511] = 0xAA;
-        let e0 = MBR_PART_TABLE_OFFSET;
-        buf[e0 + 4] = 0x05;
-        buf[e0 + 8..e0 + 12].copy_from_slice(&ext_base_lba.to_le_bytes());
-        buf[e0 + 12..e0 + 16].copy_from_slice(&200u32.to_le_bytes());
-
-        let ebr1 = ext_base_lba as usize * sector;
-        buf[ebr1 + 510] = 0x55;
-        buf[ebr1 + 511] = 0xAA;
-        buf[ebr1 + e0 + 4] = 0x83;
-        buf[ebr1 + e0 + 8..ebr1 + e0 + 12].copy_from_slice(&1u32.to_le_bytes());
-        buf[ebr1 + e0 + 12..ebr1 + e0 + 16].copy_from_slice(&50u32.to_le_bytes());
-
-        let src = BufSource(buf);
-        let parts = detect_partitions(&src, sector).expect("detect");
-        assert_eq!(parts.len(), 1);
-        assert_eq!(parts[0].start_lba, ext_base_lba as u64 + 1);
-        assert_eq!(parts[0].length_lba, 50);
-    }
-
-    #[test]
-    fn ignores_boot_sector_without_partition_entries() {
-        let mut buf = vec![0u8; 4096];
-        buf[510] = 0x55;
-        buf[511] = 0xAA;
-        let src = BufSource(buf);
-
-        let parts = detect_partitions(&src, 512).expect("detect");
-
-        assert!(parts.is_empty());
-    }
-
-    /// P1-12: a logical partition placed in EBR slot 2 (not the conventional
-    /// data slot 0) must still be surfaced, alongside the slot-0 data entry.
-    #[test]
-    fn follows_ebr_chain_with_data_entry_in_slot_two() {
-        let sector = 512usize;
-        let ext_base_lba = 2048usize;
-        let mut buf = vec![0u8; sector * (ext_base_lba + 400)];
-        buf[510] = 0x55;
-        buf[511] = 0xAA;
-        let e0 = MBR_PART_TABLE_OFFSET;
-        buf[e0 + 4] = 0x05;
-        buf[e0 + 8..e0 + 12].copy_from_slice(&(ext_base_lba as u32).to_le_bytes());
-        buf[e0 + 12..e0 + 16].copy_from_slice(&400u32.to_le_bytes());
-
-        let ebr1 = ext_base_lba * sector;
-        buf[ebr1 + 510] = 0x55;
-        buf[ebr1 + 511] = 0xAA;
-        // Slot 0: a normal logical FAT16 partition.
-        buf[ebr1 + e0 + 4] = 0x06;
-        buf[ebr1 + e0 + 8..ebr1 + e0 + 12].copy_from_slice(&1u32.to_le_bytes());
-        buf[ebr1 + e0 + 12..ebr1 + e0 + 16].copy_from_slice(&50u32.to_le_bytes());
-        // Slot 2: a second logical partition that the old single-slot reader
-        // dropped. Entry stride is MBR_PART_ENTRY_SIZE (16 bytes).
-        let s2 = e0 + 2 * MBR_PART_ENTRY_SIZE;
-        buf[ebr1 + s2 + 4] = 0x83;
-        buf[ebr1 + s2 + 8..ebr1 + s2 + 12].copy_from_slice(&60u32.to_le_bytes());
-        buf[ebr1 + s2 + 12..ebr1 + s2 + 16].copy_from_slice(&70u32.to_le_bytes());
-
-        let src = BufSource(buf);
-        let parts = detect_partitions(&src, sector).expect("detect");
-        assert_eq!(parts.len(), 2, "both logical entries must be surfaced");
-        assert_eq!(parts[0].start_lba, ext_base_lba as u64 + 1);
-        assert_eq!(parts[0].kind, PartitionKind::Fat16);
-        assert_eq!(parts[1].start_lba, ext_base_lba as u64 + 60);
-    }
-
-    /// P1-11: a stray sector ending in 0x55AA whose leading entry starts past
-    /// the image must not be accepted as a partition table.
-    #[test]
-    fn rejects_primary_table_with_out_of_bounds_leading_entry() {
-        let sector = 512usize;
-        let mut buf = vec![0u8; sector * 64];
-        buf[510] = 0x55;
-        buf[511] = 0xAA;
-        let e0 = MBR_PART_TABLE_OFFSET;
-        buf[e0 + 4] = 0x07;
-        // start_lba 9_000 is well past the 64-sector image.
-        buf[e0 + 8..e0 + 12].copy_from_slice(&9_000u32.to_le_bytes());
-        buf[e0 + 12..e0 + 16].copy_from_slice(&10u32.to_le_bytes());
-        let src = BufSource(buf);
-        let parts = detect_partitions(&src, sector).expect("detect");
-        assert!(
-            parts.is_empty(),
-            "out-of-bounds MBR must not yield partitions"
-        );
-    }
-
-    #[test]
-    fn recovers_unsigned_mbr_when_partition_signature_confirms_it() {
-        let sector = 512usize;
-        let start_lba = 2048u32;
-        let length_lba = 2048u32;
-        let mut buf = vec![0u8; sector * 4096];
-        let entry = MBR_PART_TABLE_OFFSET;
-        buf[entry] = 0x80;
-        buf[entry + 4] = 0x83;
-        buf[entry + 8..entry + 12].copy_from_slice(&start_lba.to_le_bytes());
-        buf[entry + 12..entry + 16].copy_from_slice(&length_lba.to_le_bytes());
-        let ext_magic = start_lba as usize * sector + 0x438;
-        buf[ext_magic..ext_magic + 2].copy_from_slice(&[0x53, 0xEF]);
-
-        let parts = detect_partitions(&BufSource(buf), sector).expect("detect");
-
-        assert_eq!(parts.len(), 1);
-        assert_eq!(parts[0].start_lba, u64::from(start_lba));
-        assert_eq!(parts[0].length_lba, u64::from(length_lba));
-    }
-
-    #[test]
-    fn rejects_unsigned_table_without_confirmed_partition_signature() {
-        let sector = 512usize;
-        let mut buf = vec![0u8; sector * 4096];
-        let entry = MBR_PART_TABLE_OFFSET;
-        buf[entry] = 0x80;
-        buf[entry + 4] = 0x83;
-        buf[entry + 8..entry + 12].copy_from_slice(&2048u32.to_le_bytes());
-        buf[entry + 12..entry + 16].copy_from_slice(&2048u32.to_le_bytes());
-
-        let parts = detect_partitions(&BufSource(buf), sector).expect("detect");
-
-        assert!(parts.is_empty());
-    }
-}
+#[cfg(test)]
+mod regressions;

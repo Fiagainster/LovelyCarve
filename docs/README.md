@@ -15,6 +15,6 @@
 | 发布版本 | [发布指南](RELEASING.md)、[第三方声明](../THIRD_PARTY_NOTICES.md) |
 | 报告安全问题 | [安全报告](../SECURITY.md) |
 
-使用与接口说明保留 [使用指南](USAGE.md)、[CLI 手册](CLI.md)、[镜像信息](IMAGE_INFO.md)、[BCP](BCP.md)、[LUKS](LUKS.md) 和 [iOS 备份](IOS_BACKUPS.md)，帮助开发者复现对应功能。
+使用与接口说明保留 [使用指南](USAGE.md)、[CLI 手册](CLI.md)、[镜像信息](IMAGE_INFO.md)、[MBR/EBR](MBR.md)、[BCP](BCP.md)、[LUKS](LUKS.md) 和 [iOS 备份](IOS_BACKUPS.md)，帮助开发者复现对应功能。
 
 功能概览统一维护在根目录 [README](../README.md)。新增能力时更新所属专题；测试样本的来源、许可和哈希保存在样本目录，第三方许可证与来源说明随代码保留。

@@ -6,6 +6,98 @@ use std::sync::Barrier;
 use std::time::Duration;
 
 #[test]
+fn mbr_geometry_inference_does_not_override_a_detected_gpt() {
+    let mut bytes = vec![0; 200 * 512];
+    bytes[510..512].copy_from_slice(&[0x55, 0xaa]);
+    bytes[450] = 0x0f;
+    bytes[454..458].copy_from_slice(&16u32.to_le_bytes());
+    bytes[458..462].copy_from_slice(&8u32.to_le_bytes());
+    // An EBR valid only at 4 KiB geometry must not supersede the GPT at 512.
+    let ebr = 16 * 4096;
+    bytes[ebr + 510..ebr + 512].copy_from_slice(&[0x55, 0xaa]);
+    bytes[ebr + 450] = 0x83;
+    bytes[ebr + 454..ebr + 458].copy_from_slice(&1u32.to_le_bytes());
+    bytes[ebr + 458..ebr + 462].copy_from_slice(&4u32.to_le_bytes());
+    bytes[512..520].copy_from_slice(b"EFI PART");
+    bytes[512 + 72..512 + 80].copy_from_slice(&2u64.to_le_bytes());
+    bytes[512 + 80..512 + 84].copy_from_slice(&1u32.to_le_bytes());
+    bytes[512 + 84..512 + 88].copy_from_slice(&128u32.to_le_bytes());
+    bytes[1024..1040].fill(1);
+    bytes[1024 + 32..1024 + 40].copy_from_slice(&100u64.to_le_bytes());
+    bytes[1024 + 40..1024 + 48].copy_from_slice(&199u64.to_le_bytes());
+    let mut file = NamedTempFile::new().expect("fixture");
+    file.write_all(&bytes).expect("write fixture");
+    file.flush().expect("flush fixture");
+    let image = DiskImage::open(file.path()).expect("open GPT image");
+    assert_eq!(
+        (
+            image.sector_size,
+            image.table_scheme,
+            image.partitions[0].start_lba
+        ),
+        (512, Some(TableScheme::Gpt), 100)
+    );
+}
+
+#[test]
+fn opens_raw_mbr_with_primary_and_large_sector_logical_partitions() {
+    for sector_size in [512, 1024, 2048, 4096] {
+        let mut bytes = vec![0u8; sector_size * 64];
+        bytes[510..512].copy_from_slice(&[0x55, 0xaa]);
+        bytes[440..444].copy_from_slice(&0x1234abcd_u32.to_le_bytes());
+        bytes[450] = 0x17;
+        bytes[454..458].copy_from_slice(&2u32.to_le_bytes());
+        bytes[458..462].copy_from_slice(&4u32.to_le_bytes());
+        bytes[466] = 0x0f;
+        bytes[470..474].copy_from_slice(&16u32.to_le_bytes());
+        bytes[474..478].copy_from_slice(&48u32.to_le_bytes());
+        let ebr = 16 * sector_size;
+        bytes[ebr + 510..ebr + 512].copy_from_slice(&[0x55, 0xaa]);
+        bytes[ebr + 450] = 0x11;
+        bytes[ebr + 454..ebr + 458].copy_from_slice(&1u32.to_le_bytes());
+        bytes[ebr + 458..ebr + 462].copy_from_slice(&4u32.to_le_bytes());
+        let mut file = NamedTempFile::new().expect("fixture");
+        file.write_all(&bytes).expect("write fixture");
+        file.flush().expect("flush fixture");
+        let image = DiskImage::open(file.path()).expect("open MBR image");
+        let info = image.info();
+        assert_eq!(
+            (
+                info.sector_size,
+                info.table_scheme,
+                info.disk_id,
+                info.partitions
+            ),
+            (
+                sector_size,
+                Some(TableScheme::Mbr),
+                Some("0x1234ABCD".into()),
+                vec![
+                    Partition {
+                        id: 0,
+                        // Zero-filled payloads have no filesystem signature;
+                        // refinement reports Unknown while retaining geometry.
+                        kind: PartitionKind::Unknown,
+                        start_lba: 2,
+                        length_lba: 4,
+                        label: None,
+                        unique_guid: None
+                    },
+                    Partition {
+                        id: 1,
+                        kind: PartitionKind::Unknown,
+                        start_lba: 17,
+                        length_lba: 4,
+                        label: None,
+                        unique_guid: None
+                    },
+                ]
+            )
+        );
+    }
+}
+
+#[test]
 fn flat_vmdk_finds_adjacent_descriptor() {
     let temp = tempfile::tempdir().expect("tempdir");
     let flat_path = temp.path().join("A06-cl1-flat.vmdk");
