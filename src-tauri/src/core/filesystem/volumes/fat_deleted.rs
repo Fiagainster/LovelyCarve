@@ -18,7 +18,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::NaiveDate;
 
 use crate::core::evidence::image::DiskImage;
 use crate::core::filesystem::tree::fs_tree::{FsDataRun, Mactb};
@@ -40,6 +40,8 @@ const BOOT_SECTOR_LEN: usize = 512;
 /// One recovered FAT directory entry from a deleted slot.
 #[derive(Debug, Clone)]
 pub struct RecoveredEntry {
+    /// Byte offset within the raw directory stream, preserving distinct records.
+    pub slot_offset: u64,
     pub name: String,
     pub is_directory: bool,
     pub size: u64,
@@ -63,6 +65,8 @@ pub struct FatGeom {
     /// FAT32 root directory first cluster; 0 for FAT12/16 (fixed root region).
     pub root_cluster: u32,
     pub is_fat32: bool,
+    /// Selected FAT32 table when mirroring is disabled, otherwise table zero.
+    pub active_fat: u32,
 }
 
 impl FatGeom {
@@ -74,8 +78,10 @@ impl FatGeom {
         }
         let bytes_per_sector = u16::from_le_bytes([boot[11], boot[12]]) as u32;
         let sectors_per_cluster = boot[13] as u32;
-        if !matches!(bytes_per_sector, 512 | 1024 | 2048 | 4096)
-            || sectors_per_cluster == 0
+        if !matches!(
+            bytes_per_sector,
+            512 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768
+        ) || sectors_per_cluster == 0
             || !sectors_per_cluster.is_power_of_two()
         {
             anyhow::bail!("FAT BPB geometry invalid");
@@ -95,13 +101,28 @@ impl FatGeom {
             sectors_per_fat_32
         };
         let root_cluster = if is_fat32 {
-            u32::from_le_bytes([boot[44], boot[45], boot[46], boot[47]])
+            u32::from_le_bytes([boot[44], boot[45], boot[46], boot[47]]) & 0x0fff_ffff
         } else {
             0
         };
         if num_fats == 0 || sectors_per_fat == 0 || total_sectors == 0 {
             anyhow::bail!("FAT BPB has zero FATs / sectors");
         }
+        let first_data = u64::from(reserved_sectors)
+            + u64::from(num_fats) * u64::from(sectors_per_fat)
+            + (u64::from(root_entries) * 32).div_ceil(u64::from(bytes_per_sector));
+        let active_fat = if is_fat32 && boot[40] & 0x80 != 0 {
+            u32::from(boot[40] & 0x0f)
+        } else {
+            0
+        };
+        if reserved_sectors == 0 || first_data >= u64::from(total_sectors) || active_fat >= num_fats
+        {
+            anyhow::bail!("FAT invalid data region / active table");
+        }
+        base_offset
+            .checked_add(u64::from(total_sectors) * u64::from(bytes_per_sector))
+            .ok_or_else(|| anyhow!("FAT volume end overflow"))?;
         Ok(Self {
             base_offset,
             bytes_per_sector,
@@ -113,6 +134,11 @@ impl FatGeom {
             total_sectors,
             root_cluster,
             is_fat32,
+            active_fat: if is_fat32 && boot[40] & 0x80 != 0 {
+                u32::from(boot[40] & 0x0f)
+            } else {
+                0
+            },
         })
     }
 
@@ -178,10 +204,14 @@ fn read_cluster_chain(
     let max_cluster = geom.cluster_count() + 2;
     let mut cluster = first_cluster;
     let mut guard = 0usize;
+    let mut visited = std::collections::HashSet::new();
     while cluster >= 2 && cluster < max_cluster && guard < MAX_DIR_CLUSTERS {
+        if !visited.insert(cluster) {
+            anyhow::bail!("FAT cyclic directory chain");
+        }
         let bytes = image.read_range(geom.cluster_offset(cluster), cluster_size)?;
-        if bytes.is_empty() {
-            break;
+        if bytes.len() != cluster_size {
+            anyhow::bail!("FAT directory short read");
         }
         out.extend_from_slice(&bytes);
         // The end-of-chain marker lives on the LAST cluster, so it must be read
@@ -193,11 +223,14 @@ fn read_cluster_chain(
             break;
         }
         let next = fat.next_cluster(cluster);
-        if next == cluster || next < 2 {
-            break;
+        if next < 2 || next >= max_cluster {
+            anyhow::bail!("FAT invalid directory chain");
         }
         cluster = next;
         guard += 1;
+    }
+    if guard >= MAX_DIR_CLUSTERS {
+        anyhow::bail!("FAT directory exceeds recovery limit");
     }
     Ok(out)
 }
@@ -255,10 +288,15 @@ pub fn scan_dir_deleted(dir_bytes: &[u8], geom: &FatGeom) -> Vec<RecoveredEntry>
         }
         let is_directory = attr & ATTR_DIRECTORY != 0;
         let size = u32::from_le_bytes([slot[28], slot[29], slot[30], slot[31]]) as u64;
-        let first_cluster = ((u16::from_le_bytes([slot[20], slot[21]]) as u32) << 16)
-            | u16::from_le_bytes([slot[26], slot[27]]) as u32;
+        let high = if geom.is_fat32 {
+            u16::from_le_bytes([slot[20], slot[21]]) as u32 & 0x0fff
+        } else {
+            0
+        };
+        let first_cluster = (high << 16) | u16::from_le_bytes([slot[26], slot[27]]) as u32;
         let runs = contiguous_runs(geom, first_cluster, size);
         out.push(RecoveredEntry {
+            slot_offset: (i * DENTRY_LEN) as u64,
             name,
             is_directory,
             size,
@@ -478,7 +516,17 @@ fn short_entry_timestamps(slot: &[u8]) -> Mactb {
     let cdate = u16::from_le_bytes([slot[16], slot[17]]);
     let adate = u16::from_le_bytes([slot[18], slot[19]]);
     let modified = fat_datetime(wdate, wtime);
-    let created = fat_datetime(cdate, ctime);
+    let created = fat_datetime(cdate, ctime).and_then(|value| {
+        let naive = chrono::NaiveDateTime::parse_from_str(&value, "%Y-%m-%dT%H:%M:%S%.f").ok()?;
+        if slot[13] > 199 {
+            return None;
+        }
+        Some(
+            (naive + chrono::Duration::milliseconds(i64::from(slot[13]) * 10))
+                .format("%Y-%m-%dT%H:%M:%S%.3f")
+                .to_string(),
+        )
+    });
     Mactb {
         modified: modified.clone(),
         accessed: fat_date(adate),
@@ -496,7 +544,7 @@ fn fat_datetime(date: u16, time: u16) -> Option<String> {
     let minute = ((time >> 5) & 0x3F) as u32;
     let second = ((time & 0x1F) * 2) as u32;
     let naive = NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(hour, minute, second)?;
-    Some(Utc.from_utc_datetime(&naive).to_rfc3339())
+    Some(naive.format("%Y-%m-%dT%H:%M:%S%.3f").to_string())
 }
 
 fn fat_date(date: u16) -> Option<String> {
@@ -504,7 +552,7 @@ fn fat_date(date: u16) -> Option<String> {
     let month = ((date >> 5) & 0x0F) as u32;
     let day = (date & 0x1F) as u32;
     let naive = NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(0, 0, 0)?;
-    Some(Utc.from_utc_datetime(&naive).to_rfc3339())
+    Some(naive.format("%Y-%m-%dT%H:%M:%S%.3f").to_string())
 }
 
 /// In-memory FAT table for chain following and free-cluster detection.
@@ -515,16 +563,27 @@ pub struct FatTable {
 }
 
 impl FatTable {
-    /// Load the first FAT from the image.
+    /// Load the selected active FAT from the image.
     pub fn load(image: &Arc<DiskImage>, geom: &FatGeom) -> Result<Self> {
-        let fat_offset =
-            geom.base_offset + geom.reserved_sectors as u64 * geom.bytes_per_sector as u64;
+        let fat_offset = geom.base_offset
+            + (geom.reserved_sectors as u64 + geom.active_fat as u64 * geom.sectors_per_fat as u64)
+                * geom.bytes_per_sector as u64;
         let fat_bytes_len = geom.sectors_per_fat as u64 * geom.bytes_per_sector as u64;
         let raw = image.read_range(fat_offset, fat_bytes_len as usize)?;
         let cluster_count = geom.cluster_count() as usize + 2;
         let max_cluster = geom.cluster_count() + 2;
         let is_fat32 = geom.is_fat32;
         let is_fat12 = !is_fat32 && max_cluster < 4085 + 2;
+        let needed_bytes = if is_fat32 {
+            cluster_count * 4
+        } else if is_fat12 {
+            (cluster_count * 3).div_ceil(2)
+        } else {
+            cluster_count * 2
+        };
+        if raw.len() as u64 != fat_bytes_len || raw.len() < needed_bytes {
+            anyhow::bail!("FAT truncated allocation table");
+        }
         let mut entries = Vec::with_capacity(cluster_count);
         if is_fat32 {
             for i in 0..cluster_count {
@@ -580,7 +639,7 @@ impl FatTable {
 
     /// A cluster is free when its FAT entry is 0.
     pub fn is_free(&self, cluster: u32) -> bool {
-        self.next_cluster(cluster) == 0
+        self.entries.get(cluster as usize) == Some(&0)
     }
 }
 
@@ -609,7 +668,23 @@ fn read_effective_boot_sector(image: &Arc<DiskImage>, base_offset: u64) -> Resul
     // The backup BPB is a faithful copy of the real geometry, so every region
     // offset still resolves relative to `base_offset` (the volume start) — only
     // the BPB *bytes* come from sector 6, never the addressing base.
-    let backup_offset = base_offset + FAT32_BACKUP_BOOT_SECTOR * image.sector_size as u64;
+    let logical_sector = primary
+        .get(11..13)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u16::from_le_bytes)
+        .filter(|size| matches!(size, 512 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768))
+        .map(u64::from)
+        .unwrap_or(image.sector_size as u64);
+    let backup_sector = primary
+        .get(50..52)
+        .and_then(|bytes| bytes.try_into().ok())
+        .map(u16::from_le_bytes)
+        .filter(|sector| *sector > 0 && *sector != u16::MAX)
+        .map(u64::from)
+        .unwrap_or(FAT32_BACKUP_BOOT_SECTOR);
+    let backup_offset = base_offset
+        .checked_add(backup_sector * logical_sector)
+        .ok_or_else(|| anyhow!("FAT backup offset overflow"))?;
     let backup = image.read_range(backup_offset, BOOT_SECTOR_LEN).ok();
     let chosen = choose_boot_sector(&primary, backup.as_deref());
     boot_sector_array(chosen)
@@ -640,7 +715,10 @@ fn boot_sector_looks_valid(boot: &[u8]) -> bool {
         return false;
     }
     let bytes_per_sector = u16::from_le_bytes([boot[11], boot[12]]);
-    if !matches!(bytes_per_sector, 512 | 1024 | 2048 | 4096) {
+    if !matches!(
+        bytes_per_sector,
+        512 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768
+    ) {
         return false;
     }
     let sectors_per_cluster = boot[13];
@@ -657,7 +735,7 @@ fn boot_sector_looks_valid(boot: &[u8]) -> bool {
     if total_16 == 0 && total_32 == 0 {
         return false;
     }
-    boot.get(54..57) == Some(b"FAT") || boot.get(82..85) == Some(b"FAT")
+    FatGeom::parse(boot, 0).is_ok()
 }
 
 fn boot_sector_array(bytes: &[u8]) -> Result<[u8; 512]> {
@@ -767,6 +845,7 @@ mod tests {
             total_sectors: 100_000,
             root_cluster: 0,
             is_fat32: false,
+            active_fat: 0,
         }
     }
 
@@ -1038,6 +1117,7 @@ mod tests {
             total_sectors,
             root_cluster: 2,
             is_fat32: true,
+            active_fat: 0,
         }
     }
 
@@ -1078,6 +1158,7 @@ mod tests {
         let fat = fat32_table_with_allocated(len, &allocated);
         let size = 2 * geom.cluster_size() + 1; // ceil → 3 clusters
         let mut entries = vec![RecoveredEntry {
+            slot_offset: 0,
             name: "_00W.CSV".to_string(),
             is_directory: false,
             size,
@@ -1107,6 +1188,7 @@ mod tests {
         let fat = fat32_table_with_allocated(1000, &[]); // everything free
         let size = geom.cluster_size(); // 1 cluster
         let mut entries = vec![RecoveredEntry {
+            slot_offset: 0,
             name: "SMALL.BIN".to_string(),
             is_directory: false,
             size,
@@ -1128,6 +1210,7 @@ mod tests {
         let fat = fat32_table_with_allocated(1000, &allocated);
         let size = geom.cluster_size();
         let mut entries = vec![RecoveredEntry {
+            slot_offset: 0,
             name: "X.DAT".to_string(),
             is_directory: false,
             size,
@@ -1147,6 +1230,7 @@ mod tests {
         geom.is_fat32 = false;
         let fat = fat32_table_with_allocated(1000, &[100]);
         let mut entries = vec![RecoveredEntry {
+            slot_offset: 0,
             name: "OLD.TXT".to_string(),
             is_directory: false,
             size: 10,

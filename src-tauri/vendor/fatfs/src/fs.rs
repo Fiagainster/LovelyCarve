@@ -330,7 +330,7 @@ pub struct FileSystem<IO: ReadWriteSeek, TP = DefaultTimeProvider, OCC = LossyOe
     bpb: BiosParameterBlock,
     first_data_sector: u32,
     root_dir_sectors: u32,
-    total_clusters: u32,
+    pub(crate) total_clusters: u32,
     fs_info: RefCell<FsInfoSector>,
     current_status_flags: Cell<FsStatusFlags>,
 }

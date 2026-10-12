@@ -16,6 +16,8 @@ pub struct Directory<D> {
     name: String,
     stream: StreamEntry,
     timestamps: Timestamps,
+    attributes: crate::FileAttributes,
+    entry_offset: u64,
 }
 
 impl<D> Directory<D> {
@@ -26,6 +28,8 @@ impl<D> Directory<D> {
         name: String,
         stream: StreamEntry,
         timestamps: Timestamps,
+        attributes: crate::FileAttributes,
+        entry_offset: u64,
     ) -> Self {
         Self {
             disk,
@@ -34,7 +38,16 @@ impl<D> Directory<D> {
             name,
             stream,
             timestamps,
+            attributes,
+            entry_offset,
         }
+    }
+
+    pub fn attributes(&self) -> crate::FileAttributes {
+        self.attributes
+    }
+    pub fn entry_offset(&self) -> u64 {
+        self.entry_offset
     }
 
     pub fn name(&self) -> &str {
@@ -102,6 +115,8 @@ impl<D: DiskPartition> Directory<D> {
 
             items.push(if attrs.is_directory() {
                 Item::Directory(Self {
+                    attributes: attrs,
+                    entry_offset: file.offset,
                     disk: self.disk.clone(),
                     params: self.params.clone(),
                     fat: self.fat.clone(),
@@ -117,6 +132,8 @@ impl<D: DiskPartition> Directory<D> {
                     name,
                     stream,
                     timestamps,
+                    attrs,
+                    file.offset,
                 ) {
                     Ok(v) => Item::File(v),
                     Err(e) => {

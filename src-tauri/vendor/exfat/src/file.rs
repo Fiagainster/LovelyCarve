@@ -12,6 +12,9 @@ use thiserror::Error;
 pub struct File<D> {
     name: String,
     len: u64,
+    valid_len: u64,
+    attributes: crate::FileAttributes,
+    entry_offset: u64,
     reader: Option<ClustersReader<Arc<D>, Arc<Params>>>,
     timestamps: Timestamps,
 }
@@ -24,12 +27,15 @@ impl<D> File<D> {
         name: String,
         stream: StreamEntry,
         timestamps: Timestamps,
+        attributes: crate::FileAttributes,
+        entry_offset: u64,
     ) -> Result<Self, NewError> {
         // Create a cluster reader.
         let alloc = stream.allocation();
         let first_cluster = alloc.first_cluster();
-        let len = stream.valid_data_length();
-        let reader = if first_cluster == 0 {
+        let len = alloc.data_length();
+        let valid_len = stream.valid_data_length();
+        let reader = if len == 0 {
             None
         } else {
             match ClustersReader::new(
@@ -48,9 +54,25 @@ impl<D> File<D> {
         Ok(Self {
             name,
             len,
+            valid_len,
+            attributes,
+            entry_offset,
             reader,
             timestamps,
         })
+    }
+
+    pub fn attributes(&self) -> crate::FileAttributes {
+        self.attributes
+    }
+    pub fn entry_offset(&self) -> u64 {
+        self.entry_offset
+    }
+    pub fn valid_data_length(&self) -> u64 {
+        self.valid_len
+    }
+    pub fn extents(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.reader.iter().flat_map(ClustersReader::extents)
     }
 
     pub fn name(&self) -> &str {
@@ -133,7 +155,19 @@ impl<D> std::io::Seek for File<D> {
 impl<D: DiskPartition> std::io::Read for File<D> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match &mut self.reader {
-            Some(v) => v.read(buf),
+            Some(reader) => {
+                let position = reader.stream_position();
+                let want = (self.len.saturating_sub(position)).min(buf.len() as u64) as usize;
+                let initialized = self.valid_len.saturating_sub(position).min(want as u64) as usize;
+                if initialized > 0 {
+                    return reader.read(&mut buf[..initialized]);
+                }
+                buf[..want].fill(0);
+                if !reader.seek(position + want as u64) {
+                    return Err(std::io::ErrorKind::InvalidInput.into());
+                }
+                Ok(want)
+            }
             None => Ok(0),
         }
     }

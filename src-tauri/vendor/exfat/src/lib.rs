@@ -84,6 +84,29 @@ impl<P: DiskPartition> Root<P> {
             },
         });
 
+        let volume_sectors = LE::read_u64(&boot[72..80]);
+        let fat_end = params
+            .fat_offset
+            .checked_add(params.fat_length * u64::from(params.number_of_fats));
+        let heap_end = (params.cluster_count as u64)
+            .checked_mul(params.sectors_per_cluster)
+            .and_then(|length| params.cluster_heap_offset.checked_add(length));
+        if boot[510..512] != [0x55, 0xaa]
+            || params.cluster_count == 0
+            || params.cluster_count > 0xfffffff5
+            || params.fat_offset < 24
+            || fat_end.map_or(true, |end| end > params.cluster_heap_offset)
+            || heap_end.map_or(true, |end| end > volume_sectors)
+            || volume_sectors
+                .checked_mul(params.bytes_per_sector)
+                .is_none()
+            || params
+                .cluster_offset(params.first_cluster_of_root_directory)
+                .is_none()
+        {
+            return Err(RootError::InvalidGeometry);
+        }
+
         // Read FAT region.
         let active_fat = params.volume_flags.active_fat();
         let fat = if active_fat == 0 || params.number_of_fats == 2 {
@@ -220,9 +243,20 @@ impl<P: DiskPartition> Root<P> {
                             name,
                             stream,
                             timestamps,
+                            attrs,
+                            file.offset,
                         ))
                     } else {
-                        match File::new(&disk, &params, &fat, name, stream, timestamps) {
+                        match File::new(
+                            &disk,
+                            &params,
+                            &fat,
+                            name,
+                            stream,
+                            timestamps,
+                            attrs,
+                            file.offset,
+                        ) {
                             Ok(v) => Item::File(v),
                             Err(e) => {
                                 return Err(RootError::CreateFileObjectFailed(
@@ -291,6 +325,9 @@ impl<P: DiskPartition> IntoIterator for Root<P> {
 pub struct FileAttributes(u16);
 
 impl FileAttributes {
+    pub fn bits(self) -> u16 {
+        self.0
+    }
     pub fn is_read_only(self) -> bool {
         (self.0 & 0x0001) != 0
     }
@@ -315,6 +352,8 @@ impl FileAttributes {
 /// Represents an error when [`Root::open()`] fails.
 #[derive(Error)]
 pub enum RootError<P: DiskPartition> {
+    #[error("invalid exFAT volume geometry or boot signature")]
+    InvalidGeometry,
     #[error("cannot read main boot region")]
     ReadMainBootFailed(#[source] P::Err),
 
@@ -379,6 +418,7 @@ pub enum RootError<P: DiskPartition> {
 impl<P: DiskPartition> Debug for RootError<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidGeometry => write!(f, "InvalidGeometry"),
             Self::ReadMainBootFailed(arg0) => {
                 f.debug_tuple("ReadMainBootFailed").field(arg0).finish()
             }

@@ -27,6 +27,7 @@ impl<D: DiskPartition, P: AsRef<Params>> EntriesReader<D, P> {
     pub fn read(&mut self) -> Result<RawEntry, ReaderError> {
         // Get current cluster and entry index.
         let cluster = self.cluster_reader.cluster();
+        let offset = self.cluster_reader.physical_offset().unwrap_or(0);
         let index = self.entry_index;
 
         // Read directory entry.
@@ -46,6 +47,7 @@ impl<D: DiskPartition, P: AsRef<Params>> EntriesReader<D, P> {
         Ok(RawEntry {
             index,
             cluster,
+            offset,
             data: entry,
         })
     }
@@ -53,6 +55,7 @@ impl<D: DiskPartition, P: AsRef<Params>> EntriesReader<D, P> {
 
 /// Represents a raw directory entry.
 pub(crate) struct RawEntry {
+    offset: u64,
     index: usize,
     cluster: usize,
     data: [u8; 32],
@@ -78,6 +81,7 @@ impl RawEntry {
 
 /// Represents a File Directory Entry.
 pub(crate) struct FileEntry {
+    pub offset: u64,
     pub name: String,
     pub attributes: FileAttributes,
     pub stream: StreamEntry,
@@ -147,7 +151,7 @@ impl FileEntry {
 
         // Construct a complete file name.
         let mut need = stream.name_length * 2;
-        let mut name = String::with_capacity(15 * names.len());
+        let mut name_units = Vec::with_capacity(stream.name_length);
 
         // Read timestamps (see https://learn.microsoft.com/en-us/windows/win32/fileio/exfat-specification#74-file-directory-entry)
         let create_ts = LE::read_u32(&data[8..12]);
@@ -155,22 +159,6 @@ impl FileEntry {
         let last_accessed_ts = LE::read_u32(&data[16..20]);
         let create_10_ms_increment = data[20];
         let last_modified_10_ms_increment = data[21];
-        let create_utc_offset = if ((data[22] >> 7) & 1) == 1 {
-            (data[22] & 0x7F) as i8
-        } else {
-            0
-        };
-        let last_modified_utc_offset = if ((data[23] >> 7) & 1) == 1 {
-            (data[23] & 0x7F) as i8
-        } else {
-            0
-        };
-        let last_accessed_utc_offset = if ((data[24] >> 7) & 1) == 1 {
-            (data[24] & 0x7F) as i8
-        } else {
-            0
-        };
-
         for entry in names {
             let data = entry.data;
 
@@ -192,24 +180,20 @@ impl FileEntry {
 
             LE::read_u16_into(raw_name, file_name);
 
-            match String::from_utf16(file_name) {
-                Ok(v) => name.push_str(&v),
-                Err(_) => return Err(FileEntryError::InvalidFileName(entry.index, entry.cluster)),
-            }
+            name_units.extend_from_slice(file_name);
         }
+        let name = String::from_utf16(&name_units)
+            .map_err(|_| FileEntryError::InvalidFileName(raw.index, raw.cluster))?;
 
         Ok(Self {
+            offset: raw.offset,
             name,
             attributes,
             stream,
             timestamps: Timestamps::new(
-                Timestamp::new(create_ts, create_10_ms_increment, create_utc_offset),
-                Timestamp::new(
-                    last_modified_ts,
-                    last_modified_10_ms_increment,
-                    last_modified_utc_offset,
-                ),
-                Timestamp::new(last_accessed_ts, 0, last_accessed_utc_offset),
+                Timestamp::from_raw(create_ts, create_10_ms_increment, data[22]),
+                Timestamp::from_raw(last_modified_ts, last_modified_10_ms_increment, data[23]),
+                Timestamp::from_raw(last_accessed_ts, 0, data[24]),
             ),
         })
     }

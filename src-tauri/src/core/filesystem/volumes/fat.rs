@@ -15,24 +15,23 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use chrono::{NaiveDate, TimeZone, Utc};
+use chrono::NaiveDate;
+
+mod read;
+pub use read::{FatFileMetadata, FatVolumeMetadata};
+#[cfg(test)]
+mod tests;
 use fatfs::{Date as FatDate, DateTime as FatDateTime, FsOptions, StdIoWrapper};
 
 use crate::core::evidence::image::find_partition;
 use crate::core::evidence::image::{DiskImage, Partition};
 use crate::core::evidence::partitions::fat::recover_fat32_boot_sector;
 use crate::core::evidence::partitions::PartitionSlice;
-use crate::core::filesystem::tree::fs_tree::{
-    detect_mime_bytes, shannon_entropy, FsDataRun, FsNode, FsStat, Mactb, NodeKind,
-};
+use crate::core::filesystem::tree::fs_tree::{FsNode, Mactb, NodeKind};
 
-const SAMPLE_BYTES: usize = 4096;
-const STREAM_FLOOR: usize = 64 * 1024;
 const BOOT_SECTOR_LEN: usize = 512;
 const BOOT_SIGNATURE: [u8; 2] = [0x55, 0xAA];
 const FAT32_BACKUP_BOOT_SECTOR: u64 = 6;
-const FAT32_LABEL_OFFSET: usize = 82;
-const FAT32_LABEL_LEN: usize = 8;
 
 #[derive(Debug, Clone, Copy)]
 pub enum FatSource {
@@ -78,10 +77,23 @@ pub struct FatVolume {
 impl FatVolume {
     pub fn open(image: Arc<DiskImage>, partition: &Partition) -> Result<Self> {
         let sector_size = image.sector_size as u64;
-        let base_offset = partition.start_lba * sector_size;
-        let length_bytes = partition.length_lba * sector_size;
+        let base_offset = partition
+            .start_lba
+            .checked_mul(sector_size)
+            .ok_or_else(|| anyhow!("FAT partition offset overflow"))?;
+        let length_bytes = partition
+            .length_lba
+            .checked_mul(sector_size)
+            .ok_or_else(|| anyhow!("FAT partition length overflow"))?;
         let boot_sector_override =
             find_fat32_recovered_boot_sector(&image, base_offset, length_bytes, sector_size)?;
+        let boot = match &boot_sector_override {
+            Some(boot) => boot.to_vec(),
+            None => image.read_range(base_offset, 512)?,
+        };
+        if !is_valid_fat_boot_sector(&boot, length_bytes) {
+            anyhow::bail!("FAT invalid boot sector or volume outside partition");
+        }
         let volume = Self {
             image,
             partition_id: partition.id,
@@ -137,7 +149,7 @@ impl FatVolume {
                     kind,
                     size,
                     deleted: false,
-                    inode: None,
+                    inode: Some(self.base_offset + entry.entry_offset()),
                     timestamps: entry_timestamps(&entry),
                     link_target: None,
                     has_snapshot: false,
@@ -153,180 +165,6 @@ impl FatVolume {
         })
     }
 
-    pub fn read_file(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>> {
-        if path.is_empty() {
-            anyhow::bail!("cannot read FAT volume root as a file");
-        }
-        let rel = path.trim_start_matches('/').to_string();
-        self.with_fs(move |fs| {
-            let mut file = fs
-                .root_dir()
-                .open_file(&rel)
-                .map_err(|err| anyhow!("FAT open_file /{rel}: {err}"))?;
-            let mut out = Vec::new();
-            let mut buf = vec![0u8; STREAM_FLOOR];
-            while out.len() < max_bytes {
-                let want = (max_bytes - out.len()).min(buf.len());
-                let read = std::io::Read::read(&mut file, &mut buf[..want])
-                    .map_err(|err| anyhow!("FAT read /{rel}: {err}"))?;
-                if read == 0 {
-                    break;
-                }
-                out.extend_from_slice(&buf[..read]);
-            }
-            Ok(out)
-        })
-    }
-
-    pub fn stream_file<F>(&self, path: &str, chunk_size: usize, mut visitor: F) -> Result<u64>
-    where
-        F: FnMut(&[u8]) -> Result<()>,
-    {
-        if path.is_empty() {
-            anyhow::bail!("cannot stream FAT volume root as a file");
-        }
-        let rel = path.trim_start_matches('/').to_string();
-        self.with_fs(move |fs| {
-            let mut file = fs
-                .root_dir()
-                .open_file(&rel)
-                .map_err(|err| anyhow!("FAT open_file /{rel}: {err}"))?;
-            let mut buf = vec![0u8; chunk_size.max(STREAM_FLOOR)];
-            let mut total = 0u64;
-            loop {
-                let read = std::io::Read::read(&mut file, &mut buf)
-                    .map_err(|err| anyhow!("FAT stream /{rel}: {err}"))?;
-                if read == 0 {
-                    break;
-                }
-                visitor(&buf[..read])?;
-                total += read as u64;
-            }
-            Ok(total)
-        })
-    }
-
-    pub fn data_runs(&self, path: &str) -> Result<Vec<FsDataRun>> {
-        if path.is_empty() {
-            return Ok(Vec::new());
-        }
-        let rel = path.trim_start_matches('/').to_string();
-        let base = self.base_offset;
-        self.with_fs(move |fs| {
-            let mut file = fs
-                .root_dir()
-                .open_file(&rel)
-                .map_err(|err| anyhow!("FAT open_file /{rel}: {err}"))?;
-            let mut runs = Vec::new();
-            let mut logical = 0u64;
-            for extent in file.extents() {
-                let extent = extent.map_err(|err| anyhow!("FAT extents /{rel}: {err}"))?;
-                let length = u64::from(extent.size);
-                runs.push(FsDataRun {
-                    logical_offset: logical,
-                    physical_offset: base + extent.offset,
-                    length,
-                });
-                logical += length;
-            }
-            Ok(runs)
-        })
-    }
-
-    pub fn file_stat(&self, path: &str, node_id: &str) -> Result<FsStat> {
-        if path.is_empty() {
-            anyhow::bail!("cannot stat FAT volume root as a file");
-        }
-        let rel = path.trim_start_matches('/').to_string();
-        let base = self.base_offset;
-        self.with_fs(move |fs| {
-            // First locate the directory entry to read length + (later) attrs.
-            let parent = parent_dir(&rel);
-            let leaf = leaf_name(&rel)?;
-            let dir = if parent.is_empty() {
-                fs.root_dir()
-            } else {
-                fs.root_dir()
-                    .open_dir(parent)
-                    .map_err(|err| anyhow!("FAT open_dir {parent}: {err}"))?
-            };
-            let mut found = None;
-            for entry in dir.iter() {
-                let entry = entry.map_err(|err| anyhow!("FAT dir scan in {parent}: {err}"))?;
-                if entry.file_name() == leaf {
-                    found = Some(entry);
-                    break;
-                }
-            }
-            let entry = found.ok_or_else(|| anyhow!("FAT entry not found: /{rel}"))?;
-            if entry.is_dir() {
-                anyhow::bail!("FAT entry /{rel} is a directory");
-            }
-            let size = entry.len();
-
-            // Then re-open as File to capture sample + extents (the entry
-            // iterator borrows the dir stream so we cannot keep it live).
-            drop(entry);
-            drop(dir);
-            let mut file = fs
-                .root_dir()
-                .open_file(&rel)
-                .map_err(|err| anyhow!("FAT open_file /{rel}: {err}"))?;
-
-            let want = SAMPLE_BYTES.min(size as usize);
-            let mut sample = vec![0u8; want];
-            let mut filled = 0usize;
-            while filled < sample.len() {
-                let read = std::io::Read::read(&mut file, &mut sample[filled..])
-                    .map_err(|err| anyhow!("FAT stat read /{rel}: {err}"))?;
-                if read == 0 {
-                    break;
-                }
-                filled += read;
-            }
-            sample.truncate(filled);
-
-            let mut runs = Vec::new();
-            let mut logical = 0u64;
-            for extent in file.extents() {
-                let extent = extent.map_err(|err| anyhow!("FAT extents /{rel}: {err}"))?;
-                let length = u64::from(extent.size);
-                runs.push(FsDataRun {
-                    logical_offset: logical,
-                    physical_offset: base + extent.offset,
-                    length,
-                });
-                logical += length;
-            }
-
-            Ok(FsStat {
-                node_id: node_id.to_string(),
-                size,
-                inode: None,
-                mode: None,
-                mime: detect_mime_bytes(&sample).to_string(),
-                magic_hex: if sample.is_empty() {
-                    None
-                } else {
-                    Some(
-                        sample
-                            .iter()
-                            .take(16)
-                            .map(|byte| format!("{byte:02x}"))
-                            .collect::<Vec<_>>()
-                            .join(" "),
-                    )
-                },
-                entropy: if sample.is_empty() {
-                    None
-                } else {
-                    Some(shannon_entropy(&sample))
-                },
-                data_runs: runs,
-            })
-        })
-    }
-
     pub fn root_children(&self) -> Result<Vec<FsNode>> {
         self.children("")
     }
@@ -334,13 +172,10 @@ impl FatVolume {
     /// Lists `path`'s children including recovered deleted entries (P1-1). Live
     /// entries come from the vendored crate; deleted `0xE5` slots are decoded
     /// from the directory's raw clusters via [`crate::core::filesystem::volumes::fat_deleted`]
-    /// and merged with `deleted: true`, deduped against the live names.
+    /// and merged with `deleted: true`, retaining distinct same-name records.
     pub fn children_with_deleted(&self, path: &str) -> Result<Vec<FsNode>> {
         use crate::core::filesystem::volumes::fat_deleted as recover;
         let mut out = self.children(path)?;
-        let live: std::collections::HashSet<String> =
-            out.iter().map(|n| n.name.to_lowercase()).collect();
-
         let geom = match recover::open_geom(&self.image, self.base_offset) {
             Ok(g) => g,
             Err(err) => {
@@ -376,9 +211,6 @@ impl FatVolume {
         // inside another file's extent (the `_00W.csv` case).
         recover::apply_cluster_reconstruction(&mut recovered, &geom, &fat);
         for entry in recovered {
-            if live.contains(&entry.name.to_lowercase()) {
-                continue;
-            }
             out.push(self.recovered_node(&parent_id, path, entry));
         }
         Ok(out)
@@ -397,14 +229,21 @@ impl FatVolume {
         entry: crate::core::filesystem::volumes::fat_deleted::RecoveredEntry,
     ) -> FsNode {
         let id = match entry.runs.first() {
-            Some(run) if !entry.is_directory && run.length > 0 => format!(
-                "deleted:run:part:{}:0x{:x}:0x{:x}",
-                self.partition_id, run.physical_offset, run.length
-            ),
+            Some(run) if !entry.is_directory && run.length == entry.size && run.length > 0 => {
+                format!(
+                    "deleted:run:part:{}:fat:{}:{}:0x{:x}:0x{:x}",
+                    self.partition_id,
+                    hex::encode(parent_id),
+                    entry.slot_offset,
+                    run.physical_offset,
+                    run.length
+                )
+            }
             _ => format!(
-                "deleted:fat:part:{}:{}",
+                "deleted:fat:part:{}:{}:{}",
                 self.partition_id,
-                hex::encode(entry.name.as_bytes())
+                hex::encode(parent_id),
+                entry.slot_offset
             ),
         };
         FsNode {
@@ -484,12 +323,15 @@ where
     IO: fatfs::ReadWriteSeek,
     OCC: fatfs::OemCpConverter,
 {
+    let created = (entry.creation_time_fraction() <= 199)
+        .then(|| fat_datetime_to_rfc3339(entry.created()))
+        .flatten();
     Mactb {
         modified: fat_datetime_to_rfc3339(entry.modified()),
         accessed: fat_date_to_rfc3339(entry.accessed()),
-        created: fat_datetime_to_rfc3339(entry.created()),
+        created: created.clone(),
         mft_changed: None,
-        birth: fat_datetime_to_rfc3339(entry.created()),
+        birth: created,
     }
 }
 
@@ -505,7 +347,7 @@ fn fat_datetime_to_rfc3339(dt: FatDateTime) -> Option<String> {
         u32::from(dt.time.sec),
         u32::from(dt.time.millis),
     )?;
-    Some(Utc.from_utc_datetime(&naive).to_rfc3339())
+    Some(naive.format("%Y-%m-%dT%H:%M:%S%.3f").to_string())
 }
 
 fn fat_date_to_rfc3339(date: FatDate) -> Option<String> {
@@ -515,7 +357,7 @@ fn fat_date_to_rfc3339(date: FatDate) -> Option<String> {
         u32::from(date.day),
     )?
     .and_hms_opt(0, 0, 0)?;
-    Some(Utc.from_utc_datetime(&naive).to_rfc3339())
+    Some(naive.format("%Y-%m-%dT%H:%M:%S%.3f").to_string())
 }
 
 fn join_path(parent: &str, name: &str) -> String {
@@ -618,7 +460,21 @@ fn find_fat32_recovered_boot_sector(
         return Ok(None);
     }
 
-    let backup_offset = base_offset + FAT32_BACKUP_BOOT_SECTOR * sector_size;
+    if read_u16(&primary, 22).is_some_and(|size| size != 0) {
+        return Ok(None);
+    }
+    let logical_sector = read_u16(&primary, 11)
+        .filter(|size| matches!(size, 512 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768))
+        .map(u64::from)
+        .unwrap_or(sector_size);
+    let backup_sector = read_u16(&primary, 50)
+        .filter(|sector| *sector > 0 && *sector != u16::MAX)
+        .map(u64::from)
+        .unwrap_or(FAT32_BACKUP_BOOT_SECTOR);
+    if (backup_sector + 1) * logical_sector > length_bytes {
+        return Ok(None);
+    }
+    let backup_offset = base_offset + backup_sector * logical_sector;
     let backup = image.read_range(backup_offset, BOOT_SECTOR_LEN)?;
     if !is_valid_fat_boot_sector(&backup, length_bytes) {
         let slice = PartitionSlice::new(image, base_offset, length_bytes);
@@ -637,7 +493,10 @@ fn is_valid_fat_boot_sector(bytes: &[u8], volume_size: u64) -> bool {
     let Some(bytes_per_sector) = read_u16(bytes, 11) else {
         return false;
     };
-    if !matches!(bytes_per_sector, 512 | 1024 | 2048 | 4096) {
+    if !matches!(
+        bytes_per_sector,
+        512 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768
+    ) {
         return false;
     }
     let sectors_per_cluster = bytes[13];
@@ -659,8 +518,7 @@ fn is_valid_fat_boot_sector(bytes: &[u8], volume_size: u64) -> bool {
         return false;
     }
     let declared_bytes = u64::from(total_sectors).saturating_mul(u64::from(bytes_per_sector));
-    declared_bytes <= volume_size
-        && bytes.get(FAT32_LABEL_OFFSET..FAT32_LABEL_OFFSET + FAT32_LABEL_LEN) == Some(b"FAT32   ")
+    declared_bytes <= volume_size && super::fat_deleted::FatGeom::parse(bytes, 0).is_ok()
 }
 
 fn overlay_boot_sector(buf: &mut [u8], position: u64, copied: usize, boot_sector: &[u8; 512]) {

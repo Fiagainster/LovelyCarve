@@ -259,6 +259,19 @@ macro_rules! path_volume {
 }
 
 macro_rules! path_volume_impl {
+    ($vol:ident, deleted_range) => {
+        impl Volume for $vol {
+            fn children(&self, _image: &Arc<EvidenceSession>, id: &str, opts: ChildrenOptions) -> Result<Vec<FsNode>> {
+                let path = self.path_of(id)?;
+                if opts.include_deleted_ntfs { self.volume.children_with_deleted(&path) }
+                else { self.volume.children(&path) }
+            }
+            fn read_range(&self, id: &str, offset: u64, length: usize) -> Result<Option<Vec<u8>>> {
+                self.volume.read_file_range(&self.path_of(id)?, offset, length).map(Some)
+            }
+            path_volume_impl!(@common $vol);
+        }
+    };
     ($vol:ident, deleted) => {
         impl Volume for $vol {
             fn children(&self, _image: &Arc<EvidenceSession>, id: &str, opts: ChildrenOptions) -> Result<Vec<FsNode>> {
@@ -360,7 +373,7 @@ path_volume!(
     parse_fat_id,
     open_fat_source
 );
-path_volume_impl!(FatVol, deleted);
+path_volume_impl!(FatVol, deleted_range);
 path_volume!(
     ExfatAdapter,
     ExfatVol,
@@ -369,14 +382,14 @@ path_volume!(
     parse_exfat_id,
     open_exfat_source
 );
-path_volume_impl!(ExfatVol, deleted);
+path_volume_impl!(ExfatVol, deleted_range);
 
 // ---- shared helpers -----------------------------------------------------
 
 /// Builds an [`FsStat`] from a sampled prefix, identical to the inline blocks
 /// the ext4 / btrfs dispatchers used before the refactor (mime sniff, 16-byte
 /// magic, Shannon entropy — all skipped for an empty sample).
-fn build_stat(
+pub(crate) fn build_stat(
     node_id: &str,
     size: u64,
     inode: Option<u64>,

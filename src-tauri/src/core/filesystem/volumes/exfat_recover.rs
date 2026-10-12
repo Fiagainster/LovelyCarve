@@ -16,7 +16,6 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
-use chrono::{Duration, NaiveDate, TimeZone, Utc};
 
 use crate::core::evidence::image::DiskImage;
 use crate::core::filesystem::tree::fs_tree::{FsDataRun, Mactb};
@@ -45,6 +44,7 @@ pub struct ExfatGeom {
     pub root_cluster: u32,
     pub bytes_per_sector: u64,
     pub sectors_per_cluster: u64,
+    pub active_fat: u64,
 }
 
 impl ExfatGeom {
@@ -62,11 +62,37 @@ impl ExfatGeom {
         let root_cluster = u32::from_le_bytes([boot[96], boot[97], boot[98], boot[99]]);
         let bytes_per_sector_shift = boot[108];
         let sectors_per_cluster_shift = boot[109];
-        if bytes_per_sector_shift > 12 || sectors_per_cluster_shift > 25 {
+        if !(9..=12).contains(&bytes_per_sector_shift)
+            || sectors_per_cluster_shift > 25 - bytes_per_sector_shift
+        {
             anyhow::bail!("exFAT geometry shifts out of range");
         }
         let bytes_per_sector = 1u64 << bytes_per_sector_shift;
         let sectors_per_cluster = 1u64 << sectors_per_cluster_shift;
+        let volume_sectors = u64::from_le_bytes(boot[72..80].try_into()?);
+        let fats = boot[110];
+        let active_fat = boot[106] & 1;
+        let heap_end = cluster_heap_offset_sectors + u64::from(cluster_count) * sectors_per_cluster;
+        if !matches!(fats, 1 | 2)
+            || active_fat >= fats
+            || cluster_count == 0
+            || cluster_count > 0xfffffff5
+            || root_cluster < 2
+            || u64::from(root_cluster) >= u64::from(cluster_count) + 2
+            || fat_offset_sectors < 24
+            || fat_length_sectors * u64::from(fats) + fat_offset_sectors
+                > cluster_heap_offset_sectors
+            || heap_end > volume_sectors
+        {
+            anyhow::bail!("exFAT invalid volume geometry");
+        }
+        base_offset
+            .checked_add(
+                volume_sectors
+                    .checked_mul(bytes_per_sector)
+                    .ok_or_else(|| anyhow!("exFAT volume size overflow"))?,
+            )
+            .ok_or_else(|| anyhow!("exFAT volume end overflow"))?;
         Ok(Self {
             base_offset,
             fat_offset_sectors,
@@ -76,6 +102,7 @@ impl ExfatGeom {
             root_cluster,
             bytes_per_sector,
             sectors_per_cluster,
+            active_fat: u64::from(boot[106] & 1),
         })
     }
 
@@ -91,13 +118,16 @@ impl ExfatGeom {
     }
 
     fn fat_offset(&self) -> u64 {
-        self.base_offset + self.fat_offset_sectors * self.bytes_per_sector
+        self.base_offset
+            + (self.fat_offset_sectors + self.active_fat * self.fat_length_sectors)
+                * self.bytes_per_sector
     }
 }
 
 /// One decoded exFAT directory entry.
 #[derive(Debug, Clone)]
 pub struct RecoveredEntry {
+    pub slot_offset: u64,
     pub name: String,
     pub is_directory: bool,
     pub size: u64,
@@ -116,7 +146,10 @@ impl ExfatFat {
     pub fn load(image: &Arc<DiskImage>, geom: &ExfatGeom) -> Result<Self> {
         let len = (geom.fat_length_sectors * geom.bytes_per_sector) as usize;
         let raw = image.read_range(geom.fat_offset(), len)?;
-        let count = (geom.cluster_count as usize + 2).min(raw.len() / 4);
+        let count = geom.cluster_count as usize + 2;
+        if raw.len() != len || count > raw.len() / 4 {
+            anyhow::bail!("exFAT truncated allocation table");
+        }
         let mut entries = Vec::with_capacity(count);
         for i in 0..count {
             let off = i * 4;
@@ -179,11 +212,15 @@ pub fn data_runs(
     let mut logical = 0u64;
     let mut remaining = size;
     let mut guard = 0usize;
+    let mut visited = std::collections::HashSet::new();
     while cluster >= 2
         && (cluster as u64) < max_cluster
         && remaining > 0
         && guard < MAX_DIR_CLUSTERS
     {
+        if !visited.insert(cluster) {
+            return Vec::new();
+        }
         let phys = geom.cluster_offset(cluster);
         let take = cluster_size.min(remaining);
         if let Some(last) = runs.last_mut() {
@@ -237,10 +274,14 @@ pub fn read_dir_bytes(
     let max_cluster = 2 + geom.cluster_count;
     let mut cluster = first_cluster;
     let mut guard = 0usize;
+    let mut visited = std::collections::HashSet::new();
     while cluster >= 2 && cluster < max_cluster && guard < MAX_DIR_CLUSTERS {
+        if !visited.insert(cluster) {
+            anyhow::bail!("exFAT cyclic directory chain");
+        }
         let bytes = image.read_range(geom.cluster_offset(cluster), cluster_size)?;
-        if bytes.is_empty() {
-            break;
+        if bytes.len() != cluster_size {
+            anyhow::bail!("exFAT directory short read");
         }
         out.extend_from_slice(&bytes);
         // Read the end-of-chain cluster before stopping — otherwise a
@@ -250,11 +291,14 @@ pub fn read_dir_bytes(
             break;
         }
         let next = fat.next_cluster(cluster);
-        if next == cluster || next < 2 {
-            break;
+        if next < 2 || next >= max_cluster {
+            anyhow::bail!("exFAT invalid directory chain");
         }
         cluster = next;
         guard += 1;
+    }
+    if guard >= MAX_DIR_CLUSTERS {
+        anyhow::bail!("exFAT directory exceeds recovery limit");
     }
     Ok(out)
 }
@@ -394,18 +438,15 @@ fn parse_entry_set(
         return None;
     }
 
-    let runs = if is_directory {
-        Vec::new()
-    } else {
-        data_runs(geom, fat, first_cluster, size, no_fat_chain)
-    };
+    let runs = data_runs(geom, fat, first_cluster, size, no_fat_chain);
 
     let consumed = 1 + secondary_count; // file entry + secondaries
     Some((
         RecoveredEntry {
+            slot_offset: (start * SLOT_LEN) as u64,
             name,
             is_directory,
-            size: if is_directory { 0 } else { size },
+            size,
             first_cluster,
             no_fat_chain,
             timestamps,
@@ -423,56 +464,21 @@ fn file_entry_timestamps(slot: &[u8]) -> Mactb {
     let created = u32::from_le_bytes([slot[8], slot[9], slot[10], slot[11]]);
     let modified = u32::from_le_bytes([slot[12], slot[13], slot[14], slot[15]]);
     let accessed = u32::from_le_bytes([slot[16], slot[17], slot[18], slot[19]]);
-    // Time-zone offsets (15-min units) at 22/23/24 — applied for parity with
-    // the live adapter's `exfat_ts_to_rfc3339`. Each byte is bit7 = OffsetValid
-    // and bits6-0 = the offset; an invalid byte means no offset (UTC). Decode
-    // identically to the vendored exFAT crate (`vendor/exfat/src/entries.rs`)
-    // so recovered MAC times match the live listing instead of reading the raw
-    // byte (e.g. 0x80 → -128 → +32h skew on every Windows-written UTC stamp).
-    let created_tz = decode_utc_offset(slot[22]);
-    let modified_tz = decode_utc_offset(slot[23]);
-    let accessed_tz = decode_utc_offset(slot[24]);
-    let created = exfat_timestamp(created, created_tz);
-    let modified = exfat_timestamp(modified, modified_tz);
+    let created = super::exfat::exfat_ts_to_rfc3339(&exfat::timestamp::Timestamp::from_raw(
+        created, slot[20], slot[22],
+    ));
+    let modified = super::exfat::exfat_ts_to_rfc3339(&exfat::timestamp::Timestamp::from_raw(
+        modified, slot[21], slot[23],
+    ));
     Mactb {
         modified,
-        accessed: exfat_timestamp(accessed, accessed_tz),
+        accessed: super::exfat::exfat_ts_to_rfc3339(&exfat::timestamp::Timestamp::from_raw(
+            accessed, 0, slot[24],
+        )),
         created: created.clone(),
         mft_changed: None,
         birth: created,
     }
-}
-
-/// Decode an exFAT UTCOffset byte: bit7 is the OffsetValid flag and bits6-0 the
-/// offset in 15-minute units. An invalid byte means no recorded offset (treat
-/// as UTC). Decoded identically to the vendored exFAT crate
-/// (`vendor/exfat/src/entries.rs`) so recovered timestamps match the live
-/// listing — reading the whole byte as a raw `i8` instead (e.g. 0x80 → -128)
-/// skews every Windows-written UTC stamp by +32h.
-fn decode_utc_offset(byte: u8) -> i8 {
-    if (byte >> 7) & 1 == 1 {
-        (byte & 0x7F) as i8
-    } else {
-        0
-    }
-}
-
-fn exfat_timestamp(packed: u32, tz: i8) -> Option<String> {
-    if packed == 0 {
-        return None;
-    }
-    let year = 1980 + ((packed >> 25) & 0x7F) as i32;
-    let month = (packed >> 21) & 0x0F;
-    let day = (packed >> 16) & 0x1F;
-    let hour = (packed >> 11) & 0x1F;
-    let minute = (packed >> 5) & 0x3F;
-    let second = (packed & 0x1F) * 2;
-    let naive =
-        NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(hour, minute, second.min(59))?;
-    // The tz byte is a signed count of 15-minute units when its 0x80 valid bit
-    // is set; mirror the live adapter which subtracts 15-min*offset.
-    let dt = Utc.from_utc_datetime(&naive) - Duration::minutes(15 * i64::from(tz));
-    Some(dt.to_rfc3339())
 }
 
 /// Read a partition's boot sector and parse exFAT geometry.
@@ -487,7 +493,10 @@ pub fn open_geom(image: &Arc<DiskImage>, base_offset: u64) -> Result<ExfatGeom> 
     ExfatGeom::parse(&boot, base_offset)
 }
 
-fn read_effective_boot_sector(image: &Arc<DiskImage>, base_offset: u64) -> Result<[u8; 512]> {
+pub(super) fn read_effective_boot_sector(
+    image: &Arc<DiskImage>,
+    base_offset: u64,
+) -> Result<[u8; 512]> {
     let primary = image
         .read_range(base_offset, BOOT_SECTOR_LEN)
         .map_err(|err| anyhow!("exFAT boot sector read: {err}"))?;
@@ -496,7 +505,15 @@ fn read_effective_boot_sector(image: &Arc<DiskImage>, base_offset: u64) -> Resul
     }
     // The backup VBR is a faithful copy: every region offset still resolves
     // relative to `base_offset`, only the BPB bytes come from sector 12.
-    let backup_offset = base_offset + EXFAT_BACKUP_BOOT_SECTOR * image.sector_size as u64;
+    let logical_sector = primary
+        .get(108)
+        .copied()
+        .filter(|shift| (9..=12).contains(shift))
+        .map(|shift| 1u64 << shift)
+        .unwrap_or(image.sector_size as u64);
+    let backup_offset = base_offset
+        .checked_add(EXFAT_BACKUP_BOOT_SECTOR * logical_sector)
+        .ok_or_else(|| anyhow!("exFAT backup offset overflow"))?;
     if let Ok(backup) = image.read_range(backup_offset, BOOT_SECTOR_LEN) {
         if exfat_boot_looks_valid(&backup) {
             return boot_sector_array(&backup);
@@ -512,8 +529,7 @@ fn exfat_boot_looks_valid(boot: &[u8]) -> bool {
     boot.len() >= BOOT_SECTOR_LEN
         && &boot[3..11] == b"EXFAT   "
         && boot[510..512] == [0x55, 0xAA]
-        && boot[108] <= 12
-        && boot[109] <= 25
+        && ExfatGeom::parse(boot, 0).is_ok()
 }
 
 fn boot_sector_array(bytes: &[u8]) -> Result<[u8; 512]> {
@@ -528,28 +544,37 @@ fn boot_sector_array(bytes: &[u8]) -> Result<[u8; 512]> {
 /// Resolve an absolute volume path to the directory's first cluster and
 /// `no_fat_chain` flag by walking live entry sets from the root. Returns the
 /// root cluster for the empty/`/` path.
-pub fn resolve_dir(
+pub fn read_directory_path(
     image: &Arc<DiskImage>,
     geom: &ExfatGeom,
     fat: &ExfatFat,
     path: &str,
-) -> Result<u32> {
-    let mut cluster = geom.root_cluster;
+) -> Result<Vec<u8>> {
+    let mut dir_bytes = read_dir_bytes(image, geom, fat, geom.root_cluster)?;
     for segment in path.split('/').filter(|s| !s.is_empty()) {
-        let dir_bytes = read_dir_bytes(image, geom, fat, cluster)?;
         let mut found = None;
         for entry in scan_dir_live(&dir_bytes, geom, Some(fat)) {
             if entry.is_directory && entry.name.eq_ignore_ascii_case(segment) {
-                found = Some(entry.first_cluster);
+                found = Some(entry);
                 break;
             }
         }
-        match found {
-            Some(next) if next >= 2 => cluster = next,
-            _ => anyhow::bail!("exFAT directory segment not found: {segment}"),
+        let entry = found.ok_or_else(|| anyhow!("exFAT directory segment not found: {segment}"))?;
+        if entry.size > 64 * 1024 * 1024
+            || entry.runs.iter().map(|run| run.length).sum::<u64>() != entry.size
+        {
+            anyhow::bail!("exFAT invalid or excessive directory allocation: {segment}");
+        }
+        dir_bytes.clear();
+        for run in entry.runs {
+            let bytes = image.read_range(run.physical_offset, usize::try_from(run.length)?)?;
+            if bytes.len() as u64 != run.length {
+                anyhow::bail!("exFAT directory short read: {segment}");
+            }
+            dir_bytes.extend_from_slice(&bytes);
         }
     }
-    Ok(cluster)
+    Ok(dir_bytes)
 }
 
 #[cfg(test)]
@@ -559,19 +584,34 @@ mod tests {
     #[test]
     fn utc_offset_decodes_valid_bit_and_offset() {
         // Invalid (bit7 clear) → no offset.
-        assert_eq!(decode_utc_offset(0x00), 0);
-        assert_eq!(decode_utc_offset(0x20), 0);
+        assert_eq!(
+            exfat::timestamp::Timestamp::from_raw(0, 0, 0x00).offset(),
+            None
+        );
+        assert_eq!(
+            exfat::timestamp::Timestamp::from_raw(0, 0, 0x20).offset(),
+            None
+        );
         // 0x80 = valid + zero offset (Windows writes this for UTC).
-        assert_eq!(decode_utc_offset(0x80), 0);
+        assert_eq!(
+            exfat::timestamp::Timestamp::from_raw(0, 0, 0x80).offset(),
+            Some(0)
+        );
         // 0xA0 = valid + 0x20 (32 × 15 min = UTC+8).
-        assert_eq!(decode_utc_offset(0xA0), 32);
+        assert_eq!(
+            exfat::timestamp::Timestamp::from_raw(0, 0, 0xA0).offset(),
+            Some(32)
+        );
     }
 
     #[test]
     fn utc_timestamp_no_skew_for_windows_utc_byte() {
         // packed = 2021-06-15 12:00:00. tz byte 0x80 → offset 0 → no shift.
         let packed: u32 = (((2021 - 1980) as u32) << 25) | (6 << 21) | (15 << 16) | (12 << 11);
-        let ts = exfat_timestamp(packed, decode_utc_offset(0x80)).expect("timestamp");
+        let ts = super::super::exfat::exfat_ts_to_rfc3339(&exfat::timestamp::Timestamp::from_raw(
+            packed, 0, 0x80,
+        ))
+        .expect("timestamp");
         assert!(ts.starts_with("2021-06-15T12:00:00"), "unexpected ts: {ts}");
     }
 
@@ -585,6 +625,7 @@ mod tests {
             root_cluster: 4,
             bytes_per_sector: 512,
             sectors_per_cluster: 1,
+            active_fat: 0,
         }
     }
 
@@ -685,6 +726,8 @@ mod tests {
     fn parses_exfat_geometry() {
         let mut boot = vec![0u8; 512];
         boot[3..11].copy_from_slice(b"EXFAT   ");
+        boot[72..80].copy_from_slice(&804096u64.to_le_bytes());
+        boot[110] = 1;
         boot[80..84].copy_from_slice(&2048u32.to_le_bytes());
         boot[84..88].copy_from_slice(&512u32.to_le_bytes());
         boot[88..92].copy_from_slice(&4096u32.to_le_bytes());

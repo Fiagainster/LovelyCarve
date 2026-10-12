@@ -29,7 +29,13 @@ impl Fat {
         };
 
         // Load entries.
-        let count = params.cluster_count + 2;
+        let count = params
+            .cluster_count
+            .checked_add(2)
+            .ok_or(LoadError::InvalidFatLength)?;
+        if (count as u64) * 4 > params.fat_length.saturating_mul(params.bytes_per_sector) {
+            return Err(LoadError::InvalidFatLength);
+        }
         let mut data = vec![0u8; count * 4];
 
         if let Err(e) = partition.read_exact(offset, &mut data) {
@@ -44,35 +50,24 @@ impl Fat {
         Ok(Self { entries })
     }
 
-    pub fn get_cluster_chain(&self, first: usize) -> ClusterChain<'_> {
-        ClusterChain {
-            entries: &self.entries,
-            next: first,
+    pub fn cluster_chain(&self, first: usize) -> Result<Vec<usize>, crate::cluster::NewError> {
+        let mut chain = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut cluster = first;
+        loop {
+            if cluster < 2 || cluster >= self.entries.len() || !visited.insert(cluster) {
+                return Err(crate::cluster::NewError::InvalidClusterChain);
+            }
+            let next = self.entries[cluster];
+            if next == 0 || next == 1 || next == 0xfffffff7 {
+                return Err(crate::cluster::NewError::InvalidClusterChain);
+            }
+            chain.push(cluster);
+            if next >= 0xfffffff8 {
+                return Ok(chain);
+            }
+            cluster = next as usize;
         }
-    }
-}
-
-pub(crate) struct ClusterChain<'fat> {
-    entries: &'fat [u32],
-    next: usize,
-}
-
-impl<'fat> Iterator for ClusterChain<'fat> {
-    type Item = usize;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // Check next entry.
-        let entries = self.entries;
-        let next = self.next;
-
-        if next < 2 || next >= entries.len() || entries[next] == 0xfffffff7 {
-            return None;
-        }
-
-        // Move to next entry.
-        self.next = entries[next] as usize;
-
-        Some(next)
     }
 }
 

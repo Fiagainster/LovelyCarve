@@ -36,12 +36,17 @@ impl<D, P: AsRef<Params>> ClustersReader<D, P> {
             };
 
             // FIXME: Use div_ceil once https://github.com/rust-lang/rust/issues/88581 stabilized.
-            let count = (data_length + cluster_size - 1) / cluster_size;
+            let count = data_length.div_ceil(cluster_size);
+            if count > params.as_ref().cluster_count as u64
+                || first_cluster as u64 + count > params.as_ref().cluster_count as u64 + 2
+            {
+                return Err(NewError::InvalidClusterChain);
+            }
             let chain: Vec<usize> = (first_cluster..(first_cluster + count as usize)).collect();
 
             (chain, data_length)
         } else {
-            let chain: Vec<usize> = fat.get_cluster_chain(first_cluster).collect();
+            let chain = fat.cluster_chain(first_cluster)?;
 
             if chain.is_empty() {
                 return Err(NewError::InvalidFirstCluster);
@@ -73,8 +78,34 @@ impl<D, P: AsRef<Params>> ClustersReader<D, P> {
         })
     }
 
+    pub fn extents(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        let cluster_size = self.params.as_ref().cluster_size();
+        self.chain
+            .iter()
+            .enumerate()
+            .map(move |(index, cluster)| {
+                let offset = self.params.as_ref().cluster_offset(*cluster).unwrap_or(0);
+                let length = self
+                    .data_length
+                    .saturating_sub(index as u64 * cluster_size)
+                    .min(cluster_size);
+                (offset, length)
+            })
+            .filter(|(_, length)| *length != 0)
+    }
+
+    pub fn physical_offset(&self) -> Option<u64> {
+        self.params
+            .as_ref()
+            .cluster_offset(self.cluster())
+            .map(|base| base + self.offset % self.params.as_ref().cluster_size())
+    }
+
     pub fn cluster(&self) -> usize {
-        self.chain[(self.offset / self.params.as_ref().cluster_size()) as usize]
+        self.chain
+            .get((self.offset / self.params.as_ref().cluster_size()) as usize)
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -158,6 +189,8 @@ impl<D: DiskPartition, P: AsRef<Params>> ClustersReader<D, P> {
 /// Represents an error for [`new()`][ClustersReader::new()].
 #[derive(Debug, Error)]
 pub enum NewError {
+    #[error("invalid, out-of-bounds or cyclic cluster chain")]
+    InvalidClusterChain,
     #[error("first cluster is not valid")]
     InvalidFirstCluster,
 

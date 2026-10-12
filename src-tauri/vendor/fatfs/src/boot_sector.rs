@@ -130,9 +130,9 @@ impl BiosParameterBlock {
             );
             return Err(Error::CorruptedFileSystem);
         }
-        if self.bytes_per_sector < 512 || self.bytes_per_sector > 4096 {
+        if self.bytes_per_sector < 512 || self.bytes_per_sector > 32768 {
             error!(
-                "invalid bytes_per_sector value in BPB: expected value in range [512, 4096] but got {}",
+                "invalid bytes_per_sector value in BPB: expected value in range [512, 32768] but got {}",
                 self.bytes_per_sector
             );
             return Err(Error::CorruptedFileSystem);
@@ -826,10 +826,6 @@ pub(crate) fn format_boot_sector<E: IoError>(
 mod tests {
     use super::*;
 
-    fn init() {
-        let _ = env_logger::builder().is_test(true).try_init();
-    }
-
     #[test]
     fn test_estimate_fat_type() {
         assert_eq!(estimate_fat_type(4 * MB_64), FatType::Fat12);
@@ -963,8 +959,6 @@ mod tests {
 
     #[test]
     fn test_determine_sectors_per_fat() {
-        init();
-
         test_determine_sectors_per_fat_for_multiple_sizes(512, FatType::Fat12, 1, 2, 512);
         test_determine_sectors_per_fat_for_multiple_sizes(512, FatType::Fat12, 1, 1, 512);
         test_determine_sectors_per_fat_for_multiple_sizes(512, FatType::Fat12, 1, 2, 8192);
@@ -982,8 +976,6 @@ mod tests {
 
     #[test]
     fn test_format_boot_sector() {
-        init();
-
         let bytes_per_sector = 512_u16;
         // test all partition sizes from 1MB to 2TB (u32::MAX sectors is 2TB - 1 for 512 byte sectors)
         let mut total_sectors_vec = Vec::new();
@@ -1002,8 +994,6 @@ mod tests {
     }
 
     fn test_determine_fs_layout(fat_type: FatType, min_size: u64, max_size: u64) {
-        init();
-
         let bytes_per_sector = 512_u16;
         // test all partition sizes from 24 KB to 127 MB
         let mut total_sectors_vec = Vec::new();

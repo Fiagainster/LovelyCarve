@@ -15,22 +15,21 @@
 //! volume root and is never emitted directly — the partition node itself
 //! stands in for the root.
 
-use std::io::Read;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use chrono::{Duration, NaiveDate, TimeZone, Utc};
+
+mod read;
+pub use read::{ExfatFileMetadata, ExfatVolumeMetadata};
+#[cfg(test)]
+mod fixture_tests;
 use exfat::timestamp::{Timestamp as ExfatTimestamp, Timestamps as ExfatTimestamps};
 use exfat::{Item, Root};
 
 use crate::core::evidence::image::find_partition;
 use crate::core::evidence::image::{DiskImage, Partition};
-use crate::core::filesystem::tree::fs_tree::{
-    detect_mime_bytes, shannon_entropy, FsDataRun, FsNode, FsStat, Mactb, NodeKind,
-};
-
-const SAMPLE_BYTES: usize = 4096;
-const STREAM_FLOOR: usize = 64 * 1024;
+use crate::core::filesystem::tree::fs_tree::{FsNode, Mactb, NodeKind};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ExfatSource {
@@ -70,6 +69,7 @@ pub struct ExfatVolume {
     partition_id: u8,
     base_offset: u64,
     length_bytes: u64,
+    boot_sector: [u8; 512],
     /// Root opened once (its FAT loaded once) and reused for every directory
     /// listing — `children` walks this via `Root::items()` instead of re-
     /// opening per call. Held by `&self`; no lock needed.
@@ -79,12 +79,33 @@ pub struct ExfatVolume {
 impl ExfatVolume {
     pub fn open(image: Arc<DiskImage>, partition: &Partition) -> Result<Self> {
         let sector_size = image.sector_size as u64;
-        let base_offset = partition.start_lba * sector_size;
-        let length_bytes = partition.length_lba * sector_size;
+        let base_offset = partition
+            .start_lba
+            .checked_mul(sector_size)
+            .ok_or_else(|| anyhow!("exFAT partition offset overflow"))?;
+        let length_bytes = partition
+            .length_lba
+            .checked_mul(sector_size)
+            .ok_or_else(|| anyhow!("exFAT partition length overflow"))?;
+        base_offset
+            .checked_add(length_bytes)
+            .ok_or_else(|| anyhow!("exFAT partition end overflow"))?;
+        let boot = super::exfat_recover::read_effective_boot_sector(&image, base_offset)?;
+        if !(9..=12).contains(&boot[108]) {
+            anyhow::bail!("exFAT invalid boot sector");
+        }
+        let declared_sectors = u64::from_le_bytes(boot[72..80].try_into()?);
+        if declared_sectors
+            .checked_mul(1u64 << boot[108])
+            .is_none_or(|size| size > length_bytes)
+        {
+            anyhow::bail!("exFAT declared volume extends outside partition");
+        }
         let part = PartitionPart {
             image: Arc::clone(&image),
             base_offset,
             length_bytes,
+            boot_sector: boot,
         };
         let root = Root::open(part).map_err(|err| anyhow!("exFAT open: {err:?}"))?;
         Ok(Self {
@@ -92,6 +113,7 @@ impl ExfatVolume {
             partition_id: partition.id,
             base_offset,
             length_bytes,
+            boot_sector: boot,
             root,
         })
     }
@@ -107,9 +129,6 @@ impl ExfatVolume {
     pub fn children_with_deleted(&self, path: &str) -> Result<Vec<FsNode>> {
         use crate::core::filesystem::volumes::exfat_recover as recover;
         let mut out = self.children(path)?;
-        let live: std::collections::HashSet<String> =
-            out.iter().map(|n| n.name.to_lowercase()).collect();
-
         let geom = match recover::open_geom(&self.image, self.base_offset) {
             Ok(g) => g,
             Err(err) => {
@@ -124,58 +143,18 @@ impl ExfatVolume {
                 return Ok(out);
             }
         };
-        let cluster = match recover::resolve_dir(&self.image, &geom, &fat, path) {
-            Ok(c) => c,
+        let dir_bytes = match recover::read_directory_path(&self.image, &geom, &fat, path) {
+            Ok(bytes) => bytes,
             Err(err) => {
                 tracing::debug!("exFAT recover resolve {path} failed: {err}");
                 return Ok(out);
             }
         };
-        let dir_bytes = match recover::read_dir_bytes(&self.image, &geom, &fat, cluster) {
-            Ok(b) => b,
-            Err(err) => {
-                tracing::debug!("exFAT recover read dir {path} failed: {err}");
-                return Ok(out);
-            }
-        };
         let parent_id = self.node_id(path);
         for entry in recover::scan_dir_deleted(&dir_bytes, &geom, Some(&fat)) {
-            if live.contains(&entry.name.to_lowercase()) {
-                continue;
-            }
             out.push(recovered_node(self.partition_id, &parent_id, entry));
         }
         Ok(out)
-    }
-
-    /// Live data runs for a path (P1-6). The vendored crate exposes no extents,
-    /// so re-parse the entry set to read the Stream Extension's NoFatChain flag
-    /// and first cluster, then build runs (single contiguous when NoFatChain,
-    /// else FAT-chain-walked).
-    pub fn live_data_runs(&self, path: &str) -> Result<Vec<FsDataRun>> {
-        use crate::core::filesystem::volumes::exfat_recover as recover;
-        if path.is_empty() {
-            return Ok(Vec::new());
-        }
-        let geom = recover::open_geom(&self.image, self.base_offset)?;
-        let fat = recover::ExfatFat::load(&self.image, &geom)?;
-        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        let Some((leaf, dir_parts)) = segments.split_last() else {
-            return Ok(Vec::new());
-        };
-        let parent_path = if dir_parts.is_empty() {
-            String::new()
-        } else {
-            format!("/{}", dir_parts.join("/"))
-        };
-        let cluster = recover::resolve_dir(&self.image, &geom, &fat, &parent_path)?;
-        let dir_bytes = recover::read_dir_bytes(&self.image, &geom, &fat, cluster)?;
-        for entry in recover::scan_dir_live(&dir_bytes, &geom, Some(&fat)) {
-            if !entry.is_directory && entry.name.eq_ignore_ascii_case(leaf) {
-                return Ok(entry.runs);
-            }
-        }
-        Ok(Vec::new())
     }
 
     /// Lists the direct children of `path` inside the volume. `path` uses
@@ -214,7 +193,7 @@ impl ExfatVolume {
                         kind: NodeKind::Dir,
                         size: 0,
                         deleted: false,
-                        inode: None,
+                        inode: Some(self.base_offset + dir.entry_offset()),
                         timestamps: timestamps_to_mactb(dir.timestamps()),
                         link_target: None,
                         has_snapshot: false,
@@ -233,7 +212,7 @@ impl ExfatVolume {
                         kind: NodeKind::File,
                         size: file.len(),
                         deleted: false,
-                        inode: None,
+                        inode: Some(self.base_offset + file.entry_offset()),
                         timestamps: timestamps_to_mactb(file.timestamps()),
                         link_target: None,
                         has_snapshot: false,
@@ -285,102 +264,6 @@ impl ExfatVolume {
         Ok(items)
     }
 
-    pub fn read_file(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>> {
-        if path.is_empty() {
-            anyhow::bail!("cannot read exFAT volume root as a file");
-        }
-        let mut file = self.open_file(path)?;
-        let mut out = Vec::new();
-        let mut buf = vec![0u8; STREAM_FLOOR];
-        while out.len() < max_bytes {
-            let want = (max_bytes - out.len()).min(buf.len());
-            let read = file
-                .read(&mut buf[..want])
-                .map_err(|err| anyhow!("exFAT read {path}: {err}"))?;
-            if read == 0 {
-                break;
-            }
-            out.extend_from_slice(&buf[..read]);
-        }
-        Ok(out)
-    }
-
-    pub fn stream_file<F>(&self, path: &str, chunk_size: usize, mut visitor: F) -> Result<u64>
-    where
-        F: FnMut(&[u8]) -> Result<()>,
-    {
-        if path.is_empty() {
-            anyhow::bail!("cannot stream exFAT volume root as a file");
-        }
-        let mut file = self.open_file(path)?;
-        let mut buf = vec![0u8; chunk_size.max(STREAM_FLOOR)];
-        let mut total = 0u64;
-        loop {
-            let read = file
-                .read(&mut buf)
-                .map_err(|err| anyhow!("exFAT stream {path}: {err}"))?;
-            if read == 0 {
-                break;
-            }
-            visitor(&buf[..read])?;
-            total += read as u64;
-        }
-        Ok(total)
-    }
-
-    pub fn file_stat(&self, path: &str, node_id: &str) -> Result<FsStat> {
-        if path.is_empty() {
-            anyhow::bail!("cannot stat exFAT volume root as a file");
-        }
-        let mut file = self.open_file(path)?;
-        let size = file.len();
-
-        let want = SAMPLE_BYTES.min(size as usize);
-        let mut sample = vec![0u8; want];
-        let mut filled = 0usize;
-        while filled < sample.len() {
-            let read = file
-                .read(&mut sample[filled..])
-                .map_err(|err| anyhow!("exFAT stat read {path}: {err}"))?;
-            if read == 0 {
-                break;
-            }
-            filled += read;
-        }
-        sample.truncate(filled);
-
-        // The vendored exfat crate does not expose physical extents; recover
-        // them ourselves from the Stream Extension (P1-6). Best-effort: a parse
-        // failure degrades to an empty data_runs rather than failing the stat.
-        let runs: Vec<FsDataRun> = self.live_data_runs(path).unwrap_or_default();
-
-        Ok(FsStat {
-            node_id: node_id.to_string(),
-            size,
-            inode: None,
-            mode: None,
-            mime: detect_mime_bytes(&sample).to_string(),
-            magic_hex: if sample.is_empty() {
-                None
-            } else {
-                Some(
-                    sample
-                        .iter()
-                        .take(16)
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                )
-            },
-            entropy: if sample.is_empty() {
-                None
-            } else {
-                Some(shannon_entropy(&sample))
-            },
-            data_runs: runs,
-        })
-    }
-
     fn node_id(&self, path: &str) -> String {
         if path.is_empty() {
             format!("part:{}", self.partition_id)
@@ -398,6 +281,7 @@ impl ExfatVolume {
             image: Arc::clone(&self.image),
             base_offset: self.base_offset,
             length_bytes: self.length_bytes,
+            boot_sector: self.boot_sector,
         };
         Root::open(partition).map_err(|err| anyhow!("exFAT open: {err:?}"))
     }
@@ -422,7 +306,7 @@ impl ExfatVolume {
 
         for item in items {
             if let Item::File(file) = item {
-                if file.name() == file_name {
+                if file.name().eq_ignore_ascii_case(&file_name) {
                     return Ok(file);
                 }
             }
@@ -470,13 +354,24 @@ fn recovered_node(
     entry: crate::core::filesystem::volumes::exfat_recover::RecoveredEntry,
 ) -> FsNode {
     let id = match entry.runs.first() {
-        Some(run) if !entry.is_directory && entry.runs.len() == 1 && run.length > 0 => format!(
-            "deleted:run:part:{partition_id}:0x{:x}:0x{:x}",
-            run.physical_offset, run.length
-        ),
+        Some(run)
+            if !entry.is_directory
+                && entry.runs.len() == 1
+                && run.length == entry.size
+                && run.length > 0 =>
+        {
+            format!(
+                "deleted:run:part:{partition_id}:exfat:{}:{}:0x{:x}:0x{:x}",
+                hex::encode(parent_id),
+                entry.slot_offset,
+                run.physical_offset,
+                run.length
+            )
+        }
         _ => format!(
-            "deleted:exfat:part:{partition_id}:{}",
-            hex::encode(entry.name.as_bytes())
+            "deleted:exfat:part:{partition_id}:{}:{}",
+            hex::encode(parent_id),
+            entry.slot_offset
         ),
     };
     FsNode {
@@ -488,7 +383,7 @@ fn recovered_node(
         } else {
             NodeKind::File
         },
-        size: entry.size,
+        size: if entry.is_directory { 0 } else { entry.size },
         deleted: true,
         inode: None,
         timestamps: entry.timestamps,
@@ -515,7 +410,10 @@ fn timestamps_to_mactb(ts: &ExfatTimestamps) -> Mactb {
     }
 }
 
-fn exfat_ts_to_rfc3339(ts: &ExfatTimestamp) -> Option<String> {
+pub(super) fn exfat_ts_to_rfc3339(ts: &ExfatTimestamp) -> Option<String> {
+    if !ts.is_valid() {
+        return None;
+    }
     let date = ts.date();
     let time = ts.time();
     let naive = NaiveDate::from_ymd_opt(
@@ -523,13 +421,19 @@ fn exfat_ts_to_rfc3339(ts: &ExfatTimestamp) -> Option<String> {
         u32::from(date.month),
         u32::from(date.day),
     )?
-    .and_hms_opt(
+    .and_hms_milli_opt(
         u32::from(time.hour),
         u32::from(time.minute),
-        u32::from(time.second.min(59)),
+        u32::from(time.second),
+        u32::from(ts.milliseconds()),
     )?;
-    let utc = Utc.from_utc_datetime(&naive) - Duration::minutes(15 * i64::from(ts.utc_offset()));
-    Some(utc.to_rfc3339())
+    match ts.offset() {
+        Some(offset) => Some(
+            (Utc.from_utc_datetime(&naive) - Duration::minutes(15 * i64::from(offset)))
+                .to_rfc3339(),
+        ),
+        None => Some(naive.format("%Y-%m-%dT%H:%M:%S%.3f").to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -564,6 +468,7 @@ struct PartitionPart {
     image: Arc<DiskImage>,
     base_offset: u64,
     length_bytes: u64,
+    boot_sector: [u8; 512],
 }
 
 impl exfat::DiskPartition for PartitionPart {
@@ -581,6 +486,11 @@ impl exfat::DiskPartition for PartitionPart {
             .map_err(|err| std::io::Error::other(err.to_string()))?;
         let copied = bytes.len();
         buf[..copied].copy_from_slice(&bytes);
+        if offset < 512 {
+            let overlap = copied.min(512 - offset as usize);
+            buf[..overlap]
+                .copy_from_slice(&self.boot_sector[offset as usize..offset as usize + overlap]);
+        }
         Ok(copied)
     }
 }

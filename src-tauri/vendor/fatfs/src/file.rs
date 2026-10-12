@@ -1,4 +1,6 @@
 use core::convert::TryFrom;
+#[cfg(feature = "alloc")]
+extern crate alloc;
 
 use crate::dir_entry::DirEntryEditor;
 use crate::error::Error;
@@ -22,6 +24,8 @@ pub struct File<'a, IO: ReadWriteSeek, TP, OCC> {
     entry: Option<DirEntryEditor>,
     // file-system reference
     fs: &'a FileSystem<IO, TP, OCC>,
+    #[cfg(feature = "alloc")]
+    visited_clusters: alloc::collections::BTreeSet<u32>,
 }
 
 /// An extent containing a file's data on disk.
@@ -46,6 +50,8 @@ impl<'a, IO: ReadWriteSeek, TP, OCC> File<'a, IO, TP, OCC> {
             entry,
             fs,
             current_cluster: None, // cluster before first one
+            #[cfg(feature = "alloc")]
+            visited_clusters: alloc::collections::BTreeSet::new(),
             offset: 0,
         }
     }
@@ -91,6 +97,7 @@ impl<'a, IO: ReadWriteSeek, TP, OCC> File<'a, IO, TP, OCC> {
     pub fn extents(&mut self) -> impl Iterator<Item = Result<Extent, Error<IO::Error>>> + 'a {
         let fs = self.fs;
         let cluster_size = fs.cluster_size();
+        let total_clusters = fs.total_clusters;
         let Some(mut bytes_left) = self.size() else {
             return None.into_iter().flatten();
         };
@@ -101,8 +108,12 @@ impl<'a, IO: ReadWriteSeek, TP, OCC> File<'a, IO, TP, OCC> {
         Some(
             core::iter::once(Ok(first))
                 .chain(fs.cluster_iter(first))
+                .take(bytes_left.div_ceil(cluster_size) as usize)
                 .map(move |cluster_err| match cluster_err {
                     Ok(cluster) => {
+                        if cluster < 2 || cluster - 2 >= total_clusters {
+                            return Err(Error::CorruptedFileSystem);
+                        }
                         let size = cluster_size.min(bytes_left);
                         bytes_left -= size;
                         Ok(Extent {
@@ -239,6 +250,8 @@ impl<IO: ReadWriteSeek, TP, OCC> Drop for File<'_, IO, TP, OCC> {
 impl<IO: ReadWriteSeek, TP, OCC> Clone for File<'_, IO, TP, OCC> {
     fn clone(&self) -> Self {
         File {
+            #[cfg(feature = "alloc")]
+            visited_clusters: self.visited_clusters.clone(),
             first_cluster: self.first_cluster,
             current_cluster: self.current_cluster,
             offset: self.offset,
@@ -281,6 +294,13 @@ impl<IO: ReadWriteSeek, TP: TimeProvider, OCC> Read for File<'_, IO, TP, OCC> {
         let read_size = buf.len().min(bytes_left_in_cluster).min(bytes_left_in_file);
         if read_size == 0 {
             return Ok(0);
+        }
+        if current_cluster < 2 || current_cluster - 2 >= self.fs.total_clusters {
+            return Err(Error::CorruptedFileSystem);
+        }
+        #[cfg(feature = "alloc")]
+        if self.offset % cluster_size == 0 && !self.visited_clusters.insert(current_cluster) {
+            return Err(Error::CorruptedFileSystem);
         }
         trace!("read {} bytes in cluster {}", read_size, current_cluster);
         let offset_in_fs = self.fs.offset_from_cluster(current_cluster) + u64::from(offset_in_cluster);
@@ -460,6 +480,8 @@ impl<IO: ReadWriteSeek, TP, OCC> Seek for File<'_, IO, TP, OCC> {
         };
         self.offset = new_offset;
         self.current_cluster = new_cluster;
+        #[cfg(feature = "alloc")]
+        self.visited_clusters.clear();
         Ok(u64::from(self.offset))
     }
 }

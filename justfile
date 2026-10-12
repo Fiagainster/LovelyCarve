@@ -118,6 +118,7 @@ fmt:
     cd src-tauri/vendor/rufs && cargo fmt
     cd src-tauri/vendor/xfs-fuse && cargo fmt
     cd src-tauri/vendor/fatfs && cargo fmt
+    cd src-tauri/vendor/exfat && cargo fmt
     cd src-tauri/vendor/gpt && cargo fmt
     cd src-tauri/vendor/notatin && cargo fmt
     cd src-tauri/vendor/magika && cargo fmt

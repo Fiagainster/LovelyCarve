@@ -16,10 +16,6 @@ use crate::core::evidence::partitions::{
 const BOOT_SECTOR_LEN: usize = 512;
 pub(crate) const FAT32_BACKUP_BOOT_SECTOR: u64 = 6;
 const BOOT_SIGNATURE: [u8; 2] = [0x55, 0xAA];
-const FAT32_LABEL_OFFSET: usize = 82;
-const FAT32_LABEL_LEN: usize = 8;
-const FAT16_LABEL_OFFSET: usize = 54;
-const FAT16_LABEL_LEN: usize = 8;
 const FAT32_FSINFO_LEAD: [u8; 4] = [0x52, 0x52, 0x61, 0x41];
 const FAT32_FSINFO_STRUCT: [u8; 4] = [0x72, 0x72, 0x41, 0x61];
 const FAT32_EOC_MIN: u32 = 0x0FFF_FFF8;
@@ -105,7 +101,10 @@ pub(crate) fn detect_valid_fat_boot_sector(bytes: &[u8], image_size: u64) -> Opt
 
     let boot = FatBootSector::read(&mut Cursor::new(bytes)).ok()?;
     let bytes_per_sector = boot.bytes_per_sector;
-    if !matches!(bytes_per_sector, 512 | 1024 | 2048 | 4096) {
+    if !matches!(
+        bytes_per_sector,
+        512 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768
+    ) {
         return None;
     }
 
@@ -160,21 +159,19 @@ pub(crate) fn detect_valid_fat_boot_sector(bytes: &[u8], image_size: u64) -> Opt
     let cluster_count = (total_sectors - first_data_sector) / u32::from(sectors_per_cluster);
     let inferred_fat32 = cluster_count >= 65_525;
     if is_fat32 {
-        if root_entries != 0
-            || total_sectors_16 != 0
-            || !inferred_fat32
-            || bytes.get(FAT32_LABEL_OFFSET..FAT32_LABEL_OFFSET + FAT32_LABEL_LEN)
-                != Some(b"FAT32   ")
-        {
+        if root_entries != 0 || total_sectors_16 != 0 || !inferred_fat32 {
             return None;
         }
         Some(PartitionKind::Fat32)
     } else {
-        match bytes.get(FAT16_LABEL_OFFSET..FAT16_LABEL_OFFSET + FAT16_LABEL_LEN) {
-            Some(b"FAT12   ") => Some(PartitionKind::Fat12),
-            Some(b"FAT16   ") => Some(PartitionKind::Fat16),
-            _ => None,
+        if root_entries == 0 || inferred_fat32 {
+            return None;
         }
+        Some(if cluster_count < 4085 {
+            PartitionKind::Fat12
+        } else {
+            PartitionKind::Fat16
+        })
     }
 }
 

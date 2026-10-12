@@ -543,6 +543,16 @@ pub struct DirEntry<'a, IO: ReadWriteSeek, TP, OCC> {
 
 #[allow(clippy::len_without_is_empty)]
 impl<'a, IO: ReadWriteSeek, TP, OCC: OemCpConverter> DirEntry<'a, IO, TP, OCC> {
+    /// Byte offset of the short directory entry relative to the volume.
+    #[must_use]
+    pub fn entry_offset(&self) -> u64 {
+        self.entry_pos
+    }
+
+    /// Raw hundredths-of-a-second creation field (valid range 0..=199).
+    pub fn creation_time_fraction(&self) -> u8 {
+        self.data.create_time_0
+    }
     /// Returns short file name.
     ///
     /// Non-ASCII characters are replaced by the replacement character (U+FFFD).
@@ -704,7 +714,8 @@ impl<'a, IO: ReadWriteSeek, TP, OCC: OemCpConverter> DirEntry<'a, IO, TP, OCC> {
         }
     }
 
-    pub(crate) fn eq_name(&self, name: &str) -> bool {
+    /// Match the long name or short alias with the filesystem's case rules.
+    pub fn eq_name(&self, name: &str) -> bool {
         #[cfg(feature = "lfn")]
         {
             if self.eq_name_lfn(name) {
