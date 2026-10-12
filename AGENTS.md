@@ -190,7 +190,7 @@ Default behavior should be quiet on success. The desktop app's default filter is
 
 ## Changelog and Documentation
 
-Update `CHANGELOG.md` under `[Unreleased]` for meaningful user-visible features, fixes, breaking changes, deprecations, or removals. Follow Keep a Changelog 1.1.0 and keep entries concise.
+Update `CHANGELOG.md` under `[Unreleased]` for meaningful user-visible features, fixes, breaking changes, deprecations, or removals. Follow [Keep a Changelog 0.3.0](https://keepachangelog.com/zh-CN/0.3.0/): use English change categories, ISO release dates, reverse chronological version sections, and version/comparison links. Keep entries concise and distinguish released-tag content from later changes.
 
 Update `docs/` when changing user-facing behavior, configuration, architecture, commands, or workflow assumptions.
 

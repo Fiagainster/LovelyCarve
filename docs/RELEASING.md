@@ -23,7 +23,7 @@
 ## 版本与构建
 
 1. 同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 中的应用版本。依赖锁文件一并提交，插件版本按其独立兼容要求维护。
-2. 将 CHANGELOG 的 `[Unreleased]` 内容整理为本次版本与发布日期，记录格式或案件兼容变化，保留新的空 `[Unreleased]`。
+2. 按 [Keep a Changelog 0.3.0](https://keepachangelog.com/zh-CN/0.3.0/) 将 CHANGELOG 中实际纳入发布标签的 `[Unreleased]` 条目整理为 `## [版本号] - YYYY-MM-DD`，记录格式或案件兼容变化；尚未发布的内容保留在 `[Unreleased]`，没有剩余条目时保留空的 `[Unreleased]`。
 3. 根据功能选择本地构建与打包入口：
 
 | 产物 | 默认关闭 QR/OCR | 含 QR/OCR |
@@ -33,6 +33,8 @@
 | Windows CLI 包 | `just pack-cli` | `just pack-cli-full` |
 
 `repack` / `repack-full` 复用已有桌面产物，必须与编译特性一致；CLI 的 `repack-cli` 按实际能力选择资源。运行库、模型与插件清单由现有打包配置决定，不凭文件后缀猜测所需资源。
+
+CHANGELOG 使用 `Added`、`Changed`、`Deprecated`、`Removed`、`Fixed`、`Security` 中实际有内容的英文分类，版本按时间倒序排列，不保留空分类，也不直接粘贴 Git 提交记录。版本号采用程序的完整语义化版本，发布日期以实际发布记录为准；版本链接指向对应比较页，首次发布可指向 Release 页。更新 `[Unreleased]` 的比较起点为最新发布标签。例如程序 `1.0.0` 对应既有标签 `v1.0`，链接沿用该实际标签。
 
 ## 第三方声明与源码
 
