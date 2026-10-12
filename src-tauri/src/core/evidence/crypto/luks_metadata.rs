@@ -22,14 +22,12 @@ pub fn validate(reader: &mut (impl Read + Seek), length: u64) -> anyhow::Result<
     match version {
         1 => {
             let header = luks::Luks1Header::parse(&prefix)?;
-            ensure!(
-                header.cipher_name == "aes" && header.cipher_mode == "xts-plain64",
-                "only LUKS AES-XTS plain64 is supported"
-            );
-            ensure!(
-                matches!(header.key_bytes, 32 | 64),
-                "unsupported LUKS key size"
-            );
+            luks::validate_cipher(
+                &header.cipher_name,
+                &header.cipher_mode,
+                header.key_bytes as usize,
+            )?;
+            ensure!(header.mk_digest_iter > 0, "invalid LUKS1 digest iterations");
             let offset = header.payload_byte_offset();
             ensure!(
                 offset >= 592 && offset < length && (length - offset).is_multiple_of(512),
@@ -37,11 +35,13 @@ pub fn validate(reader: &mut (impl Read + Seek), length: u64) -> anyhow::Result<
             );
             for slot in header.active_keyslots() {
                 let start = u64::from(slot.key_material_offset) * 512;
-                let bytes = u64::from(slot.stripes) * u64::from(header.key_bytes);
+                let bytes =
+                    (u64::from(slot.stripes) * u64::from(header.key_bytes)).div_ceil(512) * 512;
                 ensure!(
                     bytes > 0
                         && bytes <= 64 * 1024 * 1024
-                        && bytes % 512 == 0
+                        && slot.stripes > 0
+                        && slot.iterations > 0
                         && start >= 592
                         && start.checked_add(bytes).is_some_and(|end| end <= offset),
                     "invalid LUKS1 keyslot range"
@@ -104,16 +104,20 @@ fn validate_luks2(
     );
     let (segment_id, segment) = segments.iter().next().context("missing LUKS2 segment")?;
     ensure!(
-        segment["type"] == "crypt"
-            && segment["encryption"] == "aes-xts-plain64"
-            && segment["size"] == "dynamic",
-        "only a single dynamic LUKS2 AES-XTS segment is supported"
+        segment["type"] == "crypt" && segment["size"] == "dynamic",
+        "only a single dynamic LUKS2 crypt segment is supported"
     );
     ensure!(
         segment["integrity"].is_null() && segment["flags"].as_array().is_none_or(Vec::is_empty),
         "LUKS2 integrity/reencryption flags are unsupported"
     );
     let offset = number(&segment["offset"])?;
+    let encryption = segment["encryption"]
+        .as_str()
+        .context("missing LUKS2 encryption")?;
+    let (cipher, mode) = encryption
+        .split_once('-')
+        .context("invalid LUKS2 encryption")?;
     let sector = number(&segment["sector_size"])?;
     ensure!(
         matches!(sector, 512 | 4096)
@@ -123,13 +127,17 @@ fn validate_luks2(
             && (length - offset).is_multiple_of(sector),
         "invalid LUKS2 payload geometry"
     );
+    let tweak = number(&segment["iv_tweak"])?;
+    ensure!(
+        tweak
+            .checked_add((length - offset - sector) / 512)
+            .is_some(),
+        "LUKS2 IV sector range overflow"
+    );
     let slots = metadata["keyslots"]
         .as_object()
         .context("missing LUKS2 keyslots")?;
-    ensure!(
-        !slots.is_empty() && slots.len() <= 32,
-        "invalid LUKS2 keyslot count"
-    );
+    ensure!(slots.len() <= 32, "invalid LUKS2 keyslot count");
     for slot in slots.values() {
         let kdf = &slot["kdf"];
         let salt = base64::engine::general_purpose::STANDARD
@@ -153,22 +161,30 @@ fn validate_luks2(
         let stripes = number(&slot["af"]["stripes"])?;
         let material = stripes
             .checked_mul(key_size)
-            .context("LUKS2 keyslot size overflow")?;
+            .and_then(|bytes| bytes.checked_add(511))
+            .context("LUKS2 keyslot size overflow")?
+            / 512
+            * 512;
         ensure!(
-            slot["type"] == "luks2"
-                && slot["af"]["type"] == "luks1"
-                && area["type"] == "raw"
-                && area["encryption"] == "aes-xts-plain64",
+            slot["type"] == "luks2" && slot["af"]["type"] == "luks1" && area["type"] == "raw",
             "unsupported LUKS2 keyslot layout"
         );
-        ensure!(
-            matches!(key_size, 32 | 64) && number(&area["key_size"])? == key_size,
-            "unsupported LUKS2 keyslot key size"
-        );
+        luks::validate_cipher(cipher, mode, usize::try_from(key_size)?)?;
+        let area_encryption = area["encryption"]
+            .as_str()
+            .context("missing LUKS2 area encryption")?;
+        let (area_cipher, area_mode) = area_encryption
+            .split_once('-')
+            .context("invalid LUKS2 area encryption")?;
+        luks::validate_cipher(
+            area_cipher,
+            area_mode,
+            usize::try_from(number(&area["key_size"])?)?,
+        )?;
         ensure!(
             material > 0
+                && stripes > 0
                 && material <= 64 * 1024 * 1024
-                && material % 512 == 0
                 && material <= area_size
                 && start % 512 == 0
                 && start >= declared * 2

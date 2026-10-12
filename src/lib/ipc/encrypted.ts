@@ -4,7 +4,8 @@ import type { ImageInfo } from './image';
 export interface EncryptedUnlockOptions {
   target?: 'newImage' | 'sourcePartition';
   scheme: 'luks' | 'veracrypt';
-  password: string;
+  password?: string;
+  masterKeyHex?: string;
   partitionId?: number;
   offset?: number;
   length?: number;

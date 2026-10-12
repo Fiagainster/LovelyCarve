@@ -64,6 +64,31 @@ afterEach(() => {
 });
 
 describe('encrypted volume unlock dialog', () => {
+  it('normalizes a LUKS master key, submits only that credential, and clears it on close', async () => {
+    dialog()!.querySelector<HTMLButtonElement>('button.ui-seg-item:last-child')!.click();
+    await nextTick();
+    await value('input[type=password]', '00 11 aa FF');
+    await submit();
+    expect(rpc.start).toHaveBeenCalledWith(info, { scheme: 'luks', masterKeyHex: '0011aaFF' });
+    open.value = true;
+    await settle();
+    expect(dialog()!.querySelector<HTMLInputElement>('input[type=password]')!.value).toBe('');
+  });
+
+  it('marks malformed master keys and clears them when switching to VeraCrypt', async () => {
+    dialog()!.querySelector<HTMLButtonElement>('button.ui-seg-item:last-child')!.click();
+    await nextTick();
+    await value('input[type=password]', '001x');
+    const input = dialog()!.querySelector<HTMLInputElement>('input[type=password]')!;
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(dialog()!.querySelector('.ui-field-error')?.id).toBe(input.getAttribute('aria-describedby'));
+    await submit();
+    expect(rpc.start).not.toHaveBeenCalled();
+    await choose(0, 'VeraCrypt');
+    expect(dialog()!.querySelector('.ui-seg')).toBeNull();
+    expect(dialog()!.querySelector<HTMLInputElement>('input[type=password]')!.value).toBe('');
+  });
+
   it('forwards partition and VeraCrypt options and closes immediately after background submission', async () => {
     let sent: unknown;
     rpc.start.mockImplementation((source, options) => { sent = structuredClone({ imageId: source.id, options }); return true; });

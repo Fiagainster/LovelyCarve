@@ -10,12 +10,15 @@ use std::time::{Duration, Instant};
 
 use crate::af;
 use crate::crypto::{
-    derive_key_argon2_within, derive_key_within, xts_decrypt_area, Argon2Params, DERIVATION_BUDGET,
-    UNLOCK_BUDGET,
+    derive_key_argon2_within, derive_key_within, Argon2Params, DERIVATION_BUDGET, UNLOCK_BUDGET,
 };
 use crate::error::{LuksError, Result};
 use crate::header::{Luks1Header, LUKS1_PHDR_LEN, MK_DIGEST_LEN, SECTOR};
-use crate::header2::{Luks2Header, Luks2Kdf, LUKS2_BIN_HDR_LEN};
+use crate::header2::{Luks2Header, Luks2Kdf};
+mod layout;
+use crate::sector_cipher::{validate_cipher, SectorCipher};
+pub(crate) use layout::{payload1, payload2, read_header2};
+use zeroize::Zeroizing;
 
 /// Namespace for opening a LUKS volume. State lives in [`DecryptedPayload`].
 pub struct LuksVolume;
@@ -23,6 +26,8 @@ pub struct LuksVolume;
 /// The cipher/version facts of an unlocked volume.
 #[derive(Debug, Clone)]
 pub struct VolumeInfo {
+    /// Volume identifier from the on-disk header.
+    pub uuid: String,
     /// LUKS version (1 or 2).
     pub version: u16,
     /// Cipher name, e.g. `aes`.
@@ -37,7 +42,7 @@ pub struct VolumeInfo {
 
 /// Split a LUKS2 `encryption` string (`aes-xts-plain64`) into (name, mode). For a
 /// LUKS1 header the mode is already separate, so `cipher_mode_of` is the identity.
-fn split_encryption(enc: &str) -> (String, String) {
+pub(crate) fn split_encryption(enc: &str) -> (String, String) {
     match enc.split_once('-') {
         Some((name, mode)) => (name.to_string(), mode.to_string()),
         None => (enc.to_string(), String::new()),
@@ -129,30 +134,18 @@ impl LuksVolume {
         reader.seek(SeekFrom::Start(0))?;
         read_fill(&mut reader, &mut hdr_buf)?;
         let header = Luks1Header::parse(&hdr_buf)?;
+        validate_cipher(
+            &header.cipher_name,
+            &header.cipher_mode,
+            header.key_bytes as usize,
+        )?;
         if header.active_keyslots().next().is_none() {
             return Err(LuksError::NoActiveKeyslot);
         }
         let key_bytes = header.key_bytes as usize;
         let master_key =
             recover_master_key1(&mut reader, &header, passphrase, key_bytes, deadline)?;
-        let total_size = reader.seek(SeekFrom::End(0))?;
-        Ok(DecryptedPayload {
-            reader,
-            master_key,
-            cipher_mode: header.cipher_mode.clone(),
-            payload_offset: header.payload_byte_offset(),
-            sector_size: SECTOR as usize,
-            iv_tweak: 0,
-            total_size,
-            position: 0,
-            info: VolumeInfo {
-                version: 1,
-                cipher_name: header.cipher_name.clone(),
-                cipher_mode: header.cipher_mode.clone(),
-                key_bytes: header.key_bytes,
-                sector_size: SECTOR as usize,
-            },
-        })
+        payload1(reader, &header, master_key)
     }
 
     /// [`Self::unlock2_with_passphrase`] against an explicit TOTAL budget.
@@ -189,24 +182,7 @@ impl LuksVolume {
         passphrase: &[u8],
         deadline: UnlockDeadline,
     ) -> Result<DecryptedPayload<R>> {
-        // Read the binary header to learn hdr_size, then the whole header+JSON.
-        let mut bin = vec![0u8; LUKS2_BIN_HDR_LEN];
-        reader.seek(SeekFrom::Start(0))?;
-        read_fill(&mut reader, &mut bin)?;
-        let declared = crate::bytes::be_u64(&bin, 8);
-        let total = reader.seek(SeekFrom::End(0))?;
-        if !(8192..=4 * 1024 * 1024).contains(&declared) || declared > total {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "invalid LUKS2 header size",
-            )
-            .into());
-        }
-        let hdr_size = declared as usize;
-        let mut full = vec![0u8; hdr_size];
-        reader.seek(SeekFrom::Start(0))?;
-        reader.read_exact(&mut full)?;
-        let header = Luks2Header::parse(&full)?;
+        let (header, uuid) = read_header2(&mut reader)?;
 
         let segment = header
             .crypt_segment()
@@ -216,27 +192,12 @@ impl LuksVolume {
             return Err(LuksError::NoActiveKeyslot);
         }
 
-        let master_key = recover_master_key2(&mut reader, &header, passphrase, deadline)?;
-        let total_size = reader.seek(SeekFrom::End(0))?;
         let (cipher_name, cipher_mode) = split_encryption(&segment.encryption);
-        let key_bytes = master_key.len() as u32;
-        Ok(DecryptedPayload {
-            reader,
-            master_key,
-            cipher_mode: cipher_mode.clone(),
-            payload_offset: segment.offset,
-            sector_size: segment.sector_size.max(512),
-            iv_tweak: segment.iv_tweak,
-            total_size,
-            position: 0,
-            info: VolumeInfo {
-                version: 2,
-                cipher_name,
-                cipher_mode,
-                key_bytes,
-                sector_size: segment.sector_size.max(512),
-            },
-        })
+        for slot in &header.keyslots {
+            validate_cipher(&cipher_name, &cipher_mode, slot.key_size)?;
+        }
+        let master_key = recover_master_key2(&mut reader, &header, passphrase, deadline)?;
+        payload2(reader, &segment, uuid, master_key)
     }
 }
 
@@ -247,13 +208,13 @@ impl LuksVolume {
 /// per-derivation budget leaves the sum unbounded — see
 /// [`crypto::UNLOCK_BUDGET`].
 #[derive(Debug, Clone, Copy)]
-struct UnlockDeadline {
+pub(crate) struct UnlockDeadline {
     started: Instant,
     total: Duration,
 }
 
 impl UnlockDeadline {
-    fn new(total: Duration) -> Self {
+    pub(crate) fn new(total: Duration) -> Self {
         Self {
             started: Instant::now(),
             total,
@@ -267,7 +228,7 @@ impl UnlockDeadline {
     /// clamp a single slot could spend the entire [`crypto::UNLOCK_BUDGET`],
     /// which is three times what one derivation was ever allowed. Both ceilings
     /// hold together — no derivation over 30s, no unlock over 90s.
-    fn remaining(self, slots_tried: usize) -> Result<Duration> {
+    pub(crate) fn remaining(self, slots_tried: usize) -> Result<Duration> {
         self.total
             .checked_sub(self.started.elapsed())
             .filter(|left| !left.is_zero())
@@ -289,29 +250,33 @@ fn recover_master_key1<R: Read + Seek>(
     deadline: UnlockDeadline,
 ) -> Result<Vec<u8>> {
     for (tried, slot) in header.active_keyslots().enumerate() {
-        let slot_key = derive_key_within(
+        let slot_key = Zeroizing::new(derive_key_within(
             &header.hash_spec,
             passphrase,
             &slot.salt,
             slot.iterations,
             key_bytes,
             deadline.remaining(tried)?,
-        )?;
+        )?);
         let material_len = af::material_len(key_bytes, slot.stripes as usize)?;
-        let mut material = vec![0u8; material_len];
+        let mut material = Zeroizing::new(vec![0u8; material_len]);
         reader.seek(SeekFrom::Start(
             u64::from(slot.key_material_offset) * SECTOR,
         ))?;
         if read_available(reader, &mut material)? < material_len {
             continue;
         }
-        xts_decrypt_area(&header.cipher_mode, &slot_key, &mut material, 512, 0)?;
-        let candidate = af::merge(
+        SectorCipher::new(&header.cipher_name, &header.cipher_mode, &slot_key)?.decrypt_area(
+            &mut material,
+            512,
+            0,
+        )?;
+        let candidate = Zeroizing::new(af::merge(
             &header.hash_spec,
             &material,
             key_bytes,
             slot.stripes as usize,
-        )?; // cov:unreachable: hash_spec already validated by the slot-key derive_key above
+        )?); // hash was validated by the slot-key KDF
         let digest = derive_key_within(
             &header.hash_spec,
             &candidate,
@@ -321,7 +286,7 @@ fn recover_master_key1<R: Read + Seek>(
             deadline.remaining(tried)?,
         )?; // cov:unreachable: hash_spec already validated by the slot-key derive_key above
         if digest == header.mk_digest {
-            return Ok(candidate);
+            return Ok(candidate.to_vec());
         }
     }
     Err(LuksError::AuthenticationFailed)
@@ -343,7 +308,7 @@ fn recover_master_key2<R: Read + Seek>(
     deadline: UnlockDeadline,
 ) -> Result<Vec<u8>> {
     for (tried, slot) in header.keyslots.iter().enumerate() {
-        let slot_key = match &slot.kdf {
+        let slot_key = Zeroizing::new(match &slot.kdf {
             Luks2Kdf::Argon2 {
                 kind,
                 time,
@@ -359,7 +324,7 @@ fn recover_master_key2<R: Read + Seek>(
                     salt,
                 },
                 passphrase,
-                slot.key_size,
+                slot.area_key_size,
                 deadline.remaining(tried)?,
             )?,
             Luks2Kdf::Pbkdf2 {
@@ -371,25 +336,29 @@ fn recover_master_key2<R: Read + Seek>(
                 passphrase,
                 salt,
                 *iterations,
-                slot.key_size,
+                slot.area_key_size,
                 deadline.remaining(tried)?,
             )?,
-        };
+        });
 
-        let (_, area_mode) = split_encryption(&slot.area_encryption);
+        let (area_name, area_mode) = split_encryption(&slot.area_encryption);
         let material_len = af::material_len(slot.key_size, slot.af_stripes as usize)?;
-        let mut material = vec![0u8; material_len];
+        let mut material = Zeroizing::new(vec![0u8; material_len]);
         reader.seek(SeekFrom::Start(slot.area_offset))?;
         if read_available(reader, &mut material)? < material_len {
             continue;
         }
-        xts_decrypt_area(&area_mode, &slot_key, &mut material, 512, 0)?;
-        let candidate = af::merge(
+        SectorCipher::new(&area_name, &area_mode, &slot_key)?.decrypt_area(
+            &mut material,
+            512,
+            0,
+        )?;
+        let candidate = Zeroizing::new(af::merge(
             &slot.af_hash,
             &material,
             slot.key_size,
             slot.af_stripes as usize,
-        )?;
+        )?);
 
         for dig in &header.digests {
             if dig.kind == "pbkdf2" && dig.keyslots.iter().any(|k| k == &slot.id) {
@@ -401,8 +370,8 @@ fn recover_master_key2<R: Read + Seek>(
                     dig.digest.len(),
                     deadline.remaining(tried)?,
                 )?;
-                if d == dig.digest {
-                    return Ok(candidate);
+                if !dig.digest.is_empty() && d == dig.digest {
+                    return Ok(candidate.to_vec());
                 }
             }
         }
@@ -413,8 +382,8 @@ fn recover_master_key2<R: Read + Seek>(
 /// A plaintext view of an unlocked LUKS payload.
 pub struct DecryptedPayload<R> {
     reader: R,
-    master_key: Vec<u8>,
-    cipher_mode: String,
+    master_key: Zeroizing<Vec<u8>>,
+    cipher: SectorCipher,
     payload_offset: u64,
     sector_size: usize,
     iv_tweak: u128,
@@ -470,14 +439,11 @@ impl<R: Read + Seek> DecryptedPayload<R> {
             let mut ct = vec![0u8; self.sector_size];
             self.reader.seek(SeekFrom::Start(physical))?;
             self.reader.read_exact(&mut ct)?;
-            let tweak = self.iv_tweak + u128::from(unit) * step;
-            xts_decrypt_area(
-                &self.cipher_mode,
-                &self.master_key,
-                &mut ct,
-                self.sector_size,
-                tweak,
-            )?; // cov:unreachable: cipher_mode + master-key size validated during unlock
+            let tweak = self
+                .iv_tweak
+                .checked_add(u128::from(unit) * step)
+                .ok_or_else(|| std::io::Error::other("LUKS IV overflow"))?;
+            self.cipher.decrypt_area(&mut ct, self.sector_size, tweak)?;
 
             let take = (self.sector_size - within).min(buf.len() - done);
             buf[done..done + take].copy_from_slice(&ct[within..within + take]);
@@ -515,7 +481,8 @@ impl<R: Read + Seek> Seek for DecryptedPayload<R> {
                 "seek before start",
             ));
         }
-        self.position = new as u64;
+        self.position =
+            u64::try_from(new).map_err(|_| std::io::Error::other("LUKS seek overflow"))?;
         Ok(self.position)
     }
 }

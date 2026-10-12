@@ -27,6 +27,7 @@ export function startEncryptedVolumeUnlock(info: ImageInfo, options: EncryptedUn
   const key = `${info.id}:${options.partitionId ?? 'whole'}`;
   if (jobs.has(key)) {
     options.password = '';
+    options.masterKeyHex = undefined;
     notifyError('解锁加密容器失败', '此加密区域已有解锁任务，可在任务中心查看或取消');
     return false;
   }
@@ -54,6 +55,7 @@ export function startEncryptedVolumeUnlock(info: ImageInfo, options: EncryptedUn
       }
     } finally {
       options.password = '';
+      options.masterKeyHex = undefined;
       if (jobs.get(key) === taskId) jobs.delete(key);
     }
   })();

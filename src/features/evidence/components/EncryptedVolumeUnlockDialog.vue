@@ -27,7 +27,16 @@
                 <label v-if="partitionId === null">加密区域
                   <UiSelect v-model="region" :options="regionOptions" />
                 </label>
-                <label class="wide">密码<input v-model="password" class="ui-input" type="password" autocomplete="off" required maxlength="4096" /></label>
+                <div v-if="scheme === 'luks'" class="ui-seg wide" role="group" aria-label="解锁凭据">
+                  <button class="ui-seg-item" :class="{ active: credential === 'password' }" type="button" :aria-pressed="credential === 'password'" @click="credential = 'password'">密码</button>
+                  <button class="ui-seg-item" :class="{ active: credential === 'masterKey' }" type="button" :aria-pressed="credential === 'masterKey'" @click="credential = 'masterKey'">主密钥</button>
+                </div>
+                <label v-if="!usesMasterKey" class="wide">密码<input v-model="password" class="ui-input" type="password" autocomplete="off" required maxlength="4096" /></label>
+                <label v-else class="wide">主密钥（十六进制）
+                  <input v-model="masterKey" class="ui-input mono" type="password" autocomplete="off" required maxlength="1024" :aria-invalid="keyError ? 'true' : undefined" :aria-describedby="keyNoteId" @blur="keyTouched = true" />
+                  <span v-if="keyError" :id="keyNoteId" class="ui-field-error" role="alert">{{ keyError }}</span>
+                  <span v-else :id="keyNoteId" class="ui-field-hint">填写已恢复的卷主密钥，可粘贴带空格的十六进制字节。</span>
+                </label>
                 <template v-if="scheme === 'veracrypt'">
                   <label>PIM（0 为默认）<input v-model.number="pim" class="ui-input mono" type="number" min="0" max="1000" step="1" required /></label>
                   <label class="ui-check check"><input v-model="hidden" type="checkbox" />打开隐藏卷</label>
@@ -36,7 +45,7 @@
             </div>
             <footer class="ui-modal-footer">
               <button class="ui-btn" type="button" @click="emit('close')">取消</button>
-              <button class="ui-btn primary" type="submit" :disabled="!password">开始后台解锁</button>
+              <button class="ui-btn primary" type="submit" :disabled="!canUnlock">开始后台解锁</button>
             </footer>
           </form>
         </div>
@@ -46,7 +55,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, useId, watch } from 'vue';
 import { LockKeyhole, X } from 'lucide-vue-next';
 import type { ImageInfo } from '../../../lib/ipc/image';
 import { useDialogFocus } from '../../../composables/useDialogFocus';
@@ -71,6 +80,21 @@ const regionOptions = computed<UiSelectOption<string>[]>(() => [
   ...props.info.partitions.map(partition => ({ value: String(partition.id), label: `分区 ${partition.id} · ${partition.label || partition.kind}` })),
 ]);
 const password = ref('');
+const credential = ref<'password' | 'masterKey'>('password');
+const masterKey = ref('');
+const keyTouched = ref(false);
+const keyNoteId = useId();
+const usesMasterKey = computed(() => scheme.value === 'luks' && credential.value === 'masterKey');
+const normalizedKey = computed(() => masterKey.value.replace(/\s/g, ''));
+const keyError = computed(() => {
+  if (/[^0-9a-f]/i.test(normalizedKey.value)) return '主密钥只能包含十六进制字符 0–9、A–F。';
+  if (normalizedKey.value.length > 512) return '主密钥不能超过 256 字节。';
+  if (keyTouched.value && (!normalizedKey.value || normalizedKey.value.length % 2)) return '每个字节需要两个十六进制字符。';
+  return '';
+});
+const canUnlock = computed(() => usesMasterKey.value
+  ? !!normalizedKey.value && normalizedKey.value.length % 2 === 0 && !keyError.value
+  : !!password.value);
 const pim = ref(0);
 const hidden = ref(false);
 const dialogEl = ref<HTMLElement | null>(null);
@@ -82,6 +106,8 @@ useDialogFocus(() => props.open, dialogEl);
 watch(() => props.open, isOpen => {
   if (!isOpen) {
     password.value = '';
+    masterKey.value = '';
+    keyTouched.value = false;
     return;
   }
   const partition = props.info.partitions.find(candidate => candidate.id === props.partitionId);
@@ -90,19 +116,29 @@ watch(() => props.open, isOpen => {
 }, { immediate: true });
 
 function unlock() {
-  if (!password.value) return;
+  if (!canUnlock.value) return;
   const options = {
-    scheme: scheme.value, password: password.value,
+    scheme: scheme.value,
+    ...(usesMasterKey.value ? { masterKeyHex: normalizedKey.value } : { password: password.value }),
     ...(props.partitionId !== null ? { partitionId: props.partitionId } : region.value === 'whole' ? {} : { partitionId: Number(region.value) }),
     ...(scheme.value === 'veracrypt' ? { pim: pim.value, hidden: hidden.value } : {}),
   };
   password.value = '';
+  masterKey.value = '';
+  keyTouched.value = false;
   if (startEncryptedVolumeUnlock(props.info, options)) emit('close');
 }
 
 onBeforeUnmount(() => {
   password.value = '';
+  masterKey.value = '';
   // The backend job remains visible in the task center when changing views.
+});
+
+watch([scheme, credential], () => {
+  password.value = '';
+  masterKey.value = '';
+  keyTouched.value = false;
 });
 </script>
 

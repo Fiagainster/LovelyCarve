@@ -1,11 +1,10 @@
-//! Key derivation (PBKDF2-HMAC, Argon2) and AES-XTS-plain64 decryption.
+//! Key derivation (PBKDF2-HMAC, Argon2), with per-derivation resource budgets.
 //!
-//! Every primitive is an audited RustCrypto crate — never hand-rolled. Only the
-//! validated LUKS cipher (`aes` / `xts-plain64`, 256- or 512-bit key) is wired;
-//! anything else is refused with a named error rather than silently mis-decrypted.
+//! Primitives come from RustCrypto. Sector ciphers are wired by `sector_cipher`.
 
-use aes::cipher::KeyInit;
-use aes::{Aes128, Aes256};
+#[cfg(test)]
+use aes::{cipher::KeyInit, Aes128, Aes256};
+#[cfg(test)]
 use xts_mode::Xts128;
 
 use std::time::{Duration, Instant};
@@ -48,7 +47,9 @@ fn pbkdf2_into(
 ) -> Result<()> {
     match hash_spec {
         "sha1" => pbkdf2::pbkdf2_hmac::<sha1::Sha1>(password, salt, iters, out),
+        "sha224" => pbkdf2::pbkdf2_hmac::<sha2::Sha224>(password, salt, iters, out),
         "sha256" => pbkdf2::pbkdf2_hmac::<sha2::Sha256>(password, salt, iters, out),
+        "sha384" => pbkdf2::pbkdf2_hmac::<sha2::Sha384>(password, salt, iters, out),
         "sha512" => pbkdf2::pbkdf2_hmac::<sha2::Sha512>(password, salt, iters, out),
         other => {
             return Err(LuksError::Unsupported {
@@ -107,7 +108,13 @@ pub fn derive_key_within(
     }
 
     let mut out = vec![0u8; key_len];
-    let iters = iterations.max(1);
+    if iterations == 0 {
+        return Err(LuksError::Unsupported {
+            what: "PBKDF2 iterations",
+            value: "0".into(),
+        });
+    }
+    let iters = iterations;
 
     if iters > CALIBRATION_ITERS {
         let mut probe = vec![0u8; key_len];
@@ -285,6 +292,7 @@ pub fn derive_key_argon2_within(
 /// # Errors
 /// [`LuksError::Unsupported`] if `cipher_mode` is not `xts-plain64` or `key` is
 /// not a 32- or 64-byte XTS key.
+#[cfg(test)]
 pub fn xts_decrypt_area(
     cipher_mode: &str,
     key: &[u8],
@@ -320,6 +328,7 @@ pub fn xts_decrypt_area(
     Ok(())
 }
 
+#[cfg(test)]
 fn decrypt_units<C>(xts: &Xts128<C>, buffer: &mut [u8], unit_size: usize, base: u128, step: u128)
 where
     C: aes::cipher::BlockCipher + aes::cipher::BlockEncrypt + aes::cipher::BlockDecrypt,

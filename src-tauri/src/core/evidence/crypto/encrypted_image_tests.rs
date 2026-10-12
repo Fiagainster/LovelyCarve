@@ -11,11 +11,59 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+#[test]
+fn luks_master_keys_unlock_both_versions_without_password_and_reject_conflicting_credentials() {
+    let expected = std::fs::read(fixture("plain.img")).unwrap();
+    let key = hex::encode((0..64u8).collect::<Vec<_>>());
+    for name in ["luks1.img", "luks2.img"] {
+        let source = Arc::new(DiskImage::open(&fixture(name)).unwrap());
+        let mut credentials = options(EncryptionScheme::Luks);
+        credentials.password.clear();
+        credentials.master_key_hex = Some(key.clone());
+        let (image, _) = unlock(&source, credentials, CancellationToken::new()).unwrap();
+        assert_eq!(image.read_range(0, expected.len()).unwrap(), expected);
+        let mut conflict = options(EncryptionScheme::Luks);
+        conflict.master_key_hex = Some(key.clone());
+        assert!(unlock(&source, conflict, CancellationToken::new()).is_err());
+        for invalid in ["", "0", "invalid", &"ab".repeat(257), &"00".repeat(64)] {
+            let mut credentials = options(EncryptionScheme::Luks);
+            credentials.password.clear();
+            credentials.master_key_hex = Some(invalid.into());
+            assert!(unlock(&source, credentials, CancellationToken::new()).is_err());
+        }
+    }
+}
+
+#[test]
+fn independent_luks_compatibility_corpus_is_accepted_by_application_validation() {
+    use base64::Engine;
+    let cases: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../vendor/luks/tests/data/compatibility.json"
+    ))
+    .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let expected: Vec<u8> = (0..1536).map(|index| (index * 17 + 7) as u8).collect();
+    for (index, case) in cases["containers"].as_array().unwrap().iter().enumerate() {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(case["image"].as_str().unwrap())
+            .unwrap();
+        let path = directory.path().join(format!("luks-{index}.img"));
+        std::fs::write(&path, &bytes).unwrap();
+        let source = Arc::new(DiskImage::open(&path).unwrap());
+        let mut credentials = options(EncryptionScheme::Luks);
+        credentials.password = "LovelyCarve-密码".into();
+        let (image, _) = unlock(&source, credentials, CancellationToken::new())
+            .unwrap_or_else(|error| panic!("{} / {}: {error:#}", case["cipher"], case["mode"]));
+        assert_eq!(image.read_range(507, 1029).unwrap(), expected[507..1536]);
+    }
+}
+
 fn options(scheme: EncryptionScheme) -> UnlockOptions {
     UnlockOptions {
         target: Default::default(),
         scheme,
         password: "lovelycarve-test".into(),
+        master_key_hex: None,
         partition_id: None,
         offset: None,
         length: None,
@@ -115,6 +163,37 @@ fn corrupt_and_unbounded_luks2_headers_are_rejected_before_kdf() {
             bytes.len() as u64
         )
         .is_err());
+    }
+}
+
+#[test]
+fn checksum_valid_luks2_headers_with_invalid_or_overflowing_iv_are_rejected() {
+    use sha2::{Digest, Sha256};
+    for tweak in ["not-a-number", "18446744073709551615"] {
+        let mut bytes = std::fs::read(fixture("luks2.img")).unwrap();
+        let end = bytes[4096..16384]
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap()
+            + 4096;
+        let mut metadata: serde_json::Value = serde_json::from_slice(&bytes[4096..end]).unwrap();
+        metadata["segments"]["0"]["iv_tweak"] = tweak.into();
+        let encoded = serde_json::to_vec(&metadata).unwrap();
+        bytes[4096..16384].fill(0);
+        bytes[4096..4096 + encoded.len()].copy_from_slice(&encoded);
+        bytes[448..512].fill(0);
+        let checksum = Sha256::digest(&bytes[..16384]);
+        bytes[448..480].copy_from_slice(&checksum);
+        let error = crate::core::evidence::crypto::luks_metadata::validate(
+            &mut std::io::Cursor::new(&bytes),
+            bytes.len() as u64,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("numeric metadata")
+                || error.to_string().contains("IV sector range"),
+            "{error}"
+        );
     }
 }
 

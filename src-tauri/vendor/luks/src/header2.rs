@@ -60,6 +60,8 @@ pub struct Luks2Keyslot {
     pub area_size: u64,
     /// AF-area cipher (e.g. `aes-xts-plain64`).
     pub area_encryption: String,
+    /// Key length used to decrypt the keyslot area; independent of the master key.
+    pub area_key_size: usize,
     /// The KDF.
     pub kdf: Luks2Kdf,
 }
@@ -94,6 +96,8 @@ pub struct Luks2Digest {
     pub digest: Vec<u8>,
     /// Keyslot ids this digest verifies.
     pub keyslots: Vec<String>,
+    /// Data segments verified by this digest (empty means an unbound key).
+    pub segments: Vec<String>,
 }
 
 /// A parsed LUKS2 header.
@@ -239,6 +243,7 @@ fn parse_keyslot(id: &str, v: &Value) -> Option<Luks2Keyslot> {
         area_offset: as_u64(area.get("offset")?),
         area_size: as_u64(area.get("size")?),
         area_encryption: area.get("encryption").and_then(Value::as_str)?.to_string(),
+        area_key_size: as_u64(area.get("key_size").unwrap_or(v.get("key_size")?)) as usize,
         kdf,
     })
 }
@@ -270,6 +275,15 @@ fn parse_digest(v: &Value) -> Option<Luks2Digest> {
             .map(|a| {
                 a.iter()
                     .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        segments: v
+            .get("segments")
+            .and_then(Value::as_array)
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(str::to_string))
                     .collect()
             })
             .unwrap_or_default(),

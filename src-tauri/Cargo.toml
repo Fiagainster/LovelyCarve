@@ -199,6 +199,7 @@ vmdk = { package = "vmdk-core", path = "vendor/vmdk", features = ["full-encoding
 vsc = { package = "vsc-core", path = "vendor/vsc" }
 xfs-fuse = { path = "vendor/xfs-fuse" }
 zerocopy = "0.8.62"
+zeroize = "1"
 zfs-rs = { path = "vendor/zfs" }
 zip = { version = "9.0.1", default-features = false, features = ["deflate"] }
 zstd = { version = "0.14.2", default-features = false }
@@ -266,6 +267,15 @@ opt-level = 3
 opt-level = 3
 
 [profile.release.package.aes]
+opt-level = 3
+
+[profile.release.package.blowfish]
+opt-level = 3
+[profile.release.package.cbc]
+opt-level = 3
+[profile.release.package.rc4]
+opt-level = 3
+[profile.release.package.serpent]
 opt-level = 3
 
 [profile.release.package.pbkdf2]

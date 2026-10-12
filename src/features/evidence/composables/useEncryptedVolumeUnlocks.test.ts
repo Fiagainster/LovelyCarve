@@ -35,6 +35,18 @@ beforeEach(() => {
 afterEach(() => { disposeEncryptedVolumeUnlockJobs(); stopUpdater(); stopContext(); });
 
 describe('background encrypted volume unlock ownership', () => {
+  it('clears master keys after completion and duplicate submission', async () => {
+    const operation = deferred();
+    ipc.unlock.mockReturnValue(operation.promise);
+    const options = { scheme: 'luks' as const, masterKeyHex: '00112233', partitionId: 2 };
+    expect(startEncryptedVolumeUnlock(source, options)).toBe(true);
+    const duplicate = { ...options };
+    expect(startEncryptedVolumeUnlock(source, duplicate)).toBe(false);
+    expect(duplicate.masterKeyHex).toBeUndefined();
+    operation.resolve(result);
+    await settle();
+    expect(options.masterKeyHex).toBeUndefined();
+  });
   it('updates the source metadata after the initiating page stops without opening another image', async () => {
     const operation = deferred();
     ipc.unlock.mockReturnValue(operation.promise);

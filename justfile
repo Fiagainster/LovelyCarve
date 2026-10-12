@@ -414,6 +414,12 @@ test-ios-backup *args:
 test-luks *args:
     cargo test {{ args }}
 
+# Lint the LUKS reader and its independent corpus tests.
+[group("readers")]
+[working-directory("src-tauri/vendor/luks")]
+clippy-luks *args:
+    cargo clippy --all-targets {{ args }}
+
 # Test the VeraCrypt reader.
 [group("readers")]
 [working-directory("src-tauri/vendor/veracrypt")]

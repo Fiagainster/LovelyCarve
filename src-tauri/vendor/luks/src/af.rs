@@ -15,7 +15,7 @@
 //! counter. The hash is the header's `hash-spec` (sha1 / sha256 / sha512).
 
 use sha1::Sha1;
-use sha2::{Digest, Sha256, Sha512};
+use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
 
 use crate::error::{LuksError, Result};
 
@@ -86,7 +86,9 @@ pub fn merge(
     }
     match hash_spec {
         "sha1" => Ok(af_merge::<Sha1>(material, block_size, stripes)),
+        "sha224" => Ok(af_merge::<Sha224>(material, block_size, stripes)),
         "sha256" => Ok(af_merge::<Sha256>(material, block_size, stripes)),
+        "sha384" => Ok(af_merge::<Sha384>(material, block_size, stripes)),
         "sha512" => Ok(af_merge::<Sha512>(material, block_size, stripes)),
         other => Err(LuksError::Unsupported {
             what: "hash",

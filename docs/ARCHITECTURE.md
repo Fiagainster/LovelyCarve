@@ -1000,6 +1000,10 @@ offset。当前普通目录已提供 `fs_children_page`，案件模式下会优�
 LUKS2 在 KDF 前通过 `core/evidence/crypto/luks_metadata.rs` 校验头部大小、校验和、数据段和 keyslot
 范围及支持的布局；上游 reader 的密文读取改为严格读取，越界/截断均报错。
 解锁参数不实现 `Debug` / `Serialize`，结果不包含凭据或主密钥。
+LUKS 扇区密码套件由 vendored `sector_cipher` 统一分派，密码槽与数据段使用同一只读路径；
+支持 AES CBC/ECB/XTS、Blowfish/Serpent CBC/ECB 和 ARC4 ECB，LUKS2 的 area key 与卷主密钥独立。
+`masterKeyHex` 通过同一命令/任务建立会话，验证摘要后才暴露明文；凭据和恢复的主密钥缓冲区在释放时清零。
+完整算法、IV、36 个 libluksde API 对照及边界见 [LUKS](LUKS.md)。
 
 ## 卷影副本（VSS）的会话视图
 

@@ -1,5 +1,9 @@
 # luks-forensic
 
+> LovelyCarve's vendored build extends the upstream cipher/credential scope.
+> See [local integration notes](LOVELYCARVE.md) and [LUKS capability comparison](../../../docs/LUKS.md).
+> Upstream CI/coverage badges below describe the original upstream project.
+
 [![Crates.io: luks-core](https://img.shields.io/crates/v/luks-core.svg?label=luks-core)](https://crates.io/crates/luks-core)
 [![Crates.io: luks-forensic](https://img.shields.io/crates/v/luks-forensic.svg?label=luks-forensic)](https://crates.io/crates/luks-forensic)
 [![Docs.rs](https://img.shields.io/docsrs/luks-core?label=docs.rs)](https://docs.rs/luks-core)

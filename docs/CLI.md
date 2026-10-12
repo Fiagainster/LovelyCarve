@@ -306,7 +306,7 @@ JSONL 会话示例（`lovelycarve-cli session`，逐行从标准输入发送）�
 {"id":"export","command":"image_export_raw","args":{"destination":"D:/exports/plain.raw","taskId":"export-1","readFaultPolicy":"strict"}}
 ```
 
-LUKS 使用 `"scheme":"luks"`，不传 `pim`/`hidden`。`options.partitionId` 选择分区；
+LUKS 使用 `"scheme":"luks"`，不传 `pim`/`hidden`。密码之外，也可只传 `options.masterKeyHex`（已恢复卷主密钥的十六进制，不与密码同时传）；LUKS1/2 均先核验密钥摘要。算法与能力对照见 [LUKS](LUKS.md)。`options.partitionId` 选择分区；
 也可指定相对源镜像的字节 `offset` 和 `length`（省略长度时到源末尾），两种区域选择
 不能混用。默认整个源镜像。VeraCrypt 没有明文签名，需要用户明确选择格式和隐藏卷。
 密码按 UTF-8 字节传入；命令本身不保存密码或导出主密钥，敏感输入宜走标准输入，

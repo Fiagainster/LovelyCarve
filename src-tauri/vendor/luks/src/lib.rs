@@ -1,7 +1,7 @@
 //! # luks-core — pure-Rust LUKS reader and decryptor
 //!
 //! Parse a LUKS container's on-disk header, recover the master key from a
-//! passphrase, and decrypt the payload. Panic-free and `forbid(unsafe)`: every
+//! passphrase or verified master key, and decrypt the payload. `forbid(unsafe)`: every
 //! integer is read bounds-checked, every crypto primitive is an audited
 //! RustCrypto crate.
 //!
@@ -24,10 +24,12 @@
 
 mod af;
 mod bytes;
+mod credentials;
 mod crypto;
 mod error;
 mod header;
 mod header2;
+mod sector_cipher;
 #[cfg(feature = "vfs")]
 pub mod vfs;
 #[cfg(feature = "vfs")]
@@ -37,6 +39,7 @@ mod volume;
 pub use error::{LuksError, Result};
 pub use header::{Keyslot, Luks1Header};
 pub use header2::{Luks2Digest, Luks2Header, Luks2Kdf, Luks2Keyslot, Luks2Segment};
+pub use sector_cipher::validate_cipher;
 pub use volume::{DecryptedPayload, LuksVolume, VolumeInfo};
 
 /// Fuzz-only re-export (hidden from docs). Kept `pub` so the `core/fuzz` crate

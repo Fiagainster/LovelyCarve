@@ -9,6 +9,8 @@
 
 ### Added
 
+- 补齐 LUKS 的 AES-CBC/ECB、Blowfish、Serpent、ARC4、更多 IV 和 SHA-224/384，提供 LUKS1/2 主密钥解锁入口及 libluksde 全部 36 个公开 API 的能力对照。
+
 - 补齐 FAT/exFAT 文件范围读取、原始属性与目录项偏移等后端元数据接口，并记录 libfsfat 全部 53 个公开 API 的能力对照。
 - 补齐 ext2/3/4 内联文件与目录、EA-inode 扩展属性、旧式目录和 meta_bg 读取，并记录完整 libfsext 能力对照。
 - ext 读者提供卷挂载历史、feature masks、UID/GID、链接数和设备编号等元数据 API。
@@ -18,6 +20,8 @@
 - 插件 SDK、隔离宿主与 `linuxinfo` 改由独立的 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 子模块维护；源码构建需递归克隆或运行 `just bootstrap` 初始化子模块。
 
 ### Fixed
+
+- LUKS 密钥材料按扇区补齐，LUKS2 密钥槽支持与卷主密钥不同的长度；解密 seek 溢出、无效 PBKDF2 轮数和不合法的算法组合明确报错。
 
 - 修复 exFAT 文件初始化尾部、负时区与 10 毫秒时间精度、跨目录槽位 UTF-16 名称及连续子目录的删除项扫描。
 - FAT 按数据簇数识别格式并支持大逻辑扇区；FAT/exFAT 读取校验损坏簇链与短读，保留同名删除记录，并避免把未知本地时区标成 UTC。

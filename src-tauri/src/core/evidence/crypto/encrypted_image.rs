@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, Weak};
 use anyhow::{anyhow, bail, ensure, Context};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
+use zeroize::Zeroize;
 
 use crate::core::evidence::image::{DerivedImage, DiskImage, ImageInfo};
 use crate::core::evidence::partitions::{detect_partitions_with_meta, SectorSource};
@@ -32,7 +33,9 @@ pub struct UnlockOptions {
     #[serde(default)]
     pub target: UnlockTarget,
     pub scheme: EncryptionScheme,
+    #[serde(default)]
     pub password: String,
+    pub master_key_hex: Option<String>,
     pub partition_id: Option<u8>,
     pub offset: Option<u64>,
     pub length: Option<u64>,
@@ -40,6 +43,15 @@ pub struct UnlockOptions {
     pub hidden: bool,
     #[serde(default)]
     pub pim: u32,
+}
+
+impl Drop for UnlockOptions {
+    fn drop(&mut self) {
+        self.password.zeroize();
+        if let Some(key) = &mut self.master_key_hex {
+            key.zeroize();
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -131,7 +143,7 @@ impl Seek for EvidenceReader {
 }
 
 enum PlaintextReader {
-    Luks(luks::DecryptedPayload<EvidenceReader>),
+    Luks(Box<luks::DecryptedPayload<EvidenceReader>>),
     Veracrypt(veracrypt::DecryptedVolume<EvidenceReader>),
 }
 
@@ -171,7 +183,14 @@ pub fn unlock(
         !cancellation.is_cancelled(),
         "encrypted volume operation cancelled"
     );
-    ensure!(!options.password.is_empty(), "password must not be empty");
+    ensure!(
+        options.master_key_hex.is_some() != !options.password.is_empty(),
+        "provide exactly one password or LUKS master key"
+    );
+    ensure!(
+        options.master_key_hex.is_none() || options.scheme == EncryptionScheme::Luks,
+        "master keys apply only to LUKS"
+    );
     ensure!(
         options.password.len() <= 4096,
         "password exceeds 4096 bytes"
@@ -233,8 +252,21 @@ pub fn unlock(
             );
             crate::core::evidence::crypto::luks_metadata::validate(&mut reader, length)?;
             reader.rewind()?;
-            let volume =
-                luks::LuksVolume::unlock_with_passphrase(reader, options.password.as_bytes())?;
+            let volume = if let Some(key) = &options.master_key_hex {
+                ensure!(
+                    key.len() <= 512
+                        && key.len().is_multiple_of(2)
+                        && !key.is_empty()
+                        && key.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                    "invalid LUKS master key hex"
+                );
+                let key = zeroize::Zeroizing::new(
+                    hex::decode(key).context("invalid LUKS master key hex")?,
+                );
+                luks::LuksVolume::unlock_with_master_key(reader, &key)?
+            } else {
+                luks::LuksVolume::unlock_with_passphrase(reader, options.password.as_bytes())?
+            };
             let size = volume.payload_size();
             let info = volume.info();
             ensure!(
@@ -246,7 +278,12 @@ pub fn unlock(
                 info.version, info.cipher_name, info.cipher_mode
             );
             let sector = info.sector_size;
-            (PlaintextReader::Luks(volume), size, cipher, sector)
+            (
+                PlaintextReader::Luks(Box::new(volume)),
+                size,
+                cipher,
+                sector,
+            )
         }
         EncryptionScheme::Veracrypt => {
             let volume = if options.hidden {

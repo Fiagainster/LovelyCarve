@@ -631,6 +631,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "blowfish"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e412e2cd0f2b2d93e02543ceae7917b3c70331573df19ee046bcbc35e45e87d7"
+dependencies = [
+ "byteorder",
+ "cipher 0.4.4",
+]
+
+[[package]]
 name = "brotli"
 version = "9.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -954,6 +964,7 @@ checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
  "crypto-common 0.1.7",
  "inout 0.1.4",
+ "zeroize",
 ]
 
 [[package]]
@@ -3751,6 +3762,7 @@ dependencies = [
  "winapi",
  "xfs-fuse",
  "zerocopy",
+ "zeroize",
  "zfs-rs",
  "zip 9.0.1",
  "zstd 0.14.2",
@@ -3782,13 +3794,18 @@ dependencies = [
  "aes 0.8.4",
  "argon2",
  "base64 0.22.1",
+ "blowfish",
+ "cbc 0.1.2",
  "hmac 0.12.1",
  "pbkdf2",
+ "rc4",
  "serde_json",
+ "serpent",
  "sha1 0.10.7",
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "xts-mode",
+ "zeroize",
 ]
 
 [[package]]
@@ -5565,6 +5582,15 @@ checksum = "22e18b0f0062d30d4230b2e85ff77fdfe4326feb054b9783a3460d8435c8ab91"
 dependencies = [
  "crossbeam-deque",
  "crossbeam-utils",
+]
+
+[[package]]
+name = "rc4"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f1256e23efe6097f27aa82d6ca6889361c001586ae0f6917cbad072f05eb275"
+dependencies = [
+ "cipher 0.4.4",
 ]
 
 [[package]]
