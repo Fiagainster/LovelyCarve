@@ -1,0 +1,18 @@
+{
+  "oracle": "libvhdi.dll from lovelycarve commit 0e541aeb50718c8373e90627616dfa9a95bd8683; read logical bytes with libvhdi_file_read_buffer_at_offset",
+  "oracle_sha256": "03914a7106a7798ee672e97559deeb2f84ee7e8f3312cb2bdd0c7dbd4e63827a",
+  "images": [
+    {
+      "kind": "vhd",
+      "name": "ntfs_fixed.vhd",
+      "size": 4194304,
+      "sha256": "cd81fade3878f1b2957f1ece168201876bdf4e90c9b30f60c2f232eba5fea76c"
+    },
+    {
+      "kind": "vhd",
+      "name": "ntfs_dynamic.vhd",
+      "size": 4194304,
+      "sha256": "8b10b52e3d1e76075d05a5101a6536b9fa8376a5b8f7c22f502d0987d165c876"
+    }
+  ]
+}

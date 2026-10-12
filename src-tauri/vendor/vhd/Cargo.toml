@@ -1,0 +1,57 @@
+[package]
+name         = "vhd-core"
+# Test fixtures (real dfvfs VHDs, corpus, fuzz) are for the repo, not consumers.
+exclude      = ["tests/data/", "corpus/", "fuzz/"]
+version = "0.1.4"
+edition = "2021"
+rust-version = "1.85"
+description  = "Pure-Rust read-only legacy VHD (Virtual PC) disk image reader"
+license = "Apache-2.0"
+repository = "https://github.com/SecurityRonin/vhd-forensic"
+homepage     = "https://github.com/SecurityRonin/vhd-forensic"
+documentation = "https://docs.rs/vhd"
+authors      = ["Albert Hui"]
+keywords     = ["forensics", "vhd", "disk-image", "windows", "container"]
+categories   = ["parser-implementations", "filesystem"]
+
+[lib]
+name = "vhd"
+path = "src/lib.rs"
+
+[features]
+# Expose test helper constructors for use in downstream crate tests.
+test-helpers = []
+# forensic-vfs ImageSource contract (optional): present a decoded VHD as a
+# read-only positioned-read byte source. Behind the `vfs` feature (ADR 0004).
+vfs = ["dep:forensic-vfs"]
+
+[dependencies]
+thiserror = "2"
+forensic-vfs = { version = "0.3", optional = true }
+
+[dev-dependencies]
+forensic-testgate = "0.1"
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all                      = { level = "warn", priority = -1 }
+pedantic                 = { level = "warn", priority = -1 }
+correctness              = { level = "deny", priority = -1 }
+suspicious               = { level = "deny", priority = -1 }
+unwrap_used              = "deny"
+expect_used              = "deny"
+# priority 1 so these individual allows outrank the grouped warn/deny entries above.
+module_name_repetitions  = { level = "allow", priority = 1 }
+must_use_candidate       = { level = "allow", priority = 1 }
+missing_errors_doc       = { level = "allow", priority = 1 }
+missing_panics_doc       = { level = "allow", priority = 1 }
+doc_markdown             = { level = "allow", priority = 1 }
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_possible_wrap       = { level = "allow", priority = 1 }
+cast_sign_loss           = { level = "allow", priority = 1 }
+
+
+[workspace]

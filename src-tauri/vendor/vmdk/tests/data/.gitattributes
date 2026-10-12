@@ -1,0 +1,2 @@
+# Preserve acquisition bytes, including descriptor line endings and whitespace.
+*.vmdk binary

@@ -1,0 +1,433 @@
+/* ============================================================
+ * themes.css — CSS custom-property tokens per theme
+ *
+ * Default (light) is applied via :root.
+ * Toggle by setting data-theme attribute on <html>:
+ *   document.documentElement.setAttribute('data-theme', 'dark')
+ * ============================================================ */
+
+/* ── Light (default) ── */
+:root {
+    /* Native form controls (checkboxes, radios, date/time pickers, selects)
+       follow the active theme — the dark theme renders them dark instead of
+       the glaring default white box. Scrollbars and inputs are custom-styled
+       elsewhere, so this only affects otherwise-unstyled native widgets. */
+    color-scheme: light;
+    /* Complete stacks, so `font-family: var(--font-ui)` alone never drops to
+       the browser's serif default when Inter is not installed. CJK text falls
+       through to the platform UI fonts. */
+    --font-ui: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+        'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Source Han Sans SC', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --font-brand: 'Quicksand';
+    --font-mono: 'Cascadia Mono', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+    --bg-primary: #f8fafc;
+    --bg-secondary: #ffffff;
+    --bg-activity-bar: #f1f5f9;
+    --text-primary: #0f172a;
+    /* One step deeper than slate-500 so secondary text keeps 4.5:1 on the
+       sidebar / tertiary surfaces (#f1f5f9), not only on white. */
+    --text-secondary: #5f6e86;
+    --accent-color: #2160e0;
+    /* 文件全显(deepsearch)激活态:面包屑标记与两态按钮的高亮色。 */
+    --showall-accent: #6a52f6;
+    --border-color: #e2e8f0;
+    --titlebar-bg: #f8fafc;
+    --titlebar-text: #0f172a;
+    --hover-bg: rgba(15, 23, 42, 0.04);
+    --active-bg: rgba(15, 23, 42, 0.08);
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+
+    /* Extended design tokens */
+    --surface-primary: #f8fafc;
+    --surface-secondary: #ffffff;
+    --surface-tertiary: #f1f5f9;
+    /* Accent for text, icons, borders and focus rings: the brand blue
+       (#3b82f6, kept in the gradient, glows and tints) darkened until links
+       and active labels clear 4.5:1 on white, the sidebar and the 8% active
+       tint. */
+    --primary-color: #2160e0;
+    --primary-glow: rgba(59, 130, 246, 0.25);
+    --accent-contrast: #ffffff;
+    /* Filled primary / destructive controls, deep enough that
+       --accent-contrast text on them stays above 4.5:1 in every theme. */
+    --primary-solid: #2563eb;
+    --primary-solid-hover: #1d4ed8;
+    --danger-solid: #dc2626;
+    --danger-solid-hover: #b91c1c;
+    --gradient-accent: linear-gradient(135deg, #3b82f6, #818cf8);
+    /* Statusbar tokens — the bar stays a brand gradient, but deep enough
+       that its --statusbar-fg labels keep 4.5:1 along the whole strip (the
+       plain brand gradient left white text at 3:1 on the indigo end). Pink
+       keeps its pastel gradient and switches the labels to plum instead; the
+       dark theme uses a low-saturation bar because a bright gradient on the
+       near-black canvas reads as a glow strip, not a status bar. */
+    --statusbar-bg: linear-gradient(135deg, #2563eb, #4f46e5);
+    --statusbar-fg: #ffffff;
+    --statusbar-border-top: transparent;
+    --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+    --card-shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
+    --modal-backdrop: rgba(15, 23, 42, 0.45);
+    --modal-shadow: 0 20px 60px rgba(15, 23, 42, 0.18);
+    --iframe-bg: #ffffff;
+    --tab-scroll-mask: linear-gradient(to right, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
+    --glass-bg: rgba(255, 255, 255, 0.82);
+    --glass-border: rgba(255, 255, 255, 0.5);
+    --glass-blur: 16px;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --transition-fast: 0.15s ease;
+    --transition-normal: 0.25s ease;
+    /* Motion: durations and curves for transitions, keyframes and the WAAPI
+       helpers in useUiMotion.ts. Entrances ease out (spring for small pops),
+       exits ease in and run on the shorter duration. */
+    --motion-fast: 150ms;
+    --motion-normal: 250ms;
+    --motion-slow: 400ms;
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-in: cubic-bezier(0.4, 0, 1, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --brand-glow-amber: #fef0cf;
+    --brand-moon-fill: #f1f5f9;
+    --brand-moon-shadow: rgba(244, 214, 167, 0.32);
+    --brand-moon-stroke: #cbd5e1;
+    --brand-moon-blush: rgba(255, 255, 255, 0.7);
+    --brand-spark-soft: #fde68a;
+    --brand-spark-soft-inner: #fef3c7;
+    --brand-spark-core: #f59e0b;
+    --brand-spark-accent: #fb7185;
+    --brand-spark-neutral: #94a3b8;
+    --brand-wordmark-gradient: linear-gradient(135deg, #0f172a 0%, #f59e0b 58%, #fb7185 100%);
+    --brand-dot-color: #f59e0b;
+
+    /* Sidebar tokens */
+    --sidebar-bg: #f1f5f9;
+    --sidebar-hover-bg: rgba(15, 23, 42, 0.06);
+    --sidebar-active-bg: rgba(59, 130, 246, 0.08);
+
+    /* ── Severity tokens (theme-aware) ──
+       Per-severity foreground / background / border triplet, used by
+       phishing-anomaly chips, calendar-hijack badges, etc. The light
+       theme uses *darker, more saturated* foregrounds because the
+       surface is near-white — pastel reds (#fca5a5) that look great
+       on dark backgrounds wash out to invisible on white. The dark
+       theme keeps the pastel set unchanged below. */
+    --sev-critical-fg: #b91c1c;
+    --sev-critical-bg: rgba(239, 68, 68, 0.10);
+    --sev-critical-bg-hover: rgba(239, 68, 68, 0.18);
+    --sev-critical-border: rgba(239, 68, 68, 0.45);
+    --sev-critical-border-strong: #dc2626;
+    --sev-critical-tag-fg: #991b1b;
+    --sev-critical-tag-bg: rgba(239, 68, 68, 0.18);
+
+    --sev-warn-fg: #b45309;
+    --sev-warn-bg: rgba(245, 158, 11, 0.10);
+    --sev-warn-bg-hover: rgba(245, 158, 11, 0.18);
+    --sev-warn-border: rgba(245, 158, 11, 0.45);
+    --sev-warn-tag-fg: #92400e;
+    --sev-warn-tag-bg: rgba(245, 158, 11, 0.18);
+
+    --sev-success-fg: #15803d;
+    --sev-success-bg: rgba(34, 197, 94, 0.10);
+    --sev-success-bg-hover: rgba(34, 197, 94, 0.18);
+    --sev-success-border: rgba(34, 197, 94, 0.45);
+    --sev-success-tag-fg: #14532d;
+    --sev-success-tag-bg: rgba(34, 197, 94, 0.18);
+
+    --sev-info-fg: #4338ca;
+    --sev-info-bg: rgba(99, 102, 241, 0.08);
+    --sev-info-bg-hover: rgba(99, 102, 241, 0.16);
+    --sev-info-border: rgba(99, 102, 241, 0.45);
+    --sev-info-selected-bg: rgba(99, 102, 241, 0.20);
+    --sev-info-selected-fg: #312e81;
+    --sev-info-selected-border: #4f46e5;
+    --sev-info-tag-fg: #3730a3;
+    --sev-info-tag-bg: rgba(99, 102, 241, 0.18);
+
+    /* ReFS 文件快照行染色（琥珀/金系） */
+    --sev-snapshot-bg: rgba(245, 158, 11, 0.12);
+    --sev-snapshot-bg-hover: rgba(245, 158, 11, 0.22);
+    --sev-snapshot-border: rgba(217, 119, 6, 0.65);
+    --sev-snapshot-tag-fg: #b45309;
+    --sev-snapshot-tag-bg: rgba(245, 158, 11, 0.22);
+
+    /* Subtle on-surface tints so chip count badges still read on white */
+    --chip-count-bg: rgba(15, 23, 42, 0.08);
+
+    /* ── Chart / disk-layout categorical palette (cycled by index) ──
+       Saturated mid-tones for white surfaces, anchored on the blue accent. */
+    --chart-1: #3b82f6;
+    --chart-2: #10b981;
+    --chart-3: #f59e0b;
+    --chart-4: #8b5cf6;
+    --chart-5: #ec4899;
+    --chart-6: #06b6d4;
+}
+
+/* ── Dark ── */
+:root[data-theme='dark'] {
+    color-scheme: dark;
+    --font-ui: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+        'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Source Han Sans SC', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --font-brand: 'Quicksand';
+    --font-mono: 'Cascadia Mono', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+    --bg-primary: #0c1222;
+    --bg-secondary: #1a2332;
+    --bg-activity-bar: #080d19;
+    --text-primary: #f8fafc;
+    --text-secondary: #94a3b8;
+    --accent-color: #6db3ff;
+    --showall-accent: #a78bfa;
+    --border-color: #283548;
+    --titlebar-bg: #0c1222;
+    --titlebar-text: #f8fafc;
+    --hover-bg: rgba(255, 255, 255, 0.06);
+    --active-bg: rgba(255, 255, 255, 0.10);
+    --shadow-sm: 0 4px 6px -1px rgba(0, 0, 0, 0.25);
+
+    /* Extended design tokens */
+    --surface-primary: #0c1222;
+    --surface-secondary: #1a2332;
+    --surface-tertiary: #141c2b;
+    --primary-color: #6db3ff;
+    --primary-glow: rgba(109, 179, 255, 0.18);
+    --accent-contrast: #ffffff;
+    /* The pastel --primary-color is for text and icons on the navy canvas;
+       white labels need the deeper fill. Hover deepens too: a brighter fill
+       would drop the white label below 4.5:1. */
+    --primary-solid: #2d6fe6;
+    --primary-solid-hover: #245bd1;
+    --danger-solid: #dc2626;
+    --danger-solid-hover: #b91c1c;
+    --gradient-accent: linear-gradient(135deg, #4a9eff, #818cf8);
+    /* Dark-theme statusbar: low-saturation deep blue→indigo gradient
+       that sits just above bg-primary (#0c1222) without becoming a
+       glowing strip. The hairline top border defines it against the
+       workspace content above. */
+    --statusbar-bg: linear-gradient(135deg, #1c2742, #28284e);
+    --statusbar-fg: #ffffff;
+    --statusbar-border-top: rgba(255, 255, 255, 0.06);
+    --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.25);
+    --card-shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
+    --modal-backdrop: rgba(0, 0, 0, 0.65);
+    --modal-shadow: 0 20px 60px rgba(0, 0, 0, 0.50);
+    --iframe-bg: #ffffff;
+    --glass-bg: rgba(12, 18, 34, 0.8);
+    --glass-border: rgba(255, 255, 255, 0.07);
+    --glass-blur: 16px;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --transition-fast: 0.15s ease;
+    --transition-normal: 0.25s ease;
+    --motion-fast: 150ms;
+    --motion-normal: 250ms;
+    --motion-slow: 400ms;
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-in: cubic-bezier(0.4, 0, 1, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --brand-glow-amber: rgba(251, 191, 36, 0.28);
+    --brand-moon-fill: #1e293b;
+    --brand-moon-shadow: rgba(251, 191, 36, 0.18);
+    --brand-moon-stroke: #475569;
+    --brand-moon-blush: rgba(255, 255, 255, 0.08);
+    --brand-spark-soft: #fbbf24;
+    --brand-spark-soft-inner: #fde68a;
+    --brand-spark-core: #f59e0b;
+    --brand-spark-accent: #fb7185;
+    --brand-spark-neutral: #94a3b8;
+    --brand-wordmark-gradient: linear-gradient(135deg, #f8fafc 0%, #fbbf24 54%, #fb7185 100%);
+    --brand-dot-color: #fbbf24;
+
+    /* Sidebar tokens */
+    --sidebar-bg: #0f1729;
+    --sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+    --sidebar-active-bg: rgba(109, 179, 255, 0.1);
+
+    /* ── Severity tokens (dark theme — pastel foregrounds for contrast on dark surfaces) ── */
+    --sev-critical-fg: #fca5a5;
+    --sev-critical-bg: rgba(239, 68, 68, 0.08);
+    --sev-critical-bg-hover: rgba(239, 68, 68, 0.18);
+    --sev-critical-border: rgba(239, 68, 68, 0.45);
+    --sev-critical-border-strong: #f87171;
+    --sev-critical-tag-fg: #fee2e2;
+    --sev-critical-tag-bg: rgba(239, 68, 68, 0.30);
+
+    --sev-warn-fg: #fcd34d;
+    --sev-warn-bg: rgba(245, 158, 11, 0.08);
+    --sev-warn-bg-hover: rgba(245, 158, 11, 0.18);
+    --sev-warn-border: rgba(245, 158, 11, 0.45);
+    --sev-warn-tag-fg: #fef3c7;
+    --sev-warn-tag-bg: rgba(245, 158, 11, 0.30);
+
+    --sev-success-fg: #86efac;
+    --sev-success-bg: rgba(34, 197, 94, 0.08);
+    --sev-success-bg-hover: rgba(34, 197, 94, 0.18);
+    --sev-success-border: rgba(34, 197, 94, 0.45);
+    --sev-success-tag-fg: #dcfce7;
+    --sev-success-tag-bg: rgba(34, 197, 94, 0.30);
+
+    --sev-info-fg: #c7d2fe;
+    --sev-info-bg: rgba(99, 102, 241, 0.06);
+    --sev-info-bg-hover: rgba(99, 102, 241, 0.18);
+    --sev-info-border: rgba(99, 102, 241, 0.45);
+    --sev-info-selected-bg: rgba(99, 102, 241, 0.30);
+    --sev-info-selected-fg: #e0e7ff;
+    --sev-info-selected-border: #818cf8;
+    --sev-info-tag-fg: #e0e7ff;
+    --sev-info-tag-bg: rgba(99, 102, 241, 0.30);
+
+    /* ReFS 文件快照行染色（琥珀/金系） */
+    --sev-snapshot-bg: rgba(245, 158, 11, 0.12);
+    --sev-snapshot-bg-hover: rgba(245, 158, 11, 0.22);
+    --sev-snapshot-border: rgba(251, 191, 36, 0.60);
+    --sev-snapshot-tag-fg: #fcd34d;
+    --sev-snapshot-tag-bg: rgba(245, 158, 11, 0.26);
+
+    --chip-count-bg: rgba(255, 255, 255, 0.10);
+
+    /* ── Chart / disk-layout categorical palette (cycled by index) ──
+       One step brighter (Tailwind 400-ish) so fills stay vivid on the
+       near-black navy canvas without glowing. */
+    --chart-1: #4a9eff;
+    --chart-2: #34d399;
+    --chart-3: #fbbf24;
+    --chart-4: #a78bfa;
+    --chart-5: #f472b6;
+    --chart-6: #22d3ee;
+}
+
+/* ── Pink ── */
+:root[data-theme='pink'] {
+    color-scheme: light;
+    --font-ui: 'Inter', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB',
+        'Microsoft YaHei UI', 'Microsoft YaHei', 'Noto Sans CJK SC', 'Source Han Sans SC', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --font-brand: 'Quicksand';
+    --font-mono: 'Cascadia Mono', 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace;
+    --bg-primary: #fef7fb;
+    --bg-secondary: #ffffff;
+    --bg-activity-bar: #fdf0f5;
+    --text-primary: #4a2039;
+    /* Deep enough for 4.5:1 on the blush sidebar (#fdf0f5); the old #9d7088
+       stopped at 3.7:1 there. */
+    --text-secondary: #8a5c76;
+    --accent-color: #ad3f65;
+    --showall-accent: #7545bd;
+    --border-color: #f3dce6;
+    --titlebar-bg: #fef7fb;
+    --titlebar-text: #4a2039;
+    --hover-bg: rgba(232, 132, 159, 0.10);
+    --active-bg: rgba(232, 132, 159, 0.16);
+    --shadow-sm: 0 1px 3px rgba(210, 140, 165, 0.12);
+
+    /* Extended design tokens */
+    --surface-primary: #fef7fb;
+    --surface-secondary: #ffffff;
+    --surface-tertiary: #fdf0f5;
+    /* Text / icon / border accent: the soft rose (#e8849f, still the
+       gradient, glow, tint and chart colour) read at 2.5:1 as text, so the
+       accent darkens to a raspberry that holds 4.5:1 on every pink surface. */
+    --primary-color: #ad3f65;
+    --primary-glow: rgba(232, 132, 159, 0.18);
+    --accent-contrast: #ffffff;
+    /* Deep rose keeps white labels readable; the soft #e8849f stays the brand
+       tone of gradients, glows and tints. */
+    --primary-solid: #c24d74;
+    --primary-solid-hover: #ad3f65;
+    --danger-solid: #dc2626;
+    --danger-solid-hover: #b91c1c;
+    --gradient-accent: linear-gradient(135deg, #e8849f, #dba0b4);
+    /* Pastel bar with plum labels (5.3:1+) — white on it was 2.2:1. */
+    --statusbar-bg: var(--gradient-accent);
+    --statusbar-fg: #4a2039;
+    --statusbar-border-top: transparent;
+    --card-shadow: 0 1px 3px rgba(210, 140, 165, 0.08), 0 1px 2px rgba(210, 140, 165, 0.05);
+    --card-shadow-hover: 0 8px 24px rgba(210, 140, 165, 0.14), 0 2px 8px rgba(210, 140, 165, 0.07);
+    --modal-backdrop: rgba(74, 32, 57, 0.38);
+    --modal-shadow: 0 20px 60px rgba(210, 140, 165, 0.24);
+    --iframe-bg: #ffffff;
+    --glass-bg: rgba(254, 247, 251, 0.85);
+    --glass-border: rgba(243, 220, 230, 0.5);
+    --glass-blur: 16px;
+    --radius-sm: 4px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --transition-fast: 0.15s ease;
+    --transition-normal: 0.25s ease;
+    --motion-fast: 150ms;
+    --motion-normal: 250ms;
+    --motion-slow: 400ms;
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --ease-in: cubic-bezier(0.4, 0, 1, 1);
+    --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+    --brand-glow-amber: #fff1d6;
+    --brand-moon-fill: #fff1f5;
+    --brand-moon-shadow: rgba(232, 132, 159, 0.24);
+    --brand-moon-stroke: #efc9d8;
+    --brand-moon-blush: rgba(255, 255, 255, 0.72);
+    --brand-spark-soft: #fde68a;
+    --brand-spark-soft-inner: #fff2bf;
+    --brand-spark-core: #f59e0b;
+    --brand-spark-accent: #e8849f;
+    --brand-spark-neutral: #b08998;
+    --brand-wordmark-gradient: linear-gradient(135deg, #4a2039 0%, #f59e0b 48%, #e8849f 100%);
+    --brand-dot-color: #e8849f;
+
+    /* Sidebar tokens */
+    --sidebar-bg: #fdf0f5;
+    --sidebar-hover-bg: rgba(232, 132, 159, 0.08);
+    --sidebar-active-bg: rgba(232, 132, 159, 0.12);
+
+    /* ── Severity tokens (pink theme — light surface, darker fg) ── */
+    --sev-critical-fg: #b91c1c;
+    --sev-critical-bg: rgba(239, 68, 68, 0.10);
+    --sev-critical-bg-hover: rgba(239, 68, 68, 0.18);
+    --sev-critical-border: rgba(239, 68, 68, 0.45);
+    --sev-critical-border-strong: #dc2626;
+    --sev-critical-tag-fg: #991b1b;
+    --sev-critical-tag-bg: rgba(239, 68, 68, 0.18);
+
+    --sev-warn-fg: #b45309;
+    --sev-warn-bg: rgba(245, 158, 11, 0.10);
+    --sev-warn-bg-hover: rgba(245, 158, 11, 0.18);
+    --sev-warn-border: rgba(245, 158, 11, 0.45);
+    --sev-warn-tag-fg: #92400e;
+    --sev-warn-tag-bg: rgba(245, 158, 11, 0.18);
+
+    --sev-success-fg: #15803d;
+    --sev-success-bg: rgba(34, 197, 94, 0.10);
+    --sev-success-bg-hover: rgba(34, 197, 94, 0.18);
+    --sev-success-border: rgba(34, 197, 94, 0.45);
+    --sev-success-tag-fg: #14532d;
+    --sev-success-tag-bg: rgba(34, 197, 94, 0.18);
+
+    --sev-info-fg: #be185d;            /* keep info in the pink family */
+    --sev-info-bg: rgba(232, 132, 159, 0.10);
+    --sev-info-bg-hover: rgba(232, 132, 159, 0.20);
+    --sev-info-border: rgba(232, 132, 159, 0.50);
+    --sev-info-selected-bg: rgba(232, 132, 159, 0.25);
+    --sev-info-selected-fg: #831843;
+    --sev-info-selected-border: #db2777;
+    --sev-info-tag-fg: #9d174d;
+    --sev-info-tag-bg: rgba(232, 132, 159, 0.18);
+
+    /* ReFS 文件快照行染色（琥珀/金系，与粉底反差醒目） */
+    --sev-snapshot-bg: rgba(245, 158, 11, 0.14);
+    --sev-snapshot-bg-hover: rgba(245, 158, 11, 0.24);
+    --sev-snapshot-border: rgba(217, 119, 6, 0.70);
+    --sev-snapshot-tag-fg: #b45309;
+    --sev-snapshot-tag-bg: rgba(245, 158, 11, 0.24);
+
+    --chip-count-bg: rgba(74, 32, 57, 0.10);
+
+    /* ── Chart / disk-layout categorical palette (cycled by index) ──
+       Warm rose-family hues (rose / orchid / apricot / deep pink /
+       periwinkle) with one dusty teal as counterpoint, so adjacent
+       partitions stay distinguishable while the bar reads pink-first. */
+    --chart-1: #e8849f;
+    --chart-2: #c084fc;
+    --chart-3: #f2a35c;
+    --chart-4: #db2777;
+    --chart-5: #9d8df1;
+    --chart-6: #5fb8a5;
+}

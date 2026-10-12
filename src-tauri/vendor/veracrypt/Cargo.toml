@@ -1,0 +1,41 @@
+[package]
+name         = "veracrypt-core"
+description   = "Pure-Rust VeraCrypt/TrueCrypt reader and decryptor — brute the header PRF+cipher, recover the master key, and decrypt the volume. Panic-free, no unsafe."
+version = "0.2.4"
+edition = "2021"
+rust-version = "1.81"
+license = "Apache-2.0"
+authors = ["Albert Hui <albert@securityronin.com>"]
+repository = "https://github.com/SecurityRonin/veracrypt-forensic"
+readme       = "README.md"
+keywords     = ["veracrypt", "truecrypt", "forensics", "encryption", "xts"]
+categories   = ["cryptography", "filesystem", "parser-implementations"]
+
+[lib]
+name = "veracrypt"
+
+[features]
+default = []
+# forensic-vfs EncryptionLayer contract (optional): present a decrypted VeraCrypt
+# volume as an ImageSource. Behind the `vfs` feature (ADR 0004). Depends on
+# `forensic-vfs 0.4`, which carries the `EncryptionScheme::VeraCrypt` variant. The
+# decryption is veracrypt-core's own audited RustCrypto; this only wires it.
+vfs = ["dep:forensic-vfs"]
+
+[dependencies]
+thiserror = "2"
+forensic-vfs = { version = "0.7", optional = true }
+aes = "0.8"
+serpent = "0.5"
+twofish = "0.7"
+xts-mode = "0.5"
+sha2 = "0.10"
+ripemd = "0.1"
+whirlpool = "0.10"
+streebog = "0.10"
+hmac = "0.12"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+crc32fast = "1"
+
+[lints.rust]
+unsafe_code = "forbid"

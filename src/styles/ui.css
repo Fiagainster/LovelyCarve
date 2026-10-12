@@ -1,0 +1,1379 @@
+/* ============================================================
+ * ui.css — Shared UI primitives (buttons, fields, tabs, badges,
+ * modal shell, menus, empty states, panel headers).
+ *
+ * Every component should build its controls from these classes instead of
+ * re-declaring button / input / modal chrome in its scoped styles. Keep the
+ * scoped CSS for layout (width, margin, grid placement) and for genuinely
+ * component-specific visuals only.
+ *
+ * Specificity: every rule is a single class — modifiers and states sit inside
+ * `:where()` — so any scoped rule (`.foo[data-v-…]`) overrides a primitive
+ * without `!important` or selector games. Within this file, later rules win,
+ * which is why each variant is declared after the base hover state.
+ *
+ * Scale (desktop-dense): controls 30px (sm 26px, lg 38px); text 12px body,
+ * 11px meta, 13px emphasis, 15px dialog titles — whole pixels only, and no
+ * larger than 24px inside working surfaces.
+ * Spacing: even values on a 4px rhythm (4 / 8 / 12 / 16 / 20…), with 2px
+ * half-steps where a control needs them; no odd values except 1px optical
+ * nudges.
+ * Radii: controls --radius-md, badges --radius-sm, surfaces --radius-lg.
+ *
+ * Workspace pages share one anatomy and no title bar: a ui-toolbar (filters
+ * left, actions right), the work surface, and a ui-footbar that carries the
+ * page context, counts and hints.
+ * ============================================================ */
+
+/* ── Button ─────────────────────────────────────────────────── */
+.ui-btn {
+    --ui-btn-h: 30px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    flex-shrink: 0;
+    height: var(--ui-btn-h);
+    padding: 0 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--surface-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    text-decoration: none;
+    cursor: pointer;
+    user-select: none;
+    transition: background-color var(--transition-fast), border-color var(--transition-fast),
+        color var(--transition-fast), box-shadow var(--transition-fast),
+        scale var(--motion-fast) var(--ease-out);
+}
+
+.ui-btn:where(:hover:not(:disabled)) {
+    border-color: color-mix(in srgb, var(--primary-color) 45%, var(--border-color));
+    background: color-mix(in srgb, var(--primary-color) 5%, var(--surface-secondary));
+}
+
+.ui-btn:where(:active:not(:disabled)) {
+    background: color-mix(in srgb, var(--primary-color) 10%, var(--surface-secondary));
+}
+
+/* Toggle buttons (filters, view switches) report their state through
+   `.active` or aria-pressed. */
+.ui-btn:where(.active, [aria-pressed='true']) {
+    border-color: color-mix(in srgb, var(--primary-color) 55%, var(--border-color));
+    background: var(--sidebar-active-bg);
+    color: var(--primary-color);
+}
+
+.ui-btn:where(.primary) {
+    border-color: var(--primary-solid);
+    background: var(--primary-solid);
+    color: var(--accent-contrast);
+    font-weight: 600;
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--primary-solid) 30%, transparent);
+}
+
+.ui-btn:where(.primary:hover:not(:disabled)) {
+    border-color: var(--primary-solid-hover);
+    background: var(--primary-solid-hover);
+    box-shadow: 0 3px 10px var(--primary-glow);
+}
+
+.ui-btn:where(.danger) {
+    border-color: var(--danger-solid);
+    background: var(--danger-solid);
+    color: var(--accent-contrast);
+    font-weight: 600;
+}
+
+.ui-btn:where(.danger:hover:not(:disabled)) {
+    border-color: var(--danger-solid-hover);
+    background: var(--danger-solid-hover);
+}
+
+.ui-btn:where(.ghost) {
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-secondary);
+}
+
+.ui-btn:where(.ghost:hover:not(:disabled)) {
+    border-color: transparent;
+    background: var(--hover-bg);
+    color: var(--text-primary);
+}
+
+.ui-btn:where(.ghost.active, .ghost[aria-pressed='true']) {
+    border-color: transparent;
+    background: var(--sidebar-active-bg);
+    color: var(--primary-color);
+}
+
+/* Inline text action inside tables and summaries (定位 / 详情 / 恢复). */
+.ui-btn:where(.link) {
+    --ui-btn-h: 24px;
+    padding: 0 6px;
+    border-color: transparent;
+    background: transparent;
+    color: var(--primary-color);
+    box-shadow: none;
+}
+
+.ui-btn:where(.link:hover:not(:disabled)) {
+    border-color: transparent;
+    background: var(--sidebar-active-bg);
+}
+
+/* Destructive action that should not shout (row removal, clear history).
+   Combines with the default, ghost and link styles. */
+.ui-btn:where(.danger-soft) {
+    color: var(--sev-critical-fg);
+}
+
+.ui-btn:where(.danger-soft:hover:not(:disabled)) {
+    border-color: var(--sev-critical-border);
+    background: var(--sev-critical-bg);
+}
+
+.ui-btn:where(.ghost.danger-soft:hover:not(:disabled), .link.danger-soft:hover:not(:disabled)) {
+    border-color: transparent;
+}
+
+.ui-btn:where(.sm) {
+    --ui-btn-h: 26px;
+    gap: 4px;
+    padding: 0 10px;
+}
+
+.ui-btn:where(.lg) {
+    --ui-btn-h: 38px;
+    gap: 8px;
+    padding: 0 18px;
+    font-size: 13px;
+}
+
+/* Square, icon-only variant of any button style. */
+.ui-btn:where(.icon) {
+    width: var(--ui-btn-h);
+    padding: 0;
+}
+
+.ui-btn:where(.block) {
+    width: 100%;
+}
+
+.ui-btn:where(:disabled, [aria-disabled='true']) {
+    opacity: 0.5;
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.ui-btn:where(:focus-visible) {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+}
+
+.ui-btn > svg {
+    flex-shrink: 0;
+}
+
+/* ── Icon button (borderless, square) ─────────────────────── */
+.ui-icon-btn {
+    --ui-icon-btn-size: 28px;
+    display: inline-grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: var(--ui-icon-btn-size);
+    height: var(--ui-icon-btn-size);
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast),
+        border-color var(--transition-fast), scale var(--motion-fast) var(--ease-out);
+}
+
+.ui-icon-btn:where(:hover:not(:disabled)) {
+    background: var(--hover-bg);
+    color: var(--text-primary);
+}
+
+.ui-icon-btn:where(:active:not(:disabled)) {
+    background: var(--active-bg);
+}
+
+.ui-icon-btn:where(.active, [aria-pressed='true'], [aria-expanded='true']) {
+    background: var(--sidebar-active-bg);
+    color: var(--primary-color);
+}
+
+.ui-icon-btn:where(.bordered) {
+    border-color: var(--border-color);
+    background: var(--surface-secondary);
+}
+
+.ui-icon-btn:where(.bordered:hover:not(:disabled)) {
+    border-color: color-mix(in srgb, var(--primary-color) 45%, var(--border-color));
+    background: color-mix(in srgb, var(--primary-color) 5%, var(--surface-secondary));
+}
+
+.ui-icon-btn:where(.danger:hover:not(:disabled)) {
+    background: var(--sev-critical-bg);
+    color: var(--sev-critical-fg);
+}
+
+.ui-icon-btn:where(.sm) {
+    --ui-icon-btn-size: 24px;
+    border-radius: var(--radius-sm);
+}
+
+.ui-icon-btn:where(.lg) {
+    --ui-icon-btn-size: 30px;
+}
+
+.ui-icon-btn:where(:disabled) {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.ui-icon-btn:where(:focus-visible) {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 1px;
+}
+
+/* ── Text field, select, textarea ─────────────────────────── */
+.ui-input,
+.ui-select,
+.ui-textarea {
+    width: 100%;
+    min-width: 0;
+    height: 30px;
+    padding: 0 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--surface-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    outline: none;
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast),
+        background-color var(--transition-fast);
+}
+
+/* Lighter than a value, but still 3:1 on the field so the hint stays legible. */
+.ui-input::placeholder,
+.ui-textarea::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.8;
+}
+
+.ui-input:where(:hover:not(:disabled, :focus)),
+.ui-select:where(:hover:not(:disabled, :focus)),
+.ui-textarea:where(:hover:not(:disabled, :focus)) {
+    border-color: color-mix(in srgb, var(--text-secondary) 45%, var(--border-color));
+}
+
+.ui-input:where(:focus, :focus-visible),
+.ui-select:where(:focus, :focus-visible),
+.ui-textarea:where(:focus, :focus-visible) {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px var(--primary-glow);
+}
+
+.ui-input:where(:disabled),
+.ui-select:where(:disabled),
+.ui-textarea:where(:disabled) {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.ui-input:where(.sm),
+.ui-select:where(.sm) {
+    height: 26px;
+    padding: 0 8px;
+}
+
+/* Error state: aria-invalid paints the border and the focus ring red, so a
+   field the user is fixing still reads as wrong until it validates. Pair it
+   with a .ui-field-error message linked through aria-describedby. Declared
+   after hover / focus so it wins over both. */
+.ui-input:where([aria-invalid='true']),
+.ui-select:where([aria-invalid='true']),
+.ui-textarea:where([aria-invalid='true']) {
+    border-color: var(--sev-critical-border-strong);
+}
+
+.ui-input:where([aria-invalid='true']:focus),
+.ui-select:where([aria-invalid='true']:focus),
+.ui-textarea:where([aria-invalid='true']:focus) {
+    box-shadow: 0 0 0 3px var(--sev-critical-bg-hover);
+}
+
+.ui-textarea {
+    height: auto;
+    min-height: 64px;
+    padding: 8px 10px;
+    line-height: 1.6;
+    resize: vertical;
+}
+
+/* The UiSelect trigger: a button drawn as a field. The caret is drawn with
+   gradients so it follows the theme text colour. */
+.ui-select {
+    display: inline-flex;
+    align-items: center;
+    width: auto;
+    padding-right: 28px;
+    appearance: none;
+    -webkit-appearance: none;
+    text-align: left;
+    background-image:
+        linear-gradient(45deg, transparent 50%, var(--text-secondary) 50%),
+        linear-gradient(135deg, var(--text-secondary) 50%, transparent 50%);
+    background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+    cursor: pointer;
+}
+
+/* Search box: leading icon + bare input (+ optional trailing clear button). */
+.ui-search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    height: 30px;
+    padding: 0 6px 0 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--surface-secondary);
+    color: var(--text-secondary);
+    transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.ui-search:where(:hover:not(:focus-within)) {
+    border-color: color-mix(in srgb, var(--text-secondary) 45%, var(--border-color));
+}
+
+.ui-search:where(:focus-within) {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px var(--primary-glow);
+}
+
+.ui-search > svg {
+    flex-shrink: 0;
+    opacity: 0.8;
+}
+
+.ui-search > input {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    outline: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: 12px;
+}
+
+.ui-search > input::placeholder {
+    color: var(--text-secondary);
+    opacity: 0.8;
+}
+
+/* Same error state as the fields above, driven by the inner input. */
+.ui-search:where(:has(> input[aria-invalid='true'])) {
+    border-color: var(--sev-critical-border-strong);
+}
+
+.ui-search:where(:has(> input[aria-invalid='true']):focus-within) {
+    box-shadow: 0 0 0 3px var(--sev-critical-bg-hover);
+}
+
+/* Labelled checkbox / radio. */
+.ui-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-primary);
+    font-size: 12px;
+    line-height: 1.4;
+    cursor: pointer;
+    user-select: none;
+}
+
+.ui-check > input {
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+.ui-check:where(:has(input:disabled)) {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+/* Switch: a checkbox with role="switch" drawn as a pill toggle. */
+.ui-switch {
+    position: relative;
+    flex-shrink: 0;
+    width: 32px;
+    height: 18px;
+    margin: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-secondary) 38%, var(--surface-tertiary));
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
+    transition: background-color var(--motion-normal) var(--ease-out);
+}
+
+.ui-switch::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--accent-contrast);
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--text-primary) 30%, transparent);
+    transition: transform var(--motion-normal) var(--ease-spring);
+}
+
+.ui-switch:where(:checked) {
+    background: var(--primary-solid);
+}
+
+.ui-switch:where(:checked)::after {
+    transform: translateX(14px);
+}
+
+.ui-switch:where(:focus-visible) {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+}
+
+.ui-switch:where(:disabled) {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* Form field: label, control, hint. */
+.ui-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.ui-field-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.ui-field-hint {
+    color: var(--text-secondary);
+    font-size: 11px;
+    line-height: 1.55;
+}
+
+/* Validation message under a control (takes the hint's place while the
+   value is wrong). Give the control aria-invalid="true" and point its
+   aria-describedby at this element; a leading icon is optional. */
+.ui-field-error {
+    display: flex;
+    align-items: flex-start;
+    gap: 4px;
+    color: var(--sev-critical-fg);
+    font-size: 11px;
+    line-height: 1.55;
+}
+
+.ui-field-error > svg {
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+/* ── Segmented control ────────────────────────────────────── */
+.ui-seg {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+    padding: 2px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--surface-tertiary);
+}
+
+.ui-seg-item {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 24px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: calc(var(--radius-md) - 2px);
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: background-color var(--transition-fast), color var(--transition-fast),
+        box-shadow var(--transition-fast), scale var(--motion-fast) var(--ease-out);
+}
+
+.ui-seg-item:where(:hover:not(:disabled)) {
+    color: var(--text-primary);
+}
+
+.ui-seg-item:where(.active, [aria-pressed='true'], [aria-selected='true'], [aria-checked='true']) {
+    background: var(--surface-secondary);
+    color: var(--primary-color);
+    box-shadow: var(--shadow-sm), 0 0 0 1px var(--border-color);
+}
+
+.ui-seg-item:where(:disabled) {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* A label around a visually hidden radio (settings) shows the ring for it. */
+.ui-seg-item:where(:focus-visible, :has(> input:focus-visible)) {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 1px;
+}
+
+/* ── Underline tabs ───────────────────────────────────────── */
+.ui-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 22px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.ui-tab {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    height: 40px;
+    padding: 0 2px;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color var(--transition-fast);
+}
+
+.ui-tab::after {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    border-radius: 2px 2px 0 0;
+    background: var(--primary-color);
+    opacity: 0;
+    transform: scaleX(0.4);
+    transition: opacity var(--motion-fast) var(--ease-out), transform var(--motion-normal) var(--ease-out);
+}
+
+.ui-tab:where(:hover) {
+    color: var(--text-primary);
+}
+
+.ui-tab:where(.active, [aria-selected='true']) {
+    color: var(--primary-color);
+    font-weight: 600;
+}
+
+.ui-tab:where(.active, [aria-selected='true'])::after {
+    opacity: 1;
+    transform: none;
+}
+
+.ui-tab:where(:focus-visible) {
+    outline: 2px solid var(--primary-color);
+    outline-offset: -2px;
+    border-radius: var(--radius-sm);
+}
+
+/* ── Badge / status pill ──────────────────────────────────── */
+.ui-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    height: 20px;
+    padding: 0 8px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: var(--chip-count-bg);
+    color: var(--text-secondary);
+    font-family: var(--font-ui);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+    vertical-align: middle;
+}
+
+.ui-badge:where(.sm) {
+    height: 18px;
+    padding: 0 6px;
+}
+
+.ui-badge:where(.pill) {
+    border-radius: 999px;
+}
+
+.ui-badge:where(.info) {
+    border-color: color-mix(in srgb, var(--sev-info-border) 60%, transparent);
+    background: var(--sev-info-bg);
+    color: var(--sev-info-fg);
+}
+
+.ui-badge:where(.success) {
+    border-color: color-mix(in srgb, var(--sev-success-border) 60%, transparent);
+    background: var(--sev-success-bg);
+    color: var(--sev-success-fg);
+}
+
+.ui-badge:where(.warn) {
+    border-color: color-mix(in srgb, var(--sev-warn-border) 60%, transparent);
+    background: var(--sev-warn-bg);
+    color: var(--sev-warn-fg);
+}
+
+.ui-badge:where(.danger) {
+    border-color: color-mix(in srgb, var(--sev-critical-border) 60%, transparent);
+    background: var(--sev-critical-bg);
+    color: var(--sev-critical-fg);
+}
+
+.ui-badge:where(.outline) {
+    border-color: var(--border-color);
+    background: transparent;
+}
+
+/* Categorical tone (file systems, event kinds, carve categories): set
+   --badge-tone to a --chart-* or --sev-* colour. The label mixes toward
+   --text-primary, which keeps it readable on the light and dark surfaces. */
+.ui-badge:where(.tone) {
+    border-color: color-mix(in srgb, var(--badge-tone, var(--text-secondary)) 30%, transparent);
+    background: color-mix(in srgb, var(--badge-tone, var(--text-secondary)) 12%, transparent);
+    color: color-mix(in srgb, var(--badge-tone, var(--text-secondary)) 58%, var(--text-primary));
+}
+
+/* Numeric counter next to a heading or tab label. */
+.ui-count {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--chip-count-bg);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+}
+
+.ui-count:where(.accent) {
+    background: var(--sev-info-bg);
+    color: var(--sev-info-fg);
+}
+
+/* ── Keyboard key ─────────────────────────────────────────── */
+.ui-kbd {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 6px;
+    border: 1px solid var(--border-color);
+    border-bottom-width: 2px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-tertiary);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1;
+}
+
+/* ── Card ─────────────────────────────────────────────────── */
+.ui-card {
+    min-width: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    background: var(--surface-secondary);
+    box-shadow: var(--card-shadow);
+}
+
+.ui-card-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 48px;
+    padding: 10px 16px;
+}
+
+.ui-card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.ui-card-title > svg {
+    flex-shrink: 0;
+    color: var(--primary-color);
+}
+
+/* Section heading inside a panel or dialog body. */
+.ui-section-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+/* Page heading: title + description on the left, actions on the right
+   (settings pages, dashboard sections). */
+.ui-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.ui-heading-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 16px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.ui-heading-desc {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.6;
+}
+
+/* ── Alert / inline notice ────────────────────────────────── */
+.ui-alert {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--surface-tertiary);
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.55;
+}
+
+.ui-alert > svg {
+    flex-shrink: 0;
+    margin-top: 1px;
+}
+
+.ui-alert:where(.info) {
+    border-color: var(--sev-info-border);
+    background: var(--sev-info-bg);
+    color: var(--sev-info-fg);
+}
+
+.ui-alert:where(.success) {
+    border-color: var(--sev-success-border);
+    background: var(--sev-success-bg);
+    color: var(--sev-success-fg);
+}
+
+.ui-alert:where(.warn) {
+    border-color: var(--sev-warn-border);
+    background: var(--sev-warn-bg);
+    color: var(--sev-warn-fg);
+}
+
+.ui-alert:where(.danger) {
+    border-color: var(--sev-critical-border);
+    background: var(--sev-critical-bg);
+    color: var(--sev-critical-fg);
+}
+
+/* ── Progress bar ─────────────────────────────────────────── */
+.ui-progress {
+    position: relative;
+    height: 4px;
+    overflow: hidden;
+    border-radius: 999px;
+    background: var(--surface-tertiary);
+}
+
+.ui-progress > span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--primary-color);
+    transition: width var(--motion-slow) var(--ease-out);
+}
+
+.ui-progress:where(.success) > span { background: var(--sev-success-fg); }
+.ui-progress:where(.danger) > span { background: var(--sev-critical-fg); }
+.ui-progress:where(.warn) > span { background: var(--sev-warn-fg); }
+
+.ui-progress:where(.indeterminate) > span {
+    width: 40%;
+    animation: ui-indeterminate 1.2s ease-in-out infinite;
+}
+
+@keyframes ui-indeterminate {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(260%); }
+}
+
+/* Motion off: a static, dimmed full bar still reads as "working". */
+:root[data-motion='reduced'] .ui-progress:where(.indeterminate) > span {
+    width: 100%;
+    opacity: 0.45;
+    animation: none;
+}
+
+/* ── Empty state ──────────────────────────────────────────── */
+.ui-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 36px 20px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.6;
+    text-align: center;
+}
+
+.ui-empty-icon {
+    display: grid;
+    place-items: center;
+    width: 52px;
+    height: 52px;
+    margin-bottom: 6px;
+    border-radius: var(--radius-lg);
+    background: var(--surface-tertiary);
+    color: var(--text-secondary);
+}
+
+.ui-empty-icon:where(.accent) {
+    background: var(--sev-info-bg);
+    color: var(--primary-color);
+}
+
+.ui-empty-title {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.ui-empty-desc {
+    max-width: 380px;
+    margin: 0;
+}
+
+.ui-empty-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+/* ── Toolbar (the top row of a workspace page) ────────────────
+ * Pages carry no title bar: they open straight onto their controls.
+ * Filters and search sit on the left, the page actions in
+ * ui-toolbar-actions on the right; the row is the same 48px strip as the
+ * file list address bar.
+ *   <div class="ui-toolbar">
+ *     <label class="ui-search">…</label>
+ *     <div class="ui-toolbar-actions"><button class="ui-btn primary">…</button></div>
+ *   </div> */
+.ui-toolbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    flex-shrink: 0;
+    min-height: 48px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--surface-secondary);
+}
+
+.ui-toolbar-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+/* ── Footer bar (context, counts and hints under a workspace) ─
+ * Carries what a title bar used to: the current task, its state and the
+ * key figures. <span class="ui-footbar-stat">命中 <strong>213</strong> 处</span> */
+.ui-footbar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    flex-shrink: 0;
+    min-height: 32px;
+    padding: 4px 16px;
+    border-top: 1px solid var(--border-color);
+    background: var(--surface-primary);
+    color: var(--text-secondary);
+    font-size: 11px;
+}
+
+.ui-footbar-spacer {
+    flex: 1;
+}
+
+.ui-footbar-stat {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 4px;
+    white-space: nowrap;
+}
+
+.ui-footbar-stat > strong {
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Thin vertical rule between toolbar groups. */
+.ui-divider-v {
+    flex-shrink: 0;
+    width: 1px;
+    height: 18px;
+    background: var(--border-color);
+}
+
+/* ── Modal shell ──────────────────────────────────────────── */
+.ui-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9000;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: var(--modal-backdrop);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
+
+.ui-modal {
+    display: flex;
+    flex-direction: column;
+    width: min(560px, 100%);
+    max-height: min(86vh, 880px);
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    background: var(--surface-secondary);
+    color: var(--text-primary);
+    box-shadow: var(--modal-shadow);
+    outline: none;
+}
+
+.ui-modal-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+    padding: 16px 16px 16px 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.ui-modal-icon {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    background: var(--sev-info-bg);
+    color: var(--primary-color);
+}
+
+.ui-modal-icon:where(.danger) {
+    background: var(--sev-critical-bg);
+    color: var(--sev-critical-fg);
+}
+
+.ui-modal-icon:where(.warn) {
+    background: var(--sev-warn-bg);
+    color: var(--sev-warn-fg);
+}
+
+.ui-modal-heading {
+    flex: 1;
+    min-width: 0;
+}
+
+.ui-modal-title {
+    margin: 0;
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.4;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ui-modal-subtitle {
+    margin: 2px 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.ui-modal-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 18px 20px;
+}
+
+.ui-modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
+    padding: 12px 20px;
+    border-top: 1px solid var(--border-color);
+    background: color-mix(in srgb, var(--surface-tertiary) 55%, var(--surface-secondary));
+}
+
+/* Put secondary footer content (hints, destructive links) on the left. */
+.ui-modal-footer > :where(.start) {
+    margin-right: auto;
+}
+
+/* Dialog actions are at least twice as wide as they are tall, so a short
+   「取消」 does not shrink to a near-square next to its wider primary action. */
+.ui-modal-footer > :where(.ui-btn:not(.icon, .link)) {
+    min-width: calc(var(--ui-btn-h) * 2);
+}
+
+/* <Transition name="ui-modal">: the backdrop fades while the dialog springs
+   up from slightly below; closing is quicker and falls away. Vue times the
+   transition on the overlay, so the dialog must never outlast it. */
+.ui-modal-enter-active {
+    transition: opacity var(--motion-normal) var(--ease-out);
+}
+
+.ui-modal-leave-active {
+    transition: opacity var(--motion-fast) var(--ease-in);
+}
+
+.ui-modal-enter-active .ui-modal {
+    transition: transform var(--motion-normal) var(--ease-spring);
+}
+
+.ui-modal-leave-active .ui-modal {
+    transition: transform var(--motion-fast) var(--ease-in);
+}
+
+.ui-modal-enter-from,
+.ui-modal-leave-to {
+    opacity: 0;
+}
+
+.ui-modal-enter-from .ui-modal {
+    transform: translateY(16px) scale(0.95);
+}
+
+.ui-modal-leave-to .ui-modal {
+    transform: translateY(8px) scale(0.98);
+}
+
+/* ── Choice card ──────────────────────────────────────────────
+ * Full-width option row: icon tile, title + description, trailing chevron
+ * or badge. Used as a button (pick a source) or as a <label> around a
+ * radio / checkbox (pick a setting); the checked state highlights it. */
+.ui-choice {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    min-width: 0;
+    padding: 14px 16px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--surface-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    text-align: left;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color var(--transition-fast), background-color var(--transition-fast),
+        box-shadow var(--transition-fast), translate var(--motion-fast) var(--ease-out);
+}
+
+.ui-choice:where(:hover:not(:disabled)) {
+    border-color: color-mix(in srgb, var(--primary-color) 50%, var(--border-color));
+    background: color-mix(in srgb, var(--primary-color) 4%, var(--surface-secondary));
+}
+
+.ui-choice:where(.active, :has(> input:checked)) {
+    border-color: var(--primary-color);
+    background: color-mix(in srgb, var(--primary-color) 7%, var(--surface-secondary));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary-color) 35%, transparent);
+}
+
+.ui-choice:where(:disabled) {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.ui-choice:where(:focus-visible, :focus-within:has(> input:focus-visible)) {
+    outline: 2px solid var(--primary-color);
+    outline-offset: 2px;
+}
+
+.ui-choice > input {
+    flex-shrink: 0;
+    margin: 0;
+}
+
+.ui-choice-icon {
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    width: 40px;
+    height: 40px;
+    border-radius: var(--radius-md);
+    background: var(--sev-info-bg);
+    color: var(--primary-color);
+}
+
+.ui-choice-text {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.ui-choice-title {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
+.ui-choice-desc {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.5;
+}
+
+.ui-choice-arrow {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    transition: color var(--transition-fast), transform var(--motion-normal) var(--ease-out);
+}
+
+.ui-choice:where(:hover:not(:disabled)) .ui-choice-arrow {
+    color: var(--primary-color);
+    transform: translateX(2px);
+}
+
+/* ── Menu / popover ───────────────────────────────────────── */
+.ui-menu {
+    min-width: 180px;
+    padding: 4px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--surface-secondary);
+    color: var(--text-primary);
+    box-shadow: var(--modal-shadow);
+}
+
+.ui-menu-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: 30px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    text-align: left;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.ui-menu-item > svg {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+}
+
+/* [data-highlighted]: the keyboard highlight of a list whose focus stays on
+   its trigger (UiSelect). */
+.ui-menu-item:where(:hover:not(:disabled, [aria-disabled='true']), :focus-visible, [data-highlighted]) {
+    outline: none;
+    background: var(--hover-bg);
+}
+
+.ui-menu-item:where(.danger) {
+    color: var(--sev-critical-fg);
+}
+
+.ui-menu-item:where(.danger) > svg {
+    color: currentColor;
+}
+
+.ui-menu-item:where(.danger:hover:not(:disabled)) {
+    background: var(--sev-critical-bg);
+}
+
+/* The current value of a list: the selection tint with primary text. */
+.ui-menu-item:where([aria-selected='true']) {
+    background: var(--sidebar-active-bg);
+    color: var(--primary-color);
+}
+
+.ui-menu-item:where(:disabled, [aria-disabled='true']) {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.ui-menu-label {
+    padding: 6px 10px 4px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.ui-menu-sep {
+    height: 1px;
+    margin: 4px 6px;
+    background: var(--border-color);
+}
+
+/* ── Disclosure (details / summary) ───────────────────────── */
+.ui-disclosure > summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+}
+
+.ui-disclosure > summary::-webkit-details-marker {
+    display: none;
+}
+
+.ui-disclosure > summary .ui-chevron {
+    flex-shrink: 0;
+    transition: transform var(--motion-normal) var(--ease-out);
+}
+
+.ui-disclosure[open] > summary .ui-chevron {
+    transform: rotate(90deg);
+}
+
+/* ── Loading spinner ──
+ * `<Loader2 class="spin" />` everywhere. Lives in the global sheet so scoped
+ * keyframe renaming cannot desync it, and so every window (main + detached
+ * previews) has it. `transform-box: fill-box` keeps SVGs rotating around
+ * their centre. Exempt from the reduced-motion freeze in base.css: with
+ * motion off it keeps turning, at half speed. */
+.spin {
+    display: inline-block;
+    animation: spin 1s linear infinite;
+    transform-origin: center center;
+    transform-box: fill-box;
+    will-change: transform;
+}
+
+:root[data-motion='reduced'] .spin {
+    animation-duration: 2s;
+}
+
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* ── Utilities ────────────────────────────────────────────── */
+/* Monospace text: offsets, hashes, sectors, ids. */
+.mono {
+    font-family: var(--font-mono);
+}
+
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+}

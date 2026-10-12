@@ -1,0 +1,15 @@
+[package]
+name = "refs-reader"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "GPL-2.0-or-later"
+description = "Read-only ReFS reader ported from refsprogs for LovelyCarve"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+uninlined_format_args = "warn"
+
+[workspace]

@@ -1,0 +1,5 @@
+target
+tests/header
+# Generated locally using tests/README.md, not a committed fixture.
+tests/fixtures/
+/.vscode

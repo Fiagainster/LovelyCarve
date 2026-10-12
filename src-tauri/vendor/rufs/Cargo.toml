@@ -1,0 +1,20 @@
+[package]
+name = "rufs"
+version = "0.6.0"
+edition = "2021"
+license = "BSD-2-Clause"
+authors = [
+    "Benjamin Stürz <benni@stuerz.xyz>",
+    "Alan Somers <asomers@gmail.com>",
+    "Davids Paskevics <davids.paskevics@gmail.com>",
+]
+description = "Read-only UFSv2 reader, vendored from fuse-ufs (https://github.com/realchonk/fuse-ufs) and patched for cross-platform (Windows) builds in lovelycarve."
+rust-version = "1.90.0"
+
+[dependencies]
+bincode-next = "3.1.1"
+libc = "0.2"
+log = "0.4"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }

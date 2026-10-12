@@ -1,0 +1,17 @@
+image: debian/stable
+packages:
+  - libfuse-dev
+  - pkgconf
+tasks:
+  - rust-setup: |
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+      source $HOME/.cargo/env
+      rustup toolchain install nightly --profile minimal
+  - build: |
+      source $HOME/.cargo/env
+      cd iso9660-rs
+      cargo +nightly build
+  - test: |
+      source $HOME/.cargo/env
+      cd iso9660-rs
+      cargo +nightly test

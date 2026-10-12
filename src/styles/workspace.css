@@ -1,0 +1,4 @@
+/* Main-window chrome: titlebar, tab strip, layout and sidebar. */
+@import './components/titlebar.css';
+@import './components/tabbar.css';
+@import './components/app-layout.css';

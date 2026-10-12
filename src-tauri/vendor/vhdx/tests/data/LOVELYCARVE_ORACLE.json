@@ -1,0 +1,24 @@
+{
+  "oracle": "libvhdi.dll from lovelycarve commit 0e541aeb50718c8373e90627616dfa9a95bd8683; read logical bytes with libvhdi_file_read_buffer_at_offset",
+  "oracle_sha256": "03914a7106a7798ee672e97559deeb2f84ee7e8f3312cb2bdd0c7dbd4e63827a",
+  "images": [
+    {
+      "kind": "vhdx",
+      "name": "ext2.vhdx",
+      "size": 4194304,
+      "sha256": "a6c2f0e39afe6c6ab432ca5465349fcefe8dc944398e97b2d957d3f89dbb5d80"
+    },
+    {
+      "kind": "vhdx",
+      "name": "fat-parent.vhdx",
+      "size": 4194304,
+      "sha256": "2d1954fec68faefe81dd3687282a9b387bf8417f6d2cf0da3825fa1445b64cfb"
+    },
+    {
+      "kind": "vhdx",
+      "name": "qemu_fixed.vhdx",
+      "size": 8388608,
+      "sha256": "2daeb1f36095b44b318410b3f4e8b5d989dcc7bb023d1426c492dab0a3053e74"
+    }
+  ]
+}

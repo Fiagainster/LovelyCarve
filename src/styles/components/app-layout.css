@@ -1,0 +1,77 @@
+/* ============================================================
+ * app-layout.css — Main layout, content area, drag & drop overlay
+ * ============================================================ */
+
+.main-layout {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--bg-primary);
+    position: relative;
+}
+
+.editor-area {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-primary);
+    position: relative;
+    overflow: hidden;
+}
+
+/* ── Content area ── */
+.content-area {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* ── Drag & Drop Overlay ── */
+.drag-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--modal-backdrop);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+.drag-overlay-content {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    padding: 40px 56px;
+    max-width: calc(100% - 48px);
+    border: 2px dashed var(--primary-color);
+    border-radius: var(--radius-lg);
+    background: var(--surface-secondary);
+    color: var(--text-primary);
+    box-shadow: var(--modal-shadow);
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+:root[data-motion='full'] .drag-overlay-content {
+    animation: ui-zoom-in var(--motion-normal) var(--ease-spring) backwards,
+        ui-float 2s ease-in-out var(--motion-normal) infinite;
+}
+
+.drag-overlay-content svg {
+    color: var(--primary-color);
+}
+
+/* Fade transition */
+.fade-enter-active { transition: opacity var(--motion-normal) var(--ease-out); }
+.fade-leave-active { transition: opacity var(--motion-fast) var(--ease-in); }
+.fade-enter-from, .fade-leave-to { opacity: 0; }

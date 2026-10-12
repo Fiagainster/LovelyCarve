@@ -1,0 +1,19 @@
+[package]
+name = "realm-db-reader"
+version = "0.2.1"
+authors = ["Maarten Staa"]
+edition = "2024"
+description = "A Rust library for reading Realm database files"
+repository = "https://github.com/maartenstaa/realm-db-reader"
+license = "MIT"
+
+[dependencies]
+byteorder = "1.5.0"
+chrono = "0.4.41"
+hex = "0.4.3"
+memmap2 = "0.9.5"
+thiserror = "2.0.15"
+tracing = { version = "0.1.41", features = ["std", "log"] }
+
+[dev-dependencies]
+itertools = "0.14.0"

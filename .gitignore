@@ -1,0 +1,92 @@
+# Dependencies and generated web assets
+node_modules/
+/dist/
+/dist-pack/
+/public/file-viewer/
+
+# Cargo output, including nested vendor workspaces and local checks
+target/
+/src-tauri/target-*/
+/src-tauri/gen/schemas/
+
+# Libraries staged by just build-plugins
+/plugins/*/*.dll
+/plugins/*/*.so
+/plugins/*/*.dylib
+
+# Compiler, test and diagnostic output
+*.pdb
+*.ilk
+*.obj
+*.exp
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+coverage/
+.vitest/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local evidence and analysis output; regression corpora remain visible
+/fixtures/
+/evidence/
+/cases/
+/exports/
+*.dd
+*.[eE][0-9]*
+*.[eE][xX][0-9]*
+*.raw
+*.img
+*.vhd
+*.vhdx
+*.vmdk
+*.qcow2
+*.vdi
+*.ad1
+*.dirz
+*.db-wal
+*.db-shm
+!**/tests/data/**
+!**/testdata/**
+!**/test_data/**
+!**/tests/fixtures/**
+!**/tests/*.qcow2
+
+# IDE and operating-system metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Credentials, signing material and private developer settings
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.pfx
+*.p12
+/.claude/
+/.codex/
+/.codex-remote-attachments/
+/.zcode/
+
+# Imported design references and old source copies
+/_design_ref/
+/design-reference.*
+/lovelycarve-src/
+/old-src/
+
+# Locally built optional OpenCV sources and installations
+/opencv/
+/opencv_contrib-4.x/
+/opencv-contrib-install/
+/opencv-contrib-build/
+/dummy-non-existing-folder/

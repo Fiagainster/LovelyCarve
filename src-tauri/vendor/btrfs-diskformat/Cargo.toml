@@ -1,0 +1,24 @@
+[package]
+name = "btrfs-diskformat"
+version = "0.5.1"
+authors = ["Christopher Tam <ohgodtamit@gmail.com>"]
+edition = "2024"
+description = "An implementation of the BTRFS disk format."
+readme = "README.md"
+repository = "https://github.com/GodTamIt/btrfs-diskformat"
+license = "BSD-2-Clause"
+keywords = ["btrfs", "filesystem", "diskformat"]
+categories = ["filesystem", "no-std"]
+
+[features]
+default = []
+alloc = ["zerocopy/alloc"]
+std = ["strum/std", "zerocopy/std"]
+
+[dependencies]
+bitflags = "^2.9"
+num_enum = { version = "^0.7", default-features = false }
+static_assertions = "^1.1.0"
+strum = { version = "^0.27", features = ["derive"], default-features = false }
+zerocopy = { version = "^0.8", default-features = false }
+zerocopy-derive = "^0.8"

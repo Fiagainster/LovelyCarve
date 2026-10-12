@@ -1,0 +1,49 @@
+[package]
+name         = "vsc-core"
+version      = "0.2.2"
+edition      = "2021"
+rust-version = "1.88"
+license      = "Apache-2.0"
+authors      = ["Albert Hui <albert@securityronin.com>"]
+repository   = "https://github.com/SecurityRonin/vsc-forensic"
+description  = "Reader for Windows Volume Shadow Copy (VSS) store/catalog structures"
+keywords     = ["forensics", "windows", "vss", "shadowcopy", "dfir"]
+categories   = ["parser-implementations", "filesystem"]
+readme       = "README.md"
+# The oracle manifest is for the repo, not consumers.
+exclude      = ["tests/data/"]
+
+[lib]
+name = "vsc"
+
+[dependencies]
+thiserror = "2"
+uuid = "1"
+
+[dev-dependencies]
+sha2 = "0.10"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all                      = { level = "warn",  priority = -1 }
+pedantic                 = { level = "warn",  priority = -1 }
+correctness              = { level = "deny",  priority = -1 }
+suspicious               = { level = "deny",  priority = -1 }
+unwrap_used              = { level = "deny",  priority = 0  }
+expect_used              = { level = "deny",  priority = 0  }
+module_name_repetitions  = { level = "allow", priority = 1  }
+must_use_candidate       = { level = "allow", priority = 1  }
+missing_errors_doc       = { level = "allow", priority = 1  }
+missing_panics_doc       = { level = "allow", priority = 1  }
+cast_possible_truncation = { level = "allow", priority = 1  }
+cast_possible_wrap       = { level = "allow", priority = 1  }
+cast_sign_loss           = { level = "allow", priority = 1  }
+cast_precision_loss      = { level = "allow", priority = 1  }
+too_many_lines           = { level = "allow", priority = 1  }
+items_after_statements   = { level = "allow", priority = 1  }
+similar_names            = { level = "allow", priority = 1  }
+manual_let_else          = { level = "allow", priority = 1  }
+
+[workspace]

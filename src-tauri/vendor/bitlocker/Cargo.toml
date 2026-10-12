@@ -1,0 +1,46 @@
+[package]
+name         = "bitlocker-core"
+version = "0.3.5"
+edition = "2021"
+rust-version = "1.82"
+license = "Apache-2.0"
+authors = ["Albert Hui <albert@securityronin.com>"]
+repository = "https://github.com/SecurityRonin/bitlocker-forensic"
+description  = "From-scratch reader/decryptor for BitLocker Drive Encryption (BDE) volumes — password unlock, AES-CBC + Elephant Diffuser"
+keywords     = ["forensics", "bitlocker", "encryption", "dfir", "windows"]
+categories   = ["parser-implementations", "cryptography"]
+readme = "README.md"
+exclude      = ["/fuzz", "/.github", "/docs"]
+
+[lib]
+name = "bitlocker"
+
+[features]
+default = []
+# forensic-vfs EncryptionLayer contract (optional): present a BitLocker-encrypted
+# volume as a decrypted ImageSource. Behind the `vfs` feature so the bare reader
+# does not inherit the VFS dependency graph (ADR 0004). The decryption itself is
+# bitlocker-core's (audited RustCrypto + the elephant-diffuser crate); this only
+# wires the contract.
+vfs = ["dep:forensic-vfs"]
+
+[dependencies]
+thiserror = "2"
+aes = "0.8"
+cbc = "0.1"
+ccm = "0.5"
+sha2 = "0.10"
+xts-mode = "0.5"
+elephant-diffuser = "0.1"
+forensic-vfs = { version = "0.7", optional = true }
+
+[dev-dependencies]
+# Tier-1 oracle: hash decrypted sectors of the real dfvfs bdetogo.raw image and
+# compare to pybde ground truth (see tests/oracle_bdetogo.rs, env-gated on
+# BDE_ORACLE_IMAGE). RustCrypto SHA-256.
+sha2 = "0.10"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[workspace]

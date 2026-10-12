@@ -1,0 +1,420 @@
+"""End-to-end tests against the actual CLI process (no desktop or web server)."""
+import gzip
+import hashlib
+import ctypes
+from ctypes import wintypes
+import json
+import os
+from pathlib import Path
+import struct
+import subprocess
+import signal
+import sys
+import tempfile
+import zlib
+
+
+def main():
+    executable = Path(sys.argv[1]).resolve()
+    with tempfile.TemporaryDirectory(prefix="lovelycarve-cli-test-") as directory:
+        root = Path(directory)
+        evidence = root / "evidence with spaces"
+        evidence.mkdir()
+        content = b"hello forensic world\npassword test\n"
+        (evidence / "hello.txt").write_bytes(content)
+        copied = root / "copy.bin"
+        node = "folder:" + b"hello.txt".hex()
+
+        def run(arguments, stdin=None, expected=0):
+            process = subprocess.run([str(executable), *arguments], input=stdin,
+                                     text=True, encoding="utf-8", capture_output=True,
+                                     timeout=120, cwd=root)
+            assert process.returncode == expected, (process.returncode, process.stdout, process.stderr)
+            return process
+
+        catalog = json.loads(run(["commands", "--json"]).stdout)
+        assert len(catalog) >= 148
+        assert any(command["name"] == "fs_media_temp" for command in catalog)
+        capabilities = json.loads(run(["capabilities", "--json"]).stdout)
+        assert capabilities["windowless"] and capabilities["backend_commands"] == len(catalog)
+        run(["--help"])
+        run(["fs-read", "--help"])
+        run(["--unknown"], expected=2)
+
+        encrypted_fixtures = Path(__file__).resolve().parents[1] / "src-tauri/tests/data/encrypted"
+        plaintext = (encrypted_fixtures / "plain.img").read_bytes()
+        for filename, scheme, hidden in [
+            ("luks1.img", "luks", False), ("luks2.img", "luks", False),
+            ("veracrypt.hc", "veracrypt", False), ("hidden.hc", "veracrypt", True),
+        ]:
+            exported_plain = root / (filename + ".raw")
+            exported_file = root / (filename + ".txt")
+            options = {"scheme": scheme, "password": "lovelycarve-test", "hidden": hidden,
+                       "pim": 1 if scheme == "veracrypt" else 0}
+            if filename == "luks1.img":
+                options["partitionId"] = 0
+            encrypted_requests = [
+                {"id": "source", "command": "image_load", "args": {"path": str(encrypted_fixtures / filename)}},
+                {"id": "unlock", "command": "encrypted_volume_unlock", "args": {"options": options}},
+                {"id": "plain", "command": "image_load", "args": {"path": {"$ref": "unlock#/image/path"}}},
+                {"id": "files", "command": "fs_children", "args": {"parentId": "part:0"}},
+                {"id": "read", "command": "fs_read", "args": {"nodeId": {"$ref": "files#/0/id"}}, "output": str(exported_file)},
+                {"id": "export", "command": "image_export_raw", "args": {"destination": str(exported_plain), "taskId": "encrypted-export", "readFaultPolicy": "strict"}},
+                {"id": "close", "command": "image_unload", "args": {"imageId": {"$ref": "source#/id"}}},
+                {"id": "remaining", "command": "image_list"},
+            ]
+            encrypted_result = run(["session"], "\n".join(json.dumps(request) for request in encrypted_requests))
+            encrypted_rows = [json.loads(line) for line in encrypted_result.stdout.splitlines()]
+            assert all("result" in row for row in encrypted_rows), encrypted_rows
+            assert exported_plain.read_bytes() == plaintext, filename
+            assert exported_file.read_bytes() == b"LovelyCarve encrypted evidence fixture.\n", filename
+            assert encrypted_rows[1]["result"]["image"]["source_format"] == "decrypted"
+            assert encrypted_rows[-1]["result"] == [], "decrypted child survived source unload"
+
+            attached_file = root / (filename + ".attached.txt")
+            attached_raw = root / (filename + ".source.raw")
+            attached_requests = [
+                {"id": "case", "command": "case_create", "args": {"dir": str(root / (filename + "-case")), "name": "attached unlock"}},
+                {"id": "source", "command": "image_load", "args": {"path": str(encrypted_fixtures / filename)}},
+                {"id": "unlock", "command": "encrypted_volume_unlock", "args": {"options": {**options, "target": "sourcePartition"}}},
+                {"id": "images", "command": "image_list"},
+                {"id": "wait", "command": "wait"},
+                {"id": "indexes", "command": "snapshot_list"},
+                {"id": "read", "command": "fs_read", "args": {"nodeId": "fat:part:0:" + b"/HELLO.TXT".hex()}, "output": str(attached_file)},
+                {"id": "raw", "command": "image_export_raw", "args": {"destination": str(attached_raw), "taskId": "attached-raw", "readFaultPolicy": "strict"}},
+                {"id": "close", "command": "case_close"},
+                {"id": "remove", "command": "case_remove", "args": {"dir": str(root / (filename + "-case"))}},
+            ]
+            attached_result = run(["session"], "\n".join(json.dumps(request) for request in attached_requests))
+            attached_rows = {row["id"]: row for row in map(json.loads, attached_result.stdout.splitlines())}
+            assert all("result" in row for row in attached_rows.values()), attached_rows
+            source_id = attached_rows["source"]["result"]["id"]
+            attached = attached_rows["unlock"]["result"]
+            assert attached["image"]["id"] == source_id and attached["volume_key"] == "part:0"
+            assert attached["image"]["unlocked_partitions"] == [0]
+            assert len(attached_rows["images"]["result"]) == 1, "in-place unlock created another image"
+            assert any(index["image_id"] == source_id and index["volume_key"] == "part:0" and index["indexed"]
+                       for index in attached_rows["indexes"]["result"]), (filename, attached_rows["indexes"], attached_result.stderr)
+            assert attached_file.read_bytes() == b"LovelyCarve encrypted evidence fixture.\n"
+            assert attached_raw.read_bytes() == (encrypted_fixtures / filename).read_bytes(), "source export changed after unlock"
+
+        requests = [
+            {"id": "image", "command": "image_load", "args": {"path": str(evidence)}},
+            {"id": "roots", "command": "fs_children", "args": {"parentId": ""}},
+            {"id": "read", "command": "fs_read", "args": {"imageId": {"$ref": "image#/id"}, "nodeId": node}, "output": str(copied)},
+            {"id": "digest", "command": "fs_digest", "args": {"nodeId": node, "algos": ["sha256"]}},
+            {"id": "preview", "command": "fs_media_temp", "args": {"nodeId": node, "ext": "txt", "taskId": "preview-1"}},
+            {"id": "wait", "command": "wait"},
+        ]
+        result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        assert len(rows) == len(requests), result.stdout
+        assert all("result" in row for row in rows), rows
+        assert copied.read_bytes() == content
+        assert rows[3]["result"]["sha256"] == hashlib.sha256(content).hexdigest()
+        assert not Path(rows[4]["result"]).exists(), "preview lease leaked after process exit"
+
+        exported = root / "export.txt"
+        script = root / "commands.txt"
+        script.write_text(f'''open "{evidence}"
+cd "{evidence.name}"
+ls
+cat hello.txt --length 5
+sha256sum hello.txt
+export hello.txt "{exported}"
+''', encoding="utf-8")
+        result = run(["--json", "run", str(script)])
+        assert exported.read_bytes() == content
+        assert any(json.loads(line).get("data") == "hello" for line in result.stdout.splitlines())
+        run(["--json", "run", str(script)], expected=1)
+        assert exported.read_bytes() == content
+
+        # All shell shortcuts also work through the stateful JSONL adapter.
+        # Content recognition must ignore the misleading filename extension.
+        python_content = b"#!/usr/bin/env python3\nimport sys\nprint('LovelyCarve forensic CLI')\n" * 20
+        (evidence / "signature.bin").write_bytes(python_content)
+        unicode_text = "中文取证字符串"
+        (evidence / "unicode.bin").write_bytes(b"\0" + unicode_text.encode("utf-8") + b"\0")
+        (evidence / "wide.bin").write_bytes(("\0" + unicode_text + "\0").encode("utf-16le"))
+        shell_requests = [
+            {"id": "open", "command": "open", "args": {"path": str(evidence)}},
+            {"id": "wait", "command": "wait"},
+            {"id": "cd", "command": "cd", "args": {"path": "/" + evidence.name}},
+            {"id": "pwd", "command": "pwd"},
+            {"id": "tree", "command": "tree", "args": {"depth": 2}},
+            {"id": "stat", "command": "stat", "args": {"path": "hello.txt"}},
+            {"id": "hex", "command": "hex", "args": {"path": "hello.txt", "offset": 6, "length": 8}},
+            {"id": "strings", "command": "strings", "args": {"path": "hello.txt"}},
+            {"id": "utf8", "command": "strings", "args": {"path": "unicode.bin", "encoding": "utf-8"}},
+            {"id": "utf16", "command": "strings", "args": {"path": "wide.bin", "encoding": "utf-16le"}},
+            {"id": "limited", "command": "strings", "args": {"path": "hello.txt", "limit": 1}},
+            {"id": "file", "command": "file", "args": {"path": "signature.bin"}},
+        ]
+        result = run(["session"], "\n".join(json.dumps(request) for request in shell_requests))
+        shortcut_rows = {row["id"]: row["result"] for row in map(json.loads, result.stdout.splitlines())}
+        assert shortcut_rows["cd"] is None and shortcut_rows["pwd"] == "/" + evidence.name
+        assert "hello.txt" in [item["node"]["name"] for item in shortcut_rows["tree"]["items"]]
+        assert shortcut_rows["stat"]["size"] == len(content) and shortcut_rows["stat"]["node_id"] == node
+        assert "timestamps" in shortcut_rows["stat"] and not shortcut_rows["stat"]["index_only"]
+        assert shortcut_rows["hex"]["data"] == content[6:14].hex() and shortcut_rows["hex"]["offset"] == 6
+        assert shortcut_rows["strings"]["strings"] == [
+            {"offset": 0, "text": "hello forensic world", "truncated": False},
+            {"offset": content.index(b"password"), "text": "password test", "truncated": False},
+        ]
+        assert shortcut_rows["utf8"]["strings"] == [{"offset": 1, "text": unicode_text, "truncated": False}]
+        assert shortcut_rows["utf16"]["strings"] == [{"offset": 2, "text": unicode_text, "truncated": False}]
+        assert len(shortcut_rows["limited"]["strings"]) == 1 and shortcut_rows["limited"]["truncated"]
+        assert shortcut_rows["file"]["label"] == "python" and shortcut_rows["file"]["inferred"], shortcut_rows["file"]
+        assert shortcut_rows["file"]["file_len"] == len(python_content)
+        hex_output = run(["--image", str(evidence), "hex", f"/{evidence.name}/hello.txt", "--offset", "6", "--length", "8"]).stdout
+        assert "0000000000000006" in hex_output and "66 6f 72 65 6e 73 69 63" in hex_output and "|forensic|" in hex_output
+        file_output = run(["--image", str(evidence), "file", f"/{evidence.name}/signature.bin"]).stdout
+        assert "python" in file_output and "置信度" in file_output, file_output
+
+        bad = run(["session"], '\n'.join([
+            '{"id":"bad","command":"image_list","args":{"typo":true}}',
+            '{"id":"good","command":"image_list"}',
+        ]), expected=1)
+        assert ["error" in json.loads(line) for line in bad.stdout.splitlines()] == [True, False]
+
+        def chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+        png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+        png += chunk(b"IDAT", zlib.compress(b"\0\xff\0\0")) + chunk(b"IEND", b"")
+        disk = root / "disk.img"
+        disk.write_bytes((b"\0" * 512 + png).ljust(16384, b"\0"))
+        recovered = root / "recovered"
+        requests = [
+            {"id": "open", "command": "image_load", "args": {"path": str(disk)}},
+            {"id": "scan", "command": "carve_start", "args": {"options": {"format_ids": ["png"]}}},
+            {"id": "wait", "command": "wait"},
+            {"id": "status", "command": "carve_scan_status", "args": {"scanId": {"$ref": "scan#/scan_id"}}},
+            {"id": "recover", "command": "carve_recover", "args": {"scanId": {"$ref": "scan#/scan_id"}, "options": {"destination": str(recovered), "task_id": "recover-1"}}},
+        ]
+        result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        assert rows[3]["result"]["status"] == "completed", rows
+        assert rows[3]["result"]["artifacts_found"] == 1, rows
+        assert rows[4]["result"]["recovered"] == 1, rows
+        assert next(recovered.glob("*.png")).read_bytes() == png
+
+        # Read and export actual EWF evidence through the public headless commands.
+        fixtures = Path(__file__).resolve().parents[1] / "src-tauri/vendor/ewf/tests/data"
+        for name, expected_md5 in [
+            ("ntfs_sample.E01", "e4e9578a9c8bf6c6b375a80c630196a4"),
+            ("zeros_128s_compressed.Ex01", hashlib.md5(bytes(65536)).hexdigest()),
+        ]:
+            raw_export = root / (name + ".raw")
+            requests = [
+                {"id": "open", "command": "image_load", "args": {"path": str(fixtures / name)}},
+                {"id": "export", "command": "image_export_raw", "args": {"destination": str(raw_export), "taskId": "ewf-export"}},
+            ]
+            result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+            rows = [json.loads(line) for line in result.stdout.splitlines()]
+            assert all("result" in row for row in rows), rows
+            assert hashlib.md5(raw_export.read_bytes()).hexdigest() == expected_md5
+
+        # VMDK compressed and split extents must export the original virtual bytes.
+        fixtures = Path(__file__).resolve().parents[1] / "src-tauri/vendor/vmdk/tests/data"
+        for name, expected in [
+            ("compressed_stream_opt.vmdk", bytes(range(64)) * 1024),
+            ("tw_sparse_data.vmdk", bytes(range(256)) * 16384),
+            ("mono_flat.vmdk", bytes(1024 * 1024)),
+        ]:
+            raw_export = root / (name + ".raw")
+            requests = [
+                {"id": "open", "command": "image_load", "args": {"path": str(fixtures / name)}},
+                {"id": "export", "command": "image_export_raw", "args": {"destination": str(raw_export), "taskId": "vmdk-export"}},
+            ]
+            result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+            rows = [json.loads(line) for line in result.stdout.splitlines()]
+            assert all("result" in row for row in rows), rows
+            assert raw_export.read_bytes() == expected, name
+
+        # Full logical streams must match hashes captured with the previous
+        # independent libvhdi reader. The CLI itself does not load that DLL.
+        for kind in ("vhd", "vhdx"):
+            fixtures = Path(__file__).resolve().parents[1] / "src-tauri/vendor" / kind / "tests/data"
+            oracle = json.loads((fixtures / "LOVELYCARVE_ORACLE.json").read_text(encoding="utf-8"))
+            for sample in oracle["images"]:
+                raw_export = root / (sample["name"] + ".raw")
+                requests = [
+                    {"id": "open", "command": "image_load", "args": {"path": str(fixtures / sample["name"])}},
+                    {"id": "export", "command": "image_export_raw", "args": {"destination": str(raw_export), "taskId": "vhd-export"}},
+                ]
+                result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+                rows = [json.loads(line) for line in result.stdout.splitlines()]
+                assert all("result" in row for row in rows), rows
+                assert raw_export.stat().st_size == sample["size"]
+                assert hashlib.sha256(raw_export.read_bytes()).hexdigest() == sample["sha256"], sample
+
+        # Unlock and export through the public commands, checking only retained
+        # oracle sectors of the minimized dfvfs projection (not the omitted data).
+        fixture = Path(__file__).resolve().parents[1] / "src-tauri/vendor/bitlocker/tests/data/bdetogo-projection.bin.gz"
+        encrypted = root / "bitlocker.bin"
+        encrypted.write_bytes(gzip.decompress(fixture.read_bytes()))
+        decrypted = root / "bitlocker-decrypted.bin"
+        partition = {"$ref": "open#/partitions/0/id"}
+        requests = [
+            {"id": "open", "command": "image_load", "args": {"path": str(encrypted)}},
+            {"id": "unlock", "command": "bitlocker_unlock", "args": {"partitionId": partition, "password": "bde-TEST"}},
+            {"id": "status", "command": "bitlocker_status", "args": {"partitionId": partition}},
+            {"id": "export", "command": "bitlocker_export_decrypted_image", "args": {"partitionId": partition, "destination": str(decrypted), "taskId": "bde-export"}},
+        ]
+        result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        assert all("result" in row for row in rows), rows
+        assert rows[1]["result"]["locked"] is False and rows[2]["result"]["locked"] is False
+        assert decrypted.stat().st_size == encrypted.stat().st_size
+        with decrypted.open("rb") as stream:
+            assert hashlib.sha256(stream.read(512)).hexdigest() == "139b857c537e341ceb98bcfde2d31825efcf4b0c0281dd66672e954b34ed28f3"
+            stream.seek(0x8000)
+            assert hashlib.sha256(stream.read(4096)).hexdigest() == "1d138f11707f0a3b4832c5173167c756e1bac9796518b64800d5dc374986fe4d"
+
+        if capabilities["qrcode"] or capabilities["ocr"]:
+            blank = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 256, 64, 8, 2, 0, 0, 0))
+            blank += chunk(b"IDAT", zlib.compress((b"\0" + b"\xff" * (256 * 3)) * 64)) + chunk(b"IEND", b"")
+            (evidence / "blank.png").write_bytes(blank)
+            requests = [{"id": "image", "command": "image_load", "args": {"path": str(evidence)}}]
+            image_node = "folder:" + b"blank.png".hex()
+            if capabilities["qrcode"]:
+                requests.append({"id": "qr", "command": "qr_scan", "args": {"nodeId": image_node, "expectedCount": 1, "taskId": "qr-1"}})
+            if capabilities["ocr"]:
+                requests.append({"id": "ocr", "command": "ocr_scan", "args": {"nodeId": image_node, "taskId": "ocr-1"}})
+            result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+            assert all("result" in json.loads(line) for line in result.stdout.splitlines()), result
+
+        # A real case must close cleanly and be reopenable by the next process.
+        case = root / "case"
+        nested = evidence / "nested"
+        nested.mkdir()
+        (nested / "report.txt").write_text("Password nested\npassword second\n", encoding="utf-8")
+        run(["case-create", "--dir", str(case), "--name", "CLI smoke test"])
+        requests = [
+            {"id": "image", "command": "image_load", "args": {"path": str(evidence)}},
+            {"id": "wait", "command": "wait"},
+            {"id": "search", "command": "global_search_start", "args": {"searchId": "cli-search", "options": {"keys": ["password"]}}},
+            {"id": "timeline", "command": "timeline_start"},
+            {"id": "plugins", "command": "plugin_list"},
+        ]
+        result = run(["--case", str(case), "session"], "\n".join(json.dumps(request) for request in requests))
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        assert all("result" in row for row in rows), rows
+        assert rows[2]["result"]["total_matches"] >= 1, rows
+        # grep uses the same persisted global-search results, with scopes,
+        # case handling, regex matching, and a display limit independent of storage.
+        grep_script = root / "grep.txt"
+        grep_script.write_text(f'''open "{evidence}"
+wait
+cd "{evidence.name}"
+grep Password hello.txt --codepage UTF-8 --search-id case-sensitive
+grep -i password nested --codepage UTF-8 --limit 1 --search-id scoped-grep
+grep -E 'pass(word)?' hello.txt --codepage UTF-8 --search-id regex-grep
+global-search-hits-page --search-id scoped-grep --limit 10
+''', encoding="utf-8")
+        result = run(["--case", str(case), "--json", "run", str(grep_script)])
+        grep_rows = [json.loads(line) for line in result.stdout.splitlines()]
+        assert grep_rows[1]["total"] == 0, grep_rows
+        scoped = grep_rows[2]
+        assert scoped["summary"]["status"] == "success" and scoped["summary"]["search_id"] == "scoped-grep"
+        assert scoped["total"] == 2 and len(scoped["hits"]) == 1 and scoped["truncated"], scoped
+        assert scoped["hits"][0]["node_id"] == "folder:" + b"nested/report.txt".hex(), scoped
+        assert grep_rows[3]["total"] >= 1 and all(hit["pattern_kind"] == "regex" for hit in grep_rows[3]["hits"])
+        assert grep_rows[4]["total"] == 2 and len(grep_rows[4]["items"]) == 2, grep_rows
+        run(["--image", str(evidence), "grep", "password"], expected=1)
+
+        # Missing source bytes force offline sessions; path resolution and the
+        # recursive find must still come entirely from the published case indexes.
+        moved_evidence = root / "temporarily absent evidence"
+        evidence.rename(moved_evidence)
+        offline_script = root / "offline.txt"
+        offline_script.write_text(f'''open "{evidence}"
+cd "{evidence.name}"
+ls nested
+find . --name REPORT
+cd nested
+pwd
+''', encoding="utf-8")
+        try:
+            result = run(["--case", str(case), "--json", "run", str(offline_script)])
+            offline_rows = [json.loads(line) for line in result.stdout.splitlines()]
+            assert offline_rows[0]["index_only"], offline_rows
+            assert [item["node"]["name"] for item in offline_rows[1]["items"]] == ["report.txt"]
+            assert [item["path"] for item in offline_rows[2]["items"]] == ["/nested/report.txt"]
+            assert offline_rows[3] == f"/{evidence.name}/nested"
+            offline_requests = [
+                {"id": "open", "command": "open", "args": {"path": str(evidence)}},
+                {"id": "cd", "command": "cd", "args": {"path": "/" + evidence.name}},
+                {"id": "stat", "command": "stat", "args": {"path": "nested/report.txt"}},
+                {"id": "tree", "command": "tree", "args": {"path": "nested"}},
+                {"id": "hex", "command": "hex", "args": {"path": "hello.txt"}},
+                {"id": "strings", "command": "strings", "args": {"path": "hello.txt"}},
+                {"id": "file", "command": "file", "args": {"path": "hello.txt"}},
+                {"id": "pwd", "command": "pwd"},
+            ]
+            result = run(["--case", str(case), "session"], "\n".join(json.dumps(request) for request in offline_requests), expected=1)
+            offline_results = {row["id"]: row for row in map(json.loads, result.stdout.splitlines())}
+            assert offline_results["stat"]["result"]["index_only"] and offline_results["stat"]["result"]["name"] == "report.txt"
+            assert [item["path"] for item in offline_results["tree"]["result"]["items"]] == ["/report.txt"]
+            assert all("error" in offline_results[command] for command in ("hex", "strings", "file"))
+            assert offline_results["pwd"]["result"] == "/" + evidence.name
+            run(["--case", str(case), "--image", str(evidence), "grep", "password"], expected=1)
+        finally:
+            moved_evidence.rename(evidence)
+        run(["--case", str(case), "--json", "case-active"])
+        run(["case-remove", "--dir", str(case)])
+
+        if os.name == "nt":
+            process = subprocess.Popen([str(executable), "session"], stdin=subprocess.PIPE,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                       encoding="utf-8", creationflags=subprocess.CREATE_NEW_PROCESS_GROUP, cwd=root)
+            try:
+                process.stdin.write('{"id":"ready","command":"image_list"}\n')
+                process.stdin.flush()
+                assert json.loads(process.stdout.readline())["id"] == "ready"
+                visible = []
+                callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+                ctypes.windll.user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+                ctypes.windll.user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+                ctypes.windll.user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+                ctypes.windll.user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+                ctypes.windll.user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.RECT)]
+                ctypes.windll.user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+                ctypes.windll.user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+
+                @callback_type
+                def inspect_window(window, _):
+                    owner = ctypes.c_ulong()
+                    ctypes.windll.user32.GetWindowThreadProcessId(window, ctypes.byref(owner))
+                    if owner.value == process.pid and ctypes.windll.user32.IsWindowVisible(window):
+                        title = ctypes.create_unicode_buffer(512)
+                        class_name = ctypes.create_unicode_buffer(512)
+                        ctypes.windll.user32.GetWindowTextW(window, title, len(title))
+                        ctypes.windll.user32.GetClassNameW(window, class_name, len(class_name))
+                        rectangle = wintypes.RECT()
+                        ctypes.windll.user32.GetWindowRect(window, ctypes.byref(rectangle))
+                        # Tao deliberately sets WS_VISIBLE on its transparent,
+                        # layered message target to receive WM_PAINT. Its source
+                        # documents that this is never displayed to the user.
+                        extended_style = ctypes.windll.user32.GetWindowLongPtrW(window, -20)
+                        message_styles = 0x80000 | 0x20 | 0x8000000 | 0x80
+                        if class_name.value == "Tao Thread Event Target" and extended_style & message_styles == message_styles:
+                            return True
+                        visible.append((window, title.value, class_name.value, tuple(getattr(rectangle, field) for field in ("left", "top", "right", "bottom"))))
+                    return True
+
+                ctypes.windll.user32.EnumWindows(inspect_window, None)
+                assert not visible, f"CLI created a visible desktop window: {visible}"
+                process.send_signal(signal.CTRL_BREAK_EVENT)
+                assert process.wait(timeout=15) == 130
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=15)
+
+    print("CLI smoke tests passed: catalog, JSONL, browsing, binary read, hash, preview cleanup, export, errors, carving, search, timeline, case lifecycle, windowless startup and interrupt")
+
+
+if __name__ == "__main__":
+    main()

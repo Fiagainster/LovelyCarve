@@ -1,0 +1,64 @@
+[package]
+name = "ad1-core"
+version = "0.1.2"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/SecurityRonin/ad1-forensic"
+authors = ["Albert Hui <albert@securityronin.com>"]
+description = "Pure-Rust reader for the AccessData AD1 logical image container (FTK Imager / Custom Content Image)"
+
+[lib]
+# The bare crate name `ad1` is free on crates.io, so import as `use ad1::…` while
+# the published PACKAGE is `ad1-core` (the fleet reader/analyzer split).
+name = "ad1"
+path = "src/lib.rs"
+
+[features]
+# Spec-faithful AD1 fixture builder (`ad1::testfix`), shared by this crate's
+# integration tests and LovelyCarve's. Off by default; never compiled into a
+# normal build. Uses independent zlib (flate2) + RustCrypto md5/sha1 as ground
+# truth so chunk/addressing/hash bugs are still caught.
+testfix = ["dep:md-5", "dep:sha1"]
+
+[dependencies]
+# flate2's default miniz_oxide backend is pure Rust (keeps the tree C-free).
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+thiserror = "2"
+# Shared panic-free bounded byte readers.
+safe-read = "0.2"
+md-5 = { version = "0.10", optional = true }
+sha1 = { version = "0.10", optional = true }
+
+[dev-dependencies]
+# Integration tests build fixtures via the `testfix` feature and write to a tempdir.
+ad1-core = { path = ".", features = ["testfix"] }
+tempfile = "3"
+md-5 = "0.10"
+sha1 = "0.10"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+correctness = "deny"
+suspicious = "deny"
+# Untrusted-input parser → panic-free.
+unwrap_used = { level = "deny", priority = 0 }
+expect_used = { level = "deny", priority = 0 }
+# pragmatic allows
+module_name_repetitions = { level = "allow", priority = 1 }
+doc_markdown = { level = "allow", priority = 1 }
+must_use_candidate = { level = "allow", priority = 1 }
+missing_errors_doc = { level = "allow", priority = 1 }
+missing_panics_doc = { level = "allow", priority = 1 }
+cast_possible_truncation = { level = "allow", priority = 1 }
+cast_sign_loss = { level = "allow", priority = 1 }
+cast_possible_wrap = { level = "allow", priority = 1 }
+cast_precision_loss = { level = "allow", priority = 1 }
+
+# Standalone crate: keep it out of any enclosing workspace.
+[workspace]

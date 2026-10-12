@@ -1,0 +1,113 @@
+//! Unlock encrypted evidence into its source partition or a separate session image.
+//! Source-partition unlock also starts the existing snapshot/index workflow,
+//! whose `snapshot-build-progress` events report its independent completion.
+
+use std::sync::Arc;
+use tauri::{AppHandle, State};
+
+use crate::core::evidence::crypto::encrypted_image::{
+    self, UnlockOptions, UnlockResult, UnlockTarget,
+};
+use crate::state::AppState;
+use crate::task_manager::TaskKind;
+use {
+    crate::app::access::loaded_image_app_error, crate::app::access::reject_if_folder,
+    crate::app::error::AppError,
+};
+
+#[tauri::command]
+pub async fn encrypted_volume_unlock(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    image_id: String,
+    options: UnlockOptions,
+    task_id: Option<String>,
+) -> Result<UnlockResult, AppError> {
+    let source = loaded_image_app_error(&state, &image_id).await?;
+    reject_if_folder(&source)?;
+    let target = options.target;
+    let partition_id = options.partition_id;
+    if let Some(id) = partition_id {
+        if target == UnlockTarget::SourcePartition
+            && source.info().unlocked_partitions.contains(&id)
+        {
+            return Err(AppError::invalid_input("分区已解锁"));
+        }
+    }
+    let task_id = task_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let task = state
+        .tasks
+        .register_if_absent(
+            task_id,
+            TaskKind::EncryptedVolumeUnlock,
+            Some(image_id.clone()),
+        )
+        .ok_or_else(|| AppError::invalid_input("task id is already in use"))?;
+    let permit = state.tasks.acquire_resources(&task).await?;
+    let token = task.token();
+    let source_for_unlock = Arc::clone(&source);
+    let token_for_unlock = token.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        encrypted_image::unlock(&source_for_unlock, options, token_for_unlock)
+    })
+    .await
+    .map_err(|error| AppError::task_panicked("encrypted volume unlock", error))?;
+    if token.is_cancelled() {
+        return Err(AppError::cancelled("encrypted volume unlock cancelled"));
+    }
+    let (image, mut result) = result.map_err(AppError::from_anyhow)?;
+    let mut images = state.images.lock().await;
+    if token.is_cancelled() {
+        return Err(AppError::cancelled("encrypted volume unlock cancelled"));
+    }
+    if !images
+        .get(&image_id)
+        .is_some_and(|current| Arc::ptr_eq(current, &source))
+    {
+        return Err(AppError::source_changed(
+            "encrypted evidence was unloaded during unlock",
+        ));
+    }
+    if target == UnlockTarget::SourcePartition {
+        let partition_id = partition_id
+            .or_else(|| {
+                source
+                    .partitions
+                    .iter()
+                    .find(|partition| {
+                        partition.start_lba * source.sector_size as u64 == result.source_offset
+                            && partition.length_lba * source.sector_size as u64
+                                == result.source_length
+                    })
+                    .map(|partition| partition.id)
+            })
+            .or_else(|| {
+                (source.partitions.is_empty()
+                    && result.source_offset == 0
+                    && result.source_length == source.len())
+                .then_some(0)
+            })
+            .ok_or_else(|| AppError::invalid_input("请选择原镜像中的完整加密分区"))?;
+        source
+            .attach_decrypted_partition(partition_id, image, result.read_cancellation.clone())
+            .map_err(AppError::from_anyhow)?;
+        result.image = source.info();
+        result.volume_key = Some(format!("part:{partition_id}"));
+        drop(images);
+        state.flat_walk_cache.lock().purge_image(&image_id);
+        crate::app::workflows::snapshot::case_snapshot::snapshot_unlocked_volume(
+            &app,
+            &state,
+            Arc::clone(&source),
+            format!("part:{partition_id}"),
+        )
+        .await;
+    } else {
+        images.insert(
+            image.id.clone(),
+            Arc::new(crate::core::filesystem::evidence_session::EvidenceSession::from(image)),
+        );
+    }
+    Ok(result)
+}

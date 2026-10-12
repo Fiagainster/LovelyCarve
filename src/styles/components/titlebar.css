@@ -1,0 +1,124 @@
+/* ============================================================
+ * titlebar.css — Top horizontal title bar (38 px tall).
+ *
+ * Hosts: brand mark + wordmark, optional re-analyze action,
+ * the embedded `Tabbar` (multi-evidence chips), and the platform
+ * window controls.
+ *
+ * The vertical sidebar that previously lived as `.activity-bar`
+ * inside this component has moved out into its own dedicated
+ * `SidebarNav.vue` (styles in `sidebar-nav.css`). The `.titlebar-
+ * filename` chip was retired when Tabbar landed — the active
+ * tab itself is now the filename indicator.
+ * ============================================================ */
+
+.titlebar {
+    height: 38px;
+    flex-shrink: 0;
+    z-index: 100;
+    background: var(--titlebar-bg);
+    color: var(--titlebar-text);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    user-select: none;
+    border-bottom: 1px solid var(--border-color);
+    position: relative;
+}
+
+.titlebar-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding-left: 14px;
+    flex-shrink: 0;
+    pointer-events: none;
+}
+
+.titlebar-title {
+    font-size: 13px;
+    font-weight: 700;
+    font-family: var(--font-brand), sans-serif;
+    letter-spacing: -0.02em;
+    background: var(--brand-wordmark-gradient);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+
+.titlebar-dot {
+    color: var(--brand-dot-color);
+    -webkit-text-fill-color: var(--brand-dot-color);
+}
+
+/* Titlebar chips — the task hub trigger and the case opener share one look:
+   an outlined 26 px pill that tints with the accent on hover / when active. */
+.titlebar-chip {
+    flex-shrink: 0;
+    max-width: 240px;
+    margin-left: 4px;
+    color: var(--text-primary);
+}
+
+.titlebar-chip > svg {
+    flex-shrink: 0;
+}
+
+.titlebar-chip:hover,
+.titlebar-chip.active {
+    border-color: color-mix(in srgb, var(--primary-color) 55%, var(--border-color));
+    background: var(--sidebar-active-bg);
+}
+
+.titlebar-chip-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ── Settings entry ── */
+.titlebar-settings-btn {
+    flex-shrink: 0;
+    margin: 0 8px 0 4px;
+}
+
+/* All three workspace entries switch together, keeping their accessible names. */
+@media (max-width: 760px) {
+    .titlebar-chip > .titlebar-chip-label { display: none; }
+}
+/* ── Window Controls ── */
+.titlebar-controls {
+    display: flex;
+    height: 100%;
+    flex-shrink: 0;
+}
+
+.titlebar-button {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    width: 46px;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.titlebar-button:focus-visible {
+    outline: 2px solid var(--primary-color);
+    outline-offset: -2px;
+}
+
+.titlebar-button:hover {
+    background: var(--hover-bg);
+}
+
+.titlebar-button.close:hover {
+    background: var(--danger-solid);
+    color: var(--accent-contrast);
+}

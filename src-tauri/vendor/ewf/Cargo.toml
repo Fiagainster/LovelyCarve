@@ -1,0 +1,37 @@
+[package]
+name = "ewf"
+version = "0.4.10"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/SecurityRonin/ewf-forensic"
+authors = ["Albert Hui <albert@securityronin.com>"]
+description = "Pure Rust reader for Expert Witness Format forensic images"
+
+[features]
+default = ["verify"]
+verify = ["dep:md-5", "dep:sha-1"]
+vfs = ["dep:forensic-vfs"]
+
+[dependencies]
+adler2 = "2"
+bzip2 = "0.6"
+flate2 = "1"
+forensic-vfs = { version = "0.7", optional = true }
+glob = "0.3"
+log = "0.4"
+lru = "0.18.1"
+md-5 = { version = "0.10", optional = true }
+rayon = "1"
+safe-read = "0.2"
+sha-1 = { version = "0.10", optional = true }
+thiserror = "2"
+
+[dev-dependencies]
+md-5 = "0.10"
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[workspace]

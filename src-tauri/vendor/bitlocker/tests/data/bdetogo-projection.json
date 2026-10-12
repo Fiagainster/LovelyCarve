@@ -1,0 +1,30 @@
+{
+  "source": "https://raw.githubusercontent.com/log2timeline/dfvfs/main/test_data/bdetogo.raw",
+  "source_md5": "fcba22f9363388101ae66c741588bc45",
+  "volume_length": 67108864,
+  "retained_ranges": [
+    [
+      0,
+      1048576
+    ],
+    [
+      34603008,
+      65536
+    ],
+    [
+      34670592,
+      5331456
+    ],
+    [
+      45438976,
+      65536
+    ],
+    [
+      56274944,
+      65536
+    ]
+  ],
+  "projection_sha256": "ceaf1fdbdc548a6acdbc321b46c85c738af2dd6c2b62eb305a1c7c40264f102a",
+  "password": "bde-TEST",
+  "note": "Minimized test projection, not complete evidence. Only retained ranges are valid source bytes; all other ciphertext is replaced by zeros."
+}

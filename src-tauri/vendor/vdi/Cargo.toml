@@ -1,0 +1,16 @@
+[package]
+name = "vdi"
+version = "0.2.0"
+edition = "2024"
+description = "Parser for the VirtualBox VDI disk image format"
+authors = ["cohaereo <cohae@cohae.dev>"]
+repository = "https://github.com/cohaereo/vdi-rs"
+license = "MIT"
+readme = "README.md"
+categories = ["filesystem", "data-structures", "virtualization"]
+include = ["src/**", "Cargo.toml", "README.md", "LICENSE"]
+
+[dependencies]
+anyhow = "1"
+positioned-io2 = "0.3.4"
+uuid = "1.18.1"

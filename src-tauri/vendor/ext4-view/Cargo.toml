@@ -1,0 +1,21 @@
+# ext4-view 1.0.0, MIT OR Apache-2.0.
+# Upstream revision and retained forensic/journal/checksum patches: LOVELYCARVE.md.
+
+[package]
+name = "ext4-view"
+version = "1.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Vendored read-only ext2/3/4 reader for lovelycarve."
+rust-version = "1.85"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+bitflags = "2.0.0"
+crc = "3.0.0"
+
+[dev-dependencies]
+zstd = "0.13.3"

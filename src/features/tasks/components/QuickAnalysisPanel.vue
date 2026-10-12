@@ -1,0 +1,517 @@
+<template>
+  <section class="quick-analysis" aria-label="快速分析">
+    <div class="qa-head">
+      <div class="qa-toolbar">
+        <UiSelect v-if="platforms.length > 1" class="qa-platform" :model-value="activePlatform" :options="platformOptions" :disabled="submitting" aria-label="分析平台" @update:model-value="onPickPlatform" />
+        <span v-else-if="platforms.length" class="qa-platform-label"><component :is="platformIcon(platforms[0])" :size="13" />{{ platformLabel(platforms[0]) }}</span>
+        <label class="ui-search qa-search"><Search :size="14" /><input v-model="search" type="text" placeholder="搜索插件或分析内容" aria-label="搜索插件或分析内容" /><button v-if="search" class="ui-icon-btn sm" aria-label="清除搜索" @click="search = ''"><X :size="13" /></button></label>
+      </div>
+      <!-- One box for everything listed (the matches while searching); each category has its own below. -->
+      <div v-if="groups.length" class="qa-selectbar">
+        <label class="ui-check qa-check-all">
+          <input
+            type="checkbox"
+            :checked="checkState(visiblePlugins) === 'all'"
+            :indeterminate="checkState(visiblePlugins) === 'some'"
+            :disabled="submitting || !selectable(visiblePlugins).length"
+            @change="toggleMany(visiblePlugins)"
+          />{{ searching ? '全选匹配的插件' : '全选' }}
+        </label>
+        <span class="qa-selectbar-count">{{ visiblePlugins.length }} 个插件</span>
+        <button class="ui-btn sm ghost qa-expand-all" type="button" @click="toggleExpandAll">
+          <component :is="allExpanded ? ChevronsDownUp : ChevronsUpDown" :size="13" />{{ allExpanded ? '全部收起' : '全部展开' }}
+        </button>
+      </div>
+    </div>
+
+    <div class="qa-scroll">
+      <div v-if="loading && !functions.length" class="ui-empty state-box"><span class="ui-empty-icon accent"><Loader2 :size="22" class="spin" /></span><p class="ui-empty-desc">正在加载分析插件…</p></div>
+      <div v-else-if="error && !functions.length" class="ui-empty state-box error"><span class="ui-empty-icon"><CircleAlert :size="22" /></span><p class="ui-empty-title">读取分析插件失败</p><p class="ui-empty-desc">{{ error }}</p><div class="ui-empty-actions"><button class="ui-btn sm" @click="refresh">重试</button></div></div>
+      <div v-else-if="!platformPlugins.length" class="ui-empty state-box"><span class="ui-empty-icon"><Zap :size="22" /></span><p class="ui-empty-title">暂无可用的分析插件</p><p class="ui-empty-desc">{{ platforms.length ? '当前平台没有适用于该检材的插件。' : '安装提供检材分析能力的插件后，会显示在这里。' }}</p></div>
+      <div v-else-if="!groups.length" class="ui-empty state-box"><span class="ui-empty-icon"><Search :size="22" /></span><p class="ui-empty-title">没有匹配的插件</p><div class="ui-empty-actions"><button class="ui-btn sm" @click="search = ''">清除搜索</button></div></div>
+      <template v-else>
+        <section v-for="group in groups" :key="group.key" class="qa-group" :aria-label="`${group.label} ${group.plugins.length} 个插件`">
+          <div class="qa-group-head">
+            <input
+              type="checkbox"
+              class="qa-group-check"
+              :checked="checkState(group.plugins) === 'all'"
+              :indeterminate="checkState(group.plugins) === 'some'"
+              :disabled="submitting || !selectable(group.plugins).length"
+              :aria-label="`全选${group.label}`"
+              @change="toggleMany(group.plugins)"
+            />
+            <button
+              class="qa-group-toggle"
+              type="button"
+              :aria-expanded="isExpanded(group.key)"
+              :aria-controls="isExpanded(group.key) ? `qa-group-${group.key}` : undefined"
+              @click="toggleExpanded(group.key)"
+            >
+              <component :is="groupIcon(group.key)" :size="14" class="qa-group-icon" />
+              <span class="qa-group-label">{{ group.label }}</span>
+              <span class="qa-group-count">{{ countText(group.plugins) }}</span>
+              <ChevronDown :size="14" class="qa-group-chevron" />
+            </button>
+          </div>
+          <UiTransition>
+            <!-- Plugins as tiles, several per line; what each runs is in its tooltip. -->
+            <ul v-if="isExpanded(group.key)" :id="`qa-group-${group.key}`" class="qa-grid">
+              <li v-for="plugin in group.plugins" :key="plugin.id" class="qa-tile" :class="{ selected: selection.isSelected(plugin.id), busy: stateOf(plugin).busy, 'has-status': stateOf(plugin).badge }">
+                <label class="qa-tile-choice" :title="tileTitle(plugin)">
+                  <input type="checkbox" :checked="selection.isSelected(plugin.id)" :disabled="submitting || stateOf(plugin).busy" @change="selection.toggle(plugin.id)" />
+                  <span class="qa-tile-name">{{ plugin.name }}</span>
+                </label>
+                <button
+                  class="ui-icon-btn sm qa-star"
+                  :class="{ saved: isFavouritePlugin(plugin.id) }"
+                  type="button"
+                  :disabled="submitting"
+                  :title="isFavouritePlugin(plugin.id) ? '取消收藏' : '收藏'"
+                  :aria-label="`${isFavouritePlugin(plugin.id) ? '取消收藏' : '收藏'} ${plugin.name}`"
+                  :aria-pressed="isFavouritePlugin(plugin.id)"
+                  @click="toggleFavouritePlugin(plugin.id)"
+                ><Star :size="12" /></button>
+                <span v-if="stateOf(plugin).badge" class="qa-tile-status" :style="{ color: stateOf(plugin).badge!.tone }" :title="tileTitle(plugin)">
+                  <component :is="STATUS_ICON[stateOf(plugin).badge!.status]" :size="13" :class="{ spin: stateOf(plugin).badge!.status === 'running' }" aria-hidden="true" />
+                  <span class="sr-only">{{ stateOf(plugin).badge!.text }}</span>
+                </span>
+              </li>
+            </ul>
+          </UiTransition>
+        </section>
+      </template>
+    </div>
+
+    <footer class="qa-foot">
+      <div v-if="evidenceTasks.length" ref="moreMenuRoot" class="qa-more" @keydown.esc.stop="moreOpen = false">
+        <button class="ui-icon-btn" :aria-expanded="moreOpen" aria-haspopup="menu" aria-label="更多操作" title="更多操作" @click="moreOpen = !moreOpen"><MoreHorizontal :size="16" /></button>
+        <div v-if="moreOpen" class="ui-menu qa-more-menu" role="menu"><button class="ui-menu-item" role="menuitem" :disabled="submitting" @click="onRestartAll"><RotateCcw :size="14" />重新分析全部任务</button></div>
+      </div>
+      <span class="qa-summary">
+        <span v-if="selectedCount">已选 <strong :key="selectedCount" class="ui-bump">{{ selectedCount }}</strong> 个插件</span>
+        <span v-else>勾选要运行的插件</span>
+        <span v-if="rerunCount" class="qa-rerun">其中 {{ rerunCount }} 个将清理旧结果后重新分析</span>
+      </span>
+      <button v-if="selectedCount" class="ui-btn ghost" :disabled="submitting" @click="selection.clear()">清空</button>
+      <button class="ui-btn primary" :disabled="submitting || !selectedCount" @click="onConfirm"><Loader2 v-if="submitting" :size="13" class="spin" /><Play v-else :size="13" />{{ submitting ? '提交中…' : '开始分析' }}</button>
+    </footer>
+  </section>
+</template>
+
+<script setup lang="ts">
+/** 检材级分析插件清单：按分类平铺插件，勾选插件即运行它在当前平台的全部分析功能（不细分子项）；
+ *  顶部与每个分类各有一个三态全选框，格子右侧的图标是该插件在当前检材上的最近任务状态。 */
+import UiSelect from '../../../components/ui/UiSelect.vue';
+import UiTransition from '../../../components/ui/UiTransition.vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import {
+  Apple, AppWindow, Bot, ChartColumn, ChevronDown, ChevronsDownUp, ChevronsUpDown, CircleAlert, CircleCheck, CirclePause,
+  CircleSlash, CircleX, Clock, Database, FileSearch, FolderTree, Globe, Hourglass, Info, Laptop, Loader2, MonitorCog,
+  MoreHorizontal, Play, Router, RotateCcw, ScrollText, Search, Shapes, Star, Terminal, Unplug, Workflow, X, Zap,
+  type LucideIcon,
+} from 'lucide-vue-next';
+
+import { confirm } from '../../../composables/useConfirm';
+import {
+  PLATFORM_LABELS, buildPlatforms, buildPluginGroups, favouriteNames, groupByPlugin, isFavouritePlugin,
+  preprocessFunctions, toggleFavouritePlugin, usePlatformMemory, useQuickAnalysisSelection,
+  type QuickPlugin,
+} from '../composables/useQuickAnalysis';
+import { useTaskCenter } from '../composables/useTaskCenter';
+import { TASK_STATUS_LABEL, isTerminalStatus } from '../model/taskStatus';
+import { notifyInfo } from '../../../composables/useToast';
+import { TASK_STATUS_TONE, taskProgressPercent } from '../model/taskCenterView';
+import type { SchedFunction, SchedTaskRecord, SchedTaskStatus } from '../../../lib/ipc/tasks';
+
+const props = defineProps<{
+  imageId: string;
+  /** 自动识别回写的平台词(autodetect),如 linux/windows。 */
+  evidencePlatform?: string | null;
+  /** 自动识别回写的检材类型,如 disk/compressfile。 */
+  evidenceType?: string | null;
+}>();
+
+const emit = defineEmits<{ submitted: [] }>();
+
+const { functions, tasks, loading, error, refresh, create, restart, start, remove } = useTaskCenter();
+const selection = useQuickAnalysisSelection();
+const platformMemory = usePlatformMemory(props.imageId);
+
+const activePlatform = ref('');
+const search = ref('');
+const submitting = ref(false);
+const moreOpen = ref(false);
+const moreMenuRoot = ref<HTMLElement | null>(null);
+/** Categories the examiner folded; a new search unfolds everything again. */
+const collapsed = ref<Set<string>>(new Set());
+let disposed = false;
+
+function onOutsidePointer(event: PointerEvent) {
+  if (event.target instanceof Node && moreMenuRoot.value?.contains(event.target)) return;
+  moreOpen.value = false;
+}
+watch(moreOpen, open => {
+  if (open) document.addEventListener('pointerdown', onOutsidePointer);
+  else document.removeEventListener('pointerdown', onOutsidePointer);
+});
+onMounted(() => { void refresh(); });
+onBeforeUnmount(() => {
+  disposed = true;
+  document.removeEventListener('pointerdown', onOutsidePointer);
+});
+
+const platformLayout = computed(() => buildPlatforms(functions.value, props.evidencePlatform ?? null));
+const platforms = computed(() => platformLayout.value.platforms);
+const platformOptions = computed(() => platforms.value.map(platform => ({ value: platform, label: platformLabel(platform) })));
+
+// 功能清单就绪后预选平台:上次记忆 → 检材平台 → 首个平台。
+watch(
+  () => functions.value.length > 0,
+  (ready) => {
+    if (!ready) return;
+    const { platforms: available, defaultPlatform } = platformLayout.value;
+    if (!available.length) return;
+    const remembered = platformMemory.value;
+    activePlatform.value = remembered && available.includes(remembered) ? remembered : defaultPlatform;
+  },
+  { immediate: true },
+);
+
+watch(activePlatform, (platform) => {
+  if (platform && platformMemory.value !== platform) platformMemory.value = platform;
+});
+
+const platformFunctions = computed(() =>
+  activePlatform.value
+    ? preprocessFunctions(functions.value, { platform: activePlatform.value, evidenceType: props.evidenceType ?? null })
+    : [],
+);
+
+/** 当前平台的全部插件(不受搜索影响)。 */
+const platformPlugins = computed(() => groupByPlugin(platformFunctions.value));
+const pluginById = computed(() => new Map(platformPlugins.value.map(plugin => [plugin.id, plugin])));
+const groups = computed(() => buildPluginGroups(platformPlugins.value, { favourites: favouriteNames.value, search: search.value }));
+const searching = computed(() => search.value.trim() !== '');
+
+/** 当前列出的插件(搜索时为匹配项);收藏分类里的重复项只算一次。 */
+const visiblePlugins = computed(() => {
+  const listed = new Map<string, QuickPlugin>();
+  for (const group of groups.value) {
+    for (const plugin of group.plugins) listed.set(plugin.id, plugin);
+  }
+  return [...listed.values()];
+});
+
+// A selection made on another platform does not carry over.
+watch(platformPlugins, (plugins) => {
+  const available = new Set(plugins.map(plugin => plugin.id));
+  const gone = selection.selectionList.value.filter(id => !available.has(id));
+  if (gone.length) selection.deselectMany(gone);
+});
+
+/** 本检材任务(最新一条按 function 名索引,状态画回插件格子)。 */
+const latestTaskByFunction = computed(() => {
+  const latest = new Map<string, SchedTaskRecord>();
+  for (const task of tasks.value) {
+    if (task.info.imageId !== props.imageId) continue;
+    const current = latest.get(task.name);
+    if (!current || task.id > current.id) latest.set(task.name, task);
+  }
+  return latest;
+});
+
+const evidenceTasks = computed(() => tasks.value.filter(task => task.info.imageId === props.imageId));
+
+interface PluginBadge {
+  /** The status that stands for the plugin: running, then waiting, then failed, cancelled, success. */
+  status: SchedTaskStatus;
+  text: string;
+  tone: string;
+}
+
+interface PluginState {
+  /** A function's latest task has not ended: the scheduler keeps one unfinished
+   *  task per function and evidence, so the plugin cannot be submitted again. */
+  busy: boolean;
+  /** Ended tasks a submission removes first (confirmed on submit). */
+  stale: SchedTaskRecord[];
+  /** One line per function that has a task, for the tooltip. */
+  taskLines: string[];
+  badge: PluginBadge | null;
+}
+
+const IDLE_STATE: PluginState = { busy: false, stale: [], taskLines: [], badge: null };
+
+const STATUS_ICON: Record<SchedTaskStatus, LucideIcon> = {
+  created: Clock, queued: Clock, running: Loader2, pause: CirclePause, offline: Unplug,
+  success: CircleCheck, failed: CircleX, cancel: CircleSlash,
+};
+
+function statusText(task: SchedTaskRecord): string {
+  if (task.status === 'running') return `执行中 ${taskProgressPercent(task)}%`;
+  if (task.status === 'success') return '已完成';
+  return TASK_STATUS_LABEL[task.status];
+}
+
+function badgeOf(plugin: QuickPlugin, latest: SchedTaskRecord[]): PluginBadge | null {
+  if (!latest.length) return null;
+  const running = latest.filter(task => task.status === 'running');
+  if (running.length) {
+    const percent = Math.round(running.reduce((sum, task) => sum + taskProgressPercent(task), 0) / running.length);
+    return { status: 'running', text: `执行中 ${percent}%`, tone: TASK_STATUS_TONE.running };
+  }
+  const waiting = latest.find(task => !isTerminalStatus(task.status));
+  if (waiting) return { status: waiting.status, text: TASK_STATUS_LABEL[waiting.status], tone: TASK_STATUS_TONE[waiting.status] };
+  if (latest.some(task => task.status === 'failed')) return { status: 'failed', text: '失败', tone: TASK_STATUS_TONE.failed };
+  const succeeded = latest.filter(task => task.status === 'success').length;
+  if (!succeeded) return { status: 'cancel', text: TASK_STATUS_LABEL.cancel, tone: TASK_STATUS_TONE.cancel };
+  const total = plugin.functions.length;
+  return { status: 'success', text: succeeded === total ? '已完成' : `已完成 ${succeeded}/${total}`, tone: TASK_STATUS_TONE.success };
+}
+
+const pluginStates = computed(() => {
+  const states = new Map<string, PluginState>();
+  for (const plugin of platformPlugins.value) {
+    const entries = plugin.functions
+      .map(fn => ({ fn, task: latestTaskByFunction.value.get(fn.function) }))
+      .filter((entry): entry is { fn: SchedFunction; task: SchedTaskRecord } => entry.task !== undefined);
+    const latest = entries.map(entry => entry.task);
+    states.set(plugin.id, {
+      busy: latest.some(task => !isTerminalStatus(task.status)),
+      stale: latest.filter(task => isTerminalStatus(task.status)),
+      taskLines: entries.map(({ fn, task }) => {
+        const detail = task.info.error ?? task.result?.summary;
+        return `#${task.id} ${fn.displayName} · ${statusText(task)}${detail ? ` · ${detail}` : ''}`;
+      }),
+      badge: badgeOf(plugin, latest),
+    });
+  }
+  return states;
+});
+
+function stateOf(plugin: QuickPlugin): PluginState {
+  return pluginStates.value.get(plugin.id) ?? IDLE_STATE;
+}
+
+function tileTitle(plugin: QuickPlugin): string {
+  const state = stateOf(plugin);
+  return [
+    plugin.name,
+    `包含：${plugin.functions.map(fn => fn.displayName).join('、')}`,
+    state.busy ? '已有未结束的任务，可在任务列表中继续、暂停或取消' : null,
+    state.badge ? `最近任务：${state.badge.text}` : null,
+    ...state.taskLines,
+  ].filter(Boolean).join('\n');
+}
+
+// A task started elsewhere (another window, a dependency) locks a plugin that is still ticked.
+watch(pluginStates, (states) => {
+  const busy = selection.selectionList.value.filter(id => states.get(id)?.busy);
+  if (busy.length) selection.deselectMany(busy);
+});
+
+const selectedPlugins = computed(() =>
+  selection.selectionList.value
+    .map(id => pluginById.value.get(id))
+    .filter((plugin): plugin is QuickPlugin => plugin !== undefined),
+);
+const selectedCount = computed(() => selectedPlugins.value.length);
+const rerunCount = computed(() => selectedPlugins.value.filter(plugin => stateOf(plugin).stale.length > 0).length);
+
+type CheckState = 'all' | 'some' | 'none';
+
+function selectable(plugins: QuickPlugin[]): QuickPlugin[] {
+  return plugins.filter(plugin => !stateOf(plugin).busy);
+}
+function checkState(plugins: QuickPlugin[]): CheckState {
+  const free = selectable(plugins);
+  const picked = free.filter(plugin => selection.isSelected(plugin.id)).length;
+  if (!picked) return 'none';
+  return picked === free.length ? 'all' : 'some';
+}
+function toggleMany(plugins: QuickPlugin[]): void {
+  const ids = selectable(plugins).map(plugin => plugin.id);
+  if (checkState(plugins) === 'all') selection.deselectMany(ids);
+  else selection.selectMany(ids);
+}
+function countText(plugins: QuickPlugin[]): string {
+  const picked = plugins.filter(plugin => selection.isSelected(plugin.id)).length;
+  return picked ? `${picked}/${plugins.length}` : String(plugins.length);
+}
+
+watch(search, () => { collapsed.value = new Set(); });
+function isExpanded(key: string): boolean {
+  return !collapsed.value.has(key);
+}
+function toggleExpanded(key: string): void {
+  const next = new Set(collapsed.value);
+  if (!next.delete(key)) next.add(key);
+  collapsed.value = next;
+}
+const allExpanded = computed(() => groups.value.every(group => isExpanded(group.key)));
+function toggleExpandAll(): void {
+  collapsed.value = allExpanded.value ? new Set(groups.value.map(group => group.key)) : new Set();
+}
+
+/** Category icons; unknown plugin types share a neutral one. */
+const GROUP_ICON: Record<string, LucideIcon> = {
+  favour: Star, baseinfo: Info, system: MonitorCog, application: AppWindow, browserinfo: Globe, loginfo: ScrollText,
+  databaseinfo: Database, fileanalyzer: FileSearch, filesystem: FolderTree, analysis: ChartColumn, longtime: Hourglass,
+};
+function groupIcon(key: string): LucideIcon {
+  return GROUP_ICON[key] ?? Shapes;
+}
+
+function onPickPlatform(platform: string): void {
+  activePlatform.value = platform;
+}
+
+function platformLabel(platform: string): string {
+  return PLATFORM_LABELS[platform] ?? platform;
+}
+
+function platformIcon(platform: string): LucideIcon {
+  const icons: Record<string, LucideIcon> = {
+    android: Bot, harmony: Workflow, ios: Apple, windows: AppWindow, macos: Laptop, linux: Terminal, iot: Router,
+  };
+  return icons[platform] ?? Workflow;
+}
+
+/** 确定:已有结果时确认删旧,再为每个插件的每个功能建任务(不带子项 = 运行全部)。 */
+async function onConfirm(): Promise<void> {
+  const chosen = selectedPlugins.value;
+  if (!chosen.length || submitting.value) return;
+  submitting.value = true;
+  const targetImageId = props.imageId;
+  const targetPlatform = activePlatform.value || null;
+  try {
+    const rerun = chosen.filter(plugin => stateOf(plugin).stale.length > 0);
+    if (rerun.length > 0) {
+      const ok = await confirm({
+        title: '任务结果已存在',
+        message: `${rerun.map(plugin => plugin.name).join('、')} 已有任务记录。清理旧任务数据并重新分析吗?`,
+        confirmText: '重新分析',
+        danger: true,
+      });
+      if (!ok || disposed) return;
+      for (const task of rerun.flatMap(plugin => stateOf(plugin).stale)) {
+        if (disposed || !await remove(task.id)) return;
+      }
+    }
+    let createdTasks = 0;
+    let completePlugins = 0;
+    for (const plugin of chosen) {
+      let complete = true;
+      for (const fn of plugin.functions) {
+        if (disposed) return;
+        const task = await create({ function: fn.function, imageId: targetImageId, platform: targetPlatform }, { quiet: true });
+        if (task) createdTasks += 1;
+        else complete = false;
+      }
+      if (complete) {
+        completePlugins += 1;
+        selection.deselectMany([plugin.id]);
+      }
+    }
+    if (disposed || !createdTasks) return;
+    notifyInfo('快速分析', `已提交 ${createdTasks} 个分析任务，可在任务列表查看进度`);
+    if (completePlugins === chosen.length) emit('submitted');
+  } finally {
+    submitting.value = false;
+  }
+}
+
+/** 重新分析所有任务,先确认清理旧数据。 */
+async function onRestartAll(): Promise<void> {
+  moreOpen.value = false;
+  const candidates = evidenceTasks.value;
+  if (!candidates.length || submitting.value) return;
+  const ok = await confirm({
+    title: '重新分析所有任务',
+    message: `将重跑该检材的 ${candidates.length} 个任务,重新分析会清理之前的数据。继续吗?`,
+    confirmText: '重新分析',
+    danger: true,
+  });
+  if (!ok || disposed) return;
+  submitting.value = true;
+  try {
+    let restartedCount = 0;
+    for (const task of candidates) {
+      if (disposed) return;
+      if (task.status === 'pause' || task.status === 'offline') {
+        if (await start(task.id)) restartedCount += 1;
+      } else if (await restart(task.id)) {
+        restartedCount += 1;
+      }
+    }
+    if (disposed || !restartedCount) return;
+    notifyInfo('快速分析', `已重新排队 ${restartedCount} 个任务`);
+    emit('submitted');
+  } finally {
+    submitting.value = false;
+  }
+}
+</script>
+
+<style scoped>
+.quick-analysis { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; color: var(--text-primary); }
+.qa-head { flex-shrink: 0; border-bottom: 1px solid var(--border-color); background: var(--surface-secondary); }
+.qa-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
+.qa-platform { flex-shrink: 0; max-width: 132px; }
+.qa-platform-label { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; height: 30px; padding: 0 10px; border-radius: var(--radius-md); background: var(--surface-tertiary); color: var(--text-secondary); font-size: 12px; font-weight: 500; }
+.qa-search { flex: 1; }
+
+/* Select-all line: its box sits in the same column as the category boxes below. */
+.qa-selectbar { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 8px 6px 14px; }
+.qa-check-all { font-weight: 600; }
+.qa-selectbar-count { color: var(--text-secondary); font-size: 11px; }
+.qa-expand-all { margin-left: auto; }
+
+.qa-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 8px; background: var(--surface-secondary); scrollbar-gutter: stable; }
+
+/* Category: a header line that stays on top while its tiles scroll past. */
+.qa-group-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 0 8px 0 14px; background: var(--surface-secondary); }
+.qa-group + .qa-group .qa-group-head { border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, transparent); }
+.qa-group-check { flex-shrink: 0; width: 14px; height: 14px; margin: 0; cursor: pointer; }
+.qa-group-check:disabled { cursor: not-allowed; }
+.qa-group-toggle { display: flex; flex: 1; align-items: center; gap: 8px; min-width: 0; height: 38px; padding: 0 4px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-primary); font: 600 13px var(--font-ui); text-align: left; cursor: pointer; }
+.qa-group-toggle:hover .qa-group-label { color: var(--primary-color); }
+.qa-group-toggle:focus-visible { outline: 2px solid var(--primary-color); outline-offset: -2px; }
+.qa-group-icon { flex-shrink: 0; color: var(--text-secondary); }
+.qa-group-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color var(--transition-fast); }
+.qa-group-count { margin-left: auto; color: var(--text-secondary); font: 500 11px var(--font-mono); }
+.qa-group-chevron { flex-shrink: 0; color: var(--text-secondary); transition: transform var(--transition-fast); }
+.qa-group-toggle[aria-expanded='false'] .qa-group-chevron { transform: rotate(-90deg); }
+
+/* Plugin tiles: two or more per line, the whole tile toggles its plugin. */
+.qa-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 6px; margin: 0; padding: 2px 12px 10px 14px; list-style: none; }
+.qa-tile { position: relative; display: flex; align-items: center; min-width: 0; min-height: 32px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--surface-secondary); transition: background-color var(--transition-fast), border-color var(--transition-fast); }
+.qa-tile:hover { border-color: color-mix(in srgb, var(--primary-color) 45%, var(--border-color)); }
+.qa-tile.selected { border-color: color-mix(in srgb, var(--primary-color) 55%, var(--border-color)); background: var(--sidebar-active-bg); }
+.qa-tile-choice { display: flex; flex: 1; align-items: center; align-self: stretch; gap: 8px; min-width: 0; padding: 0 4px 0 10px; cursor: pointer; }
+.qa-tile-choice input { flex-shrink: 0; width: 14px; height: 14px; margin: 0; cursor: pointer; }
+.qa-tile-name { flex: 1; min-width: 0; overflow: hidden; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.selected .qa-tile-name { color: var(--primary-color); }
+.busy .qa-tile-choice, .busy .qa-tile-choice input { cursor: default; }
+.busy .qa-tile-name { color: var(--text-secondary); }
+.qa-tile-status { display: inline-flex; flex-shrink: 0; margin-right: 8px; }
+/* The star floats over the end of the name until it is saved, so names keep the room. */
+.qa-star { --ui-icon-btn-size: 22px; position: absolute; top: 50%; right: 4px; translate: 0 -50%; background: inherit; opacity: 0; transition: opacity var(--transition-fast), color var(--transition-fast); }
+.qa-tile.has-status .qa-star { right: 26px; }
+.qa-star:hover:not(:disabled) { color: var(--sev-warn-fg); }
+.qa-tile:hover .qa-star, .qa-tile:focus-within .qa-star { opacity: 1; }
+.qa-star.saved { position: static; flex-shrink: 0; margin-right: 2px; translate: none; opacity: 1; color: var(--sev-warn-fg); }
+.qa-star.saved svg { fill: currentColor; }
+@media (hover: none) { .qa-star { position: static; flex-shrink: 0; translate: none; opacity: 1; } }
+
+.qa-foot { display: flex; align-items: center; gap: 8px; flex-shrink: 0; min-height: 54px; padding: 10px 12px; border-top: 1px solid var(--border-color); background: var(--surface-secondary); }
+.qa-more { position: relative; flex-shrink: 0; }
+.qa-more-menu { --ui-pop-offset: 4px; position: absolute; bottom: calc(100% + 6px); left: 0; z-index: 5; white-space: nowrap; }
+.qa-summary { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; color: var(--text-secondary); font-size: 12px; }
+.qa-summary strong { display: inline-block; color: var(--text-primary); font-family: var(--font-mono); font-weight: 600; }
+.qa-rerun { overflow: hidden; color: var(--sev-warn-fg); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+.state-box { min-height: 220px; padding: 40px 20px; overflow-wrap: anywhere; }
+.state-box.error .ui-empty-icon { background: var(--sev-critical-bg); color: var(--sev-critical-fg); }
+</style>

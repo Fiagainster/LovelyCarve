@@ -1,0 +1,10 @@
+[package]
+name = "lovelycarve-windows-web"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+publish = false
+[dependencies]
+lovelycarve-plugin = { path = "../sdk" }
+lovelycarve-forensic = { path = "../forensic" }
+lovelycarve-windows-registry = { path = "../windowsregistry" }

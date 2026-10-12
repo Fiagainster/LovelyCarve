@@ -1,0 +1,39 @@
+# Vendored copy of the `gpt` crate (https://github.com/Quyzi/gpt) at v4.1.0,
+# licensed MIT. lovelycarve drives it from `core/part_gpt.rs` for the
+# standard LBA-1 GPT layout (header + entry table parsing, CRC32 validation,
+# UUID + UTF-16 name decoding, type-GUID registry). No upstream behavior is
+# altered.
+#
+# Local trims compared to upstream:
+#   * removed [dev-dependencies] (we don't run upstream tests here)
+
+[package]
+name = "gpt"
+version = "4.1.0"
+description = "A pure-Rust library to work with GPT partition tables (vendored for lovelycarve)."
+documentation = "https://docs.rs/gpt"
+authors = [
+	"Chris Ober <obercgit@gmail.com>",
+	"Chris Holcombe <xfactor973@gmail.com>",
+	"Luca Bruno <lucab@debian.org>",
+	"Sören Meier <s@renmeier.ch>",
+]
+license = "MIT"
+repository = "https://github.com/Quyzi/gpt"
+edition = "2021"
+rust-version = "1.85"
+exclude = ["tests/fixtures", "tests/gpt-real-disk.rs"]
+
+[features]
+# enable logging via the log crate
+log = ["dep:log"]
+# enable logging via the tracing crate
+tracing = ["dep:tracing"]
+
+[dependencies]
+bitflags = "2.0"
+crc = "3.0"
+log = { version = "0.4.18", optional = true }
+tracing = { version = "0.1.30", optional = true }
+uuid = { version = "1.3.4", features = ["v4"] }
+simple-bytes = "0.2.13"
