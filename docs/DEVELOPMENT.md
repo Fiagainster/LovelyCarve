@@ -84,6 +84,12 @@ just run-example probe_partitions '"D:\Evidence Files\disk.E01"'
 
 后端探针的用途与参数见 [examples/README.md](../src-tauri/examples/README.md)，各读取器的专项测试、可选外部样本与环境变量见 [格式与读取器](formats/README.md)。
 
+分段 RAW 独立库使用 `just test-smraw` / `just clippy-smraw`，宿主回归使用
+`just test smraw --lib --jobs 1` 与 `just test-cli`。Windows rustc 在大型测试 crate
+发生增量编译崩溃时，可通过原配方传入
+`--config profile.test.package.lovelycarve.debug=0 --config profile.test.package.lovelycarve.incremental=false`，
+仅降低宿主测试包调试信息并禁用其增量缓存；不改变发布配置。范围见 [SMRAW](formats/SMRAW.md)。
+
 ## 插件与资源
 
 `plugins/` 是 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 的 Git 子模块，只包含 `sdk`、`host` 与 `linuxinfo`。主仓库固定插件的提交；递归克隆或 `just bootstrap` 会初始化它，已有克隆可运行 `git submodule update --init --recursive`。GitHub 生成的源码压缩包不包含子模块，开发请使用 Git 克隆。

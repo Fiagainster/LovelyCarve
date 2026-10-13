@@ -19,6 +19,8 @@
 
 vendor [GZIP 读取器](formats/GZIP.md) 参照 libgzipf 实现多成员、元数据、校验和 seek，已接入 tar.gz / tgz、Docker / OCI 压缩层与小米备份。
 
+vendor [RAW / 分段 RAW](formats/SMRAW.md) 参照 libsmraw 实现分段读写与完整性检查，读取接入桌面和 CLI。
+
 vendored 读取器的上游版本与本地补丁记录在 [vendor/UPSTREAM.md](../src-tauri/vendor/UPSTREAM.md)，后端探针程序见 [examples/README.md](../src-tauri/examples/README.md)。
 
 ## 开发

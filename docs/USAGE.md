@@ -32,7 +32,7 @@
 
 | 来源 | 说明 |
 | --- | --- |
-| 镜像文件 | RAW / E01 / VMDK / VHD(X) / QCOW2 / VDI / ISO / DMG / AD1 / PMFX / LDBK 等磁盘镜像，TAR / ZIP / 7z 归档，以及 `.hc` / `.tc` / `.luks` 加密容器。分段镜像选第一段，其余分段放在同一目录 |
+| 镜像文件 | RAW / E01 / VMDK / VHD(X) / QCOW2 / VDI / ISO / DMG / AD1 / PMFX / LDBK 等磁盘镜像，TAR / ZIP / 7z 归档，以及 `.hc` / `.tc` / `.luks` 加密容器。分段镜像选第一段，其余分段放在同一目录；RAW 支持 `.001` / `.000` / `.raw.001` 等数字分段和 `aa` / `aaa` 分段，缺少中间段会报错，完整性边界见 [SMRAW](formats/SMRAW.md) |
 | 文件夹 | 本机目录、已解包的数据集，或 iTunes / Finder 的 iOS 本地备份（选择同时包含 `Manifest.plist` 与 `Manifest.db` 的那一层目录，详见 [iOS 备份](IOS_BACKUPS.md)）。目录中的小米 `.bak` 备份会自动展开 |
 | BCP 文件 | 网安数据交换 BCP，见下文 [BCP 数据](#bcp-数据) |
 | RAID 磁盘 | 逐块加入成员盘，自动检测阵列，确认后打开重组的镜像 |

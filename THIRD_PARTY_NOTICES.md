@@ -30,6 +30,18 @@ no libfsapfs C sources or binaries are incorporated. The new APFS fixtures
 are invented, reproducible project test structures (AGPL-3.0-only), documented
 in `src-tauri/vendor/apfs/tests/data/README.md`.
 
+## RAW image capability reference
+
+`src-tauri/vendor/smraw` is original LovelyCarve Rust code (AGPL-3.0-only),
+referencing the public RAW I/O and naming capabilities of Joachim Metz and
+contributors' [libyal/libsmraw](https://github.com/libyal/libsmraw/commit/adfa6b8bc8617226805926180244c774366aad30).
+The upstream library is LGPL-3.0-or-later and its tools are GPL-3.0-or-later.
+No upstream C implementation, document text, test data, binaries or bindings
+are incorporated. This crate has no third-party runtime dependencies.
+Its license, provenance and scope remain in its vendor directory; all 72
+public APIs are compared in [SMRAW](docs/formats/SMRAW.md).
+The project-generated synthetic tests contain no real evidence.
+
 ## GZIP reader capability reference
 
 `src-tauri/vendor/gzipf` is original LovelyCarve Rust code (AGPL-3.0-only),

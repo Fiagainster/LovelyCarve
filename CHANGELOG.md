@@ -7,6 +7,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增参照 libsmraw 重写的纯 Rust `smraw` vendor 库，支持单文件/分段 RAW 读写；应用和 CLI 从首段读取完整镜像，检查编号缺段与所有源段的稳定性，提供 72 个公开 API 对照与格式限制说明。
+
 ### Fixed
 
 - TAR.GZ / TGZ、Docker / OCI 压缩层与小米备份的 GZIP 读取接入纯 Rust `gzipf`，完整读取拼接成员并校验全部尾部，避免忽略后续成员或损坏校验值；GZIP 备份提取前先验证完整压缩流。

@@ -180,7 +180,7 @@ LVM 标签/CRC/活动副本位于 `evidence/partitions/lvm2/header.rs`，有界�
 
 | 类型 | 后端路径 | 说明 |
 | --- | --- | --- |
-| RAW / DD / IMG / ISO | `core::evidence::image` | 统一扇区读取，ISO 由 CDFS 探针识别 |
+| RAW / DD / IMG / ISO | `core::evidence::image` + `vendor/smraw` | 单文件 mmap，分段 RAW 纯 Rust positioned I/O 与所有段稳定性检查；ISO 由 CDFS 探针识别，边界见 [SMRAW](formats/SMRAW.md) |
 | E01 / Ex01 | `core::evidence::readers::ewf_image` → vendored `ewf` (SecurityRonin/ewf-forensic) | 纯 Rust、多分卷、随机读取、v1 延迟块索引；无需 libewf DLL |
 | VMDK | `core::evidence::readers::vmdk_image` + `vendor/vmdk` | vmdk-forensic 的纯 Rust flat / sparse / streamOptimized 读取；分卷与父盘源变化检测 |
 | QCOW2 | vendored `qcow2` | v2/v3 稀疏虚拟盘，只读随机访问；压缩簇、加密和 backing file 明确拒绝 |

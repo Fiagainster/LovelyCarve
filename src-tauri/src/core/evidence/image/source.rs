@@ -12,6 +12,8 @@ pub(super) enum ImageSource {
         size_bytes: u64,
         format: ImageFormat,
     },
+    /// Read-only split RAW; positioned I/O spans all source members.
+    SplitRaw { reader: smraw::RawImage },
     Ewf {
         // parking_lot's eventual-fairness lock: under sustained contention
         // (e.g. a long fs_digest hashing loop racing fs_children), it
@@ -139,6 +141,11 @@ impl std::fmt::Debug for ImageSource {
                 .field("size_bytes", size_bytes)
                 .field("format", format)
                 .finish(),
+            Self::SplitRaw { reader } => f
+                .debug_struct("SplitRaw")
+                .field("size_bytes", &reader.media_size())
+                .field("segments", &reader.segments().len())
+                .finish(),
             Self::Ewf {
                 size_bytes,
                 sector_size,
@@ -252,6 +259,7 @@ impl ImageSource {
         match self {
             Self::Indexed { format, .. } => *format,
             Self::Raw { format, .. } => *format,
+            Self::SplitRaw { .. } => ImageFormat::Raw,
             Self::Ewf { .. } => ImageFormat::Ewf,
             Self::Vmdk { .. } => ImageFormat::Vmdk,
             Self::Qcow2 { .. } => ImageFormat::Qcow2,
@@ -275,6 +283,7 @@ impl ImageSource {
         match self {
             Self::Indexed { size_bytes, .. } => *size_bytes,
             Self::Raw { size_bytes, .. } => *size_bytes,
+            Self::SplitRaw { reader } => reader.media_size(),
             Self::Ewf { size_bytes, .. } => *size_bytes,
             Self::Vmdk { size_bytes, .. } => *size_bytes,
             Self::Qcow2 { size_bytes, .. } => *size_bytes,
@@ -307,6 +316,7 @@ impl ImageSource {
             | Self::Pmfx { .. } => true,
             Self::Indexed { .. }
             | Self::Raw { .. }
+            | Self::SplitRaw { .. }
 
             | Self::Dmg { .. }
             | Self::Assembled { .. }
@@ -374,6 +384,10 @@ impl ImageSource {
                     .context("image offset does not fit in memory address space")?;
                 dst.copy_from_slice(&mmap[start..start + available]);
                 Ok((available, Vec::new()))
+            }
+            Self::SplitRaw { reader } => {
+                let filled = reader.read_at(start, dst)?;
+                Ok((filled, Vec::new()))
             }
             Self::Dmg { mmap, .. } => {
                 let start = usize::try_from(start)
@@ -483,6 +497,12 @@ impl ImageSource {
                 let start = usize::try_from(start)
                     .context("image offset does not fit in memory address space")?;
                 Ok((mmap[start..start + available].to_vec(), Vec::new()))
+            }
+            Self::SplitRaw { reader } => {
+                let mut buffer = vec![0; available];
+                let filled = reader.read_at(start, &mut buffer)?;
+                buffer.truncate(filled);
+                Ok((buffer, Vec::new()))
             }
             Self::Dmg { mmap, .. } => {
                 let start = usize::try_from(start)
@@ -645,6 +665,7 @@ pub(super) fn source_file_meta(
                 ImageSource::Ewf { reader, .. } => reader.lock().segments_on_disk_bytes(),
                 ImageSource::Vmdk { reader, .. } => reader.lock().files_on_disk_bytes(),
                 ImageSource::Ad1 { image } => Some(image.outer_len()),
+                ImageSource::SplitRaw { reader } => Some(reader.media_size()),
                 ImageSource::Folder { .. } => None,
                 _ => Some(meta.len()),
             };

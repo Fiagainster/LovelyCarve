@@ -105,6 +105,7 @@ fmt:
     cd src-tauri/vendor/veracrypt && cargo fmt
     cd src-tauri/vendor/vsc && cargo fmt
     cd src-tauri/vendor/gzipf && cargo fmt
+    cd src-tauri/vendor/smraw && cargo fmt
     cd src-tauri/vendor/refs-reader && cargo fmt
     cd src-tauri/vendor/sqlite-core && cargo fmt
     cd src-tauri/vendor/ad1 && cargo fmt
@@ -344,6 +345,17 @@ clippy-refs:
 [group("readers")]
 test-vendor name *args:
     cargo test --manifest-path src-tauri/vendor/{{ name }}/Cargo.toml --lib {{ args }}
+
+# Test the standalone single/split RAW reader and new-output writer.
+[group("readers")]
+[working-directory("src-tauri/vendor/smraw")]
+test-smraw *args:
+    cargo test {{ args }}
+
+[group("readers")]
+[working-directory("src-tauri/vendor/smraw")]
+clippy-smraw *args:
+    cargo clippy --all-targets {{ args }}
 
 # Test the standalone pure Rust GZIP member reader and its independent corpus.
 [group("readers")]

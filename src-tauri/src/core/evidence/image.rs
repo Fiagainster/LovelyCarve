@@ -341,4 +341,6 @@ pub(crate) use metadata::find_partition;
 
 pub use faults::{BadRegion, ReadFaultPolicy, ReadFaultReport};
 #[cfg(test)]
+mod smraw_tests;
+#[cfg(test)]
 mod tests;

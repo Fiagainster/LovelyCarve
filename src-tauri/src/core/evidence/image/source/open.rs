@@ -172,6 +172,32 @@ impl ImageSource {
             });
         }
 
+        // RAW has no signature. Recognize numbered families before probing
+        // embedded guest bytes as another container, while preserving EWF's
+        // explicit extension/signature priority. Require the first member so
+        // case identity cannot vary with the selected member.
+        let raw_segments = smraw::discover(path)
+            .with_context(|| format!("failed to discover RAW segments: {}", path.display()))?;
+        if raw_segments.numbered {
+            let first = raw_segments
+                .paths
+                .first()
+                .context("RAW segment list is empty")?;
+            if crate::core::casework::case::evidence_path_key(
+                &std::fs::canonicalize(first)?.to_string_lossy(),
+            ) != crate::core::casework::case::evidence_path_key(
+                &std::fs::canonicalize(path)?.to_string_lossy(),
+            ) {
+                anyhow::bail!(
+                    "这是 RAW 镜像的后续分段，请打开第一个分段：{}",
+                    first.display()
+                );
+            }
+            let reader = smraw::RawImage::open_segments(raw_segments.paths)
+                .with_context(|| format!("failed to open split RAW image: {}", path.display()))?;
+            return Ok(Self::SplitRaw { reader });
+        }
+
         if should_open_as_pmfx(path)? {
             let reader = PmfxImage::open(path)
                 .with_context(|| format!("failed to open PMFX image: {}", path.display()))?;

@@ -253,6 +253,34 @@ export hello.txt "{exported}"
         assert rows[4]["result"]["recovered"] == 1, rows
         assert next(recovered.glob("*.png")).read_bytes() == png
 
+        # Split RAW exports must include every member, including unaligned cuts.
+        split_bytes = bytes(range(256)) * 513
+        split_first = root / "split evidence.raw.001"
+        split_second = root / "split evidence.raw.002"
+        split_third = root / "split evidence.raw.003"
+        split_first.write_bytes(split_bytes[:517])
+        split_second.write_bytes(split_bytes[517:65539])
+        split_third.write_bytes(split_bytes[65539:])
+        split_export = root / "split-export.raw"
+        requests = [
+            {"id": "open", "command": "image_load", "args": {"path": str(split_first)}},
+            {"id": "export", "command": "image_export_raw", "args": {"destination": str(split_export), "taskId": "split-export", "readFaultPolicy": "strict"}},
+            {"id": "close", "command": "image_unload", "args": {"imageId": {"$ref": "open#/id"}}},
+        ]
+        result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        assert all("result" in row for row in rows), rows
+        assert rows[0]["result"]["source_format"] == "raw", rows
+        assert rows[0]["result"]["size_bytes"] == len(split_bytes), rows
+        assert split_export.read_bytes() == split_bytes
+        assert split_first.read_bytes() == split_bytes[:517]
+        assert split_second.read_bytes() == split_bytes[517:65539]
+        assert split_third.read_bytes() == split_bytes[65539:]
+        split_second.unlink()
+        requests = [{"id": "open", "command": "image_load", "args": {"path": str(split_first)}}]
+        result = run(["session"], "\n".join(json.dumps(request) for request in requests), expected=1)
+        assert "error" in json.loads(result.stdout.splitlines()[0]), result.stdout
+
         # Read and export actual EWF evidence through the public headless commands.
         fixtures = Path(__file__).resolve().parents[1] / "src-tauri/vendor/ewf/tests/data"
         for name, expected_md5 in [
