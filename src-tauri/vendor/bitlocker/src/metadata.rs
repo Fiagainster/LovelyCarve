@@ -99,7 +99,7 @@ impl MetadataEntry {
     /// or `None` for a non-VMK entry.
     #[must_use]
     pub fn protection_type(&self) -> Option<u16> {
-        self.is_vmk().then(|| le_u16(&self.data, 26))
+        (self.is_vmk() && self.data.len() >= 28).then(|| le_u16(&self.data, 26))
     }
 }
 
@@ -127,6 +127,10 @@ pub struct FveMetadata {
     pub metadata_offsets: [u64; 3],
     /// Size of the metadata region (metadata header offset 0).
     pub metadata_size: u32,
+    /// Block layout version (1 = Vista, 2 = Windows 7 and later).
+    pub version: u16,
+    /// Vista's original NTFS MFT mirror cluster, overwritten in the boot sector.
+    pub mft_mirror_cluster: u64,
 }
 
 impl FveMetadata {
@@ -139,6 +143,10 @@ impl FveMetadata {
         if block.get(0..8) != Some(FVE_SIGNATURE.as_slice()) {
             return None;
         }
+        let version = le_u16(block, 10);
+        if block.len() < 112 || !matches!(version, 1 | 2) {
+            return None;
+        }
 
         let encrypted_volume_size = le_u64(block, 16);
         let num_volume_header_sectors = le_u32(block, 28);
@@ -148,19 +156,30 @@ impl FveMetadata {
         // FVE metadata header starts at block offset 64.
         let mh = 64usize;
         let metadata_size = le_u32(block, mh);
+        if metadata_size < 48 || mh.checked_add(metadata_size as usize)? > block.len() {
+            return None;
+        }
         let volume_guid = read_guid(block, mh + 16);
         let encryption_method = le_u16(block, mh + 36);
         let creation_time = le_u64(block, mh + 40);
 
         // Entries follow the 48-byte metadata header, bounded by metadata_size.
         let entries_start = mh + 48;
-        let entries_end = (mh + metadata_size as usize).min(block.len());
+        let entries_end = mh + metadata_size as usize;
         let entries = if entries_end > entries_start {
             MetadataEntry::parse_sequence(&block[entries_start..entries_end])
         } else {
             Vec::new()
         };
 
+        if entries
+            .iter()
+            .map(|entry| entry.data.len() + 8)
+            .sum::<usize>()
+            != entries_end - entries_start
+        {
+            return None;
+        }
         // Resolve the relocated volume-header region: prefer the dedicated
         // volume-header-block entry (type 0x000f), else the block-header fields.
         let mut volume_header_offset = block_volume_header_offset;
@@ -181,13 +200,23 @@ impl FveMetadata {
         }
 
         Some(FveMetadata {
+            version,
+            mft_mirror_cluster: if version == 1 { le_u64(block, 56) } else { 0 },
             encryption_method,
             volume_guid,
             creation_time,
             entries,
-            encrypted_volume_size,
-            volume_header_offset,
-            volume_header_size,
+            encrypted_volume_size: if version == 1 {
+                0
+            } else {
+                encrypted_volume_size
+            },
+            volume_header_offset: if version == 1 {
+                0
+            } else {
+                volume_header_offset
+            },
+            volume_header_size: if version == 1 { 0 } else { volume_header_size },
             metadata_offsets,
             metadata_size,
         })
@@ -204,6 +233,31 @@ impl FveMetadata {
         self.vmk_entries()
             .filter_map(MetadataEntry::protection_type)
             .collect()
+    }
+
+    /// Volume description (entry 7, UTF-16LE), without losing invalid encoding.
+    pub fn description(&self) -> crate::Result<Option<String>> {
+        let Some(entry) = self
+            .entries
+            .iter()
+            .find(|entry| entry.entry_type == 7 && entry.value_type == 2)
+        else {
+            return Ok(None);
+        };
+        if entry.data.len() % 2 != 0 {
+            return Err(crate::BdeError::InvalidData(
+                "odd UTF-16 description length",
+            ));
+        }
+        let units: Vec<u16> = entry
+            .data
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .take_while(|unit| *unit != 0)
+            .collect();
+        String::from_utf16(&units)
+            .map(Some)
+            .map_err(|_| crate::BdeError::InvalidData("invalid UTF-16 volume description"))
     }
 
     /// The top-level FVEK entry (an AES-CCM encrypted key wrapped by the VMK).
@@ -330,5 +384,28 @@ mod tests {
         let mut block = build_block(&[]);
         block.truncate(70);
         let _ = FveMetadata::parse(&block, 512);
+    }
+
+    #[test]
+    fn description_preserves_unicode_and_rejects_invalid_encoding() {
+        let bytes: Vec<_> = "取证卷\0"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        let block = build_block(&[entry_bytes(7, 2, 1, &bytes)]);
+        assert_eq!(
+            FveMetadata::parse(&block, 512)
+                .unwrap()
+                .description()
+                .unwrap(),
+            Some("取证卷".into())
+        );
+        for bytes in [&[0xff][..], &[0x00, 0xd8][..]] {
+            let block = build_block(&[entry_bytes(7, 2, 1, bytes)]);
+            assert!(FveMetadata::parse(&block, 512)
+                .unwrap()
+                .description()
+                .is_err());
+        }
     }
 }

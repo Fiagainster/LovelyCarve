@@ -9,6 +9,9 @@
 /// An error decoding or unlocking a BitLocker (BDE) volume.
 #[derive(Debug, thiserror::Error)]
 pub enum BdeError {
+    /// Invalid format geometry, bounds or an inconsistent key container.
+    #[error("invalid BitLocker data: {0}")]
+    InvalidData(&'static str),
     /// An I/O error reading the underlying volume.
     #[error("i/o error reading BitLocker volume: {0}")]
     Io(#[from] std::io::Error),
@@ -32,7 +35,7 @@ pub enum BdeError {
 
     /// The encryption-method value is not one of the six defined BitLocker
     /// ciphers (`0x8000`–`0x8005`). The raw value is included.
-    #[error("unsupported encryption method 0x{method:04x} (not a recognized BitLocker cipher; supported methods: 0x8000, 0x8002, 0x8003, 0x8004, 0x8005)")]
+    #[error("unsupported encryption method 0x{method:04x} (not a recognized BitLocker cipher; supported methods: 0x8000, 0x8001, 0x8002, 0x8003, 0x8004, 0x8005)")]
     UnsupportedEncryptionMethod {
         /// The raw 16-bit encryption-method value from the metadata header.
         method: u16,
@@ -42,7 +45,7 @@ pub enum BdeError {
     /// no oracle-validated decrypt for it yet (AES-256-CBC `0x8003`, or AES-XTS
     /// `0x8004`/`0x8005`, or AES-256-CBC + diffuser `0x8001`). It is refused
     /// rather than decrypted by construction. The raw value is named.
-    #[error("unsupported encryption method (recognized but unvalidated) 0x{method:04x} (no independent oracle for this method; AES-256-CBC + Elephant Diffuser is not enabled)")]
+    #[error("unsupported encryption method (recognized but unvalidated) 0x{method:04x} (no validated transform for this method)")]
     UnvalidatedEncryptionMethod {
         /// The raw 16-bit encryption-method value from the metadata header.
         method: u16,

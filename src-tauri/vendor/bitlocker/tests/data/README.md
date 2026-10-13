@@ -25,3 +25,25 @@ independently encrypted with PyCryptodome by `generate_recovery_fixture.py`.
 Its test-only recovery password is eight `111111` groups. The expected relocated
 boot plaintext is `bytes((i & 255) ^ 0x3c for i in range(512))`. This checks
 crypto interoperability and adapter dispatch, not a Windows-issued volume.
+
+
+## LovelyCarve libbde capability vectors (2026-10-13)
+
+`parity-8000..8005-{512,4096}.bin` and `parity-startup.bek` are synthetic
+projections generated independently by `generate_parity_vectors.py` using
+PyCryptodome (CCM, ECB, CBC) and cryptography (XTS). Elephant uses the published
+A/B modular-word transforms. No Rust encryption function produces these bytes.
+The generator and generated fixtures are LovelyCarve contributions under the
+vendored crate's Apache-2.0 license. `parity-sha256.txt` records every digest.
+
+Compact format: u16 method, u16 sector size, u32 metadata-block length, 512-byte
+boot header, metadata block, relocated ciphertext sector, ordinary ciphertext
+sector. `tests/parity.rs` expands this into an in-memory volume; the omitted
+bytes are synthetic test padding. FVEK bytes are 1..key-size; diffuser TWEAK
+starts at 65; VMK is 32 `46` bytes; clear/BEK key is 32 `55` bytes. Plaintext
+is `(i * 7 + 19) mod 256`, with bytes 3..11 replaced by `NTFS    `.
+
+These vectors prove independent crypto interoperability and reader wiring,
+not Windows-generated evidence. Vista and EOW tests alter known structures,
+exercise raw/encrypted bits, record selection, backup descriptors and bounds.
+No full Windows-issued Vista/EOW/8001/4Kn corpus has been claimed as tested.

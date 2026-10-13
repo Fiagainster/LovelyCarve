@@ -78,9 +78,12 @@
         >{{ tab.label }}</button>
       </div>
 
-      <BitlockerCredentialForm v-if="!job && !scanJob && mode !== 'memory'" :mode="mode" v-model:password-input="passwordInput" v-model:recovery-input="recoveryInput"
+      <BitlockerCredentialForm v-if="!job && !scanJob && (mode === 'password' || mode === 'recovery')" :mode="mode" v-model:password-input="passwordInput" v-model:recovery-input="recoveryInput"
         :elements="credentialElements" :recovery-error="recoveryError" :recovery-note-id="recoveryNoteId" :valid-groups="recoveryCheck.validGroups"
         :can-submit-password="canSubmitPassword" :can-submit-recovery="canSubmitRecovery" @password="submitPassword" @recovery="submitRecovery" @blur="onRecoveryBlur" @close="closePopover" />
+
+      <BitlockerKeyForm v-if="!job && !scanJob && mode === 'key'" :key="`${imageId}:${partition.id}`" @submit="submitKey" @close="closePopover" />
+      <p v-if="metadata && !job && !scanJob" class="ui-field-hint">元数据 v{{ metadata.version }} · {{ metadata.bytes_per_sector }} 字节扇区{{ metadata.used_space_only ? ' · 仅加密已用空间' : '' }} · 保护器 {{ metadata.protector_types.map(protectorLabel).join('、') || '无' }}</p>
 
       <BitlockerMemoryCandidates v-if="!job && !scanJob && mode === 'memory'" :memory-path="memoryPath" :candidates="candidates"
         @pick="pickMemoryFile" @scan="startScan" @reset="resetMemory" @close="closePopover" @unlock="unlockWithCandidate" />
@@ -109,13 +112,15 @@ import {
   startBitlockerPasswordUnlock,
   startBitlockerRecoveryUnlock,
   startBitlockerVmkUnlock,
+  startBitlockerKeyUnlock,
   useBitlockerJob,
   useBitlockerScanJob,
 } from '../composables/useBitlockerUnlocks';
 import { useImageExport } from '../composables/useImageExport';
-import { bitlockerStatus } from '../../../lib/ipc/bitlocker';
-import { bitlockerProgress, type BitlockerInputMode as Mode, type BitlockerVmkCandidate } from '../model/bitlocker';
+import { bitlockerStatus, bitlockerMetadata, type BitlockerMetadata } from '../../../lib/ipc/bitlocker';
+import { bitlockerProgress, type BitlockerInputMode as Mode, type BitlockerVmkCandidate, type BitlockerKeyCredential } from '../model/bitlocker';
 import BitlockerCredentialForm from './BitlockerCredentialForm.vue';
+import BitlockerKeyForm from './BitlockerKeyForm.vue';
 import BitlockerMemoryCandidates from './BitlockerMemoryCandidates.vue';
 import BitlockerJobProgress from './BitlockerJobProgress.vue';
 
@@ -128,20 +133,15 @@ const emit = defineEmits<{
   (e: 'unlocked', partitionId: number): void;
 }>();
 
-interface BitlockerStatusView {
-  locked: boolean;
-  size_bytes: number | null;
-  encryption_method: string | null;
-  cached_dump: string | null;
-}
-
 const tabs: { id: Mode; label: string }[] = [
   { id: 'password', label: '密码' },
   { id: 'recovery', label: '恢复密钥' },
   { id: 'memory', label: '内存镜像' },
+  { id: 'key', label: '其他密钥' },
 ];
 
 const locked = ref(true);
+const metadata = ref<BitlockerMetadata | null>(null);
 const encryption = ref<string | null>(null);
 const mode = ref<Mode>('recovery');
 
@@ -178,6 +178,8 @@ const unlockLabel = computed(() => {
       return '恢复密钥解锁中';
     case 'vmk':
       return 'VMK 解锁中';
+    case 'key':
+      return '密钥解锁中';
   }
 });
 
@@ -205,7 +207,7 @@ async function refreshStatus() {
     const status = await bitlockerStatus({
       imageId,
       partitionId,
-    }) as BitlockerStatusView;
+    });
     if (!current(captured) || request !== statusRequest) return;
     const wasLocked = locked.value;
     locked.value = status.locked;
@@ -216,6 +218,24 @@ async function refreshStatus() {
   } catch {
     // Keep the last known lock state when the status query is unavailable.
   }
+}
+
+function protectorLabel(value: number): string {
+  const labels: Record<number, string> = { 0: '明文密钥', 0x0200: 'BEK', 0x0800: '恢复密码', 0x2000: '密码', 0x0100: 'TPM' };
+  return labels[value] ?? `0x${value.toString(16).padStart(4, '0')}`;
+}
+async function refreshMetadata() {
+  const captured = generation;
+  try {
+    const result = await bitlockerMetadata({ imageId: props.imageId, partitionId: props.partition.id });
+    if (current(captured)) metadata.value = result;
+  } catch { /* Status remains available even when metadata is damaged. */ }
+}
+async function submitKey(credential: BitlockerKeyCredential) {
+  if (job.value) return;
+  const captured = generation;
+  const ok = await startBitlockerKeyUnlock(props.imageId, props.partition.id, credential);
+  if (ok && current(captured)) { popoverOpen.value = false; await refreshStatus(); }
 }
 
 function focusActiveInput() {
@@ -331,6 +351,8 @@ watch(
     candidates.value = null;
     memoryPath.value = '';
     clearCredentials();
+    metadata.value = null;
+    void refreshMetadata();
     void refreshStatus();
   },
   { immediate: true, flush: 'sync' },

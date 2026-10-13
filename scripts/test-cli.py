@@ -272,6 +272,51 @@ export hello.txt "{exported}"
             stream.seek(0x8000)
             assert hashlib.sha256(stream.read(4096)).hexdigest() == "1d138f11707f0a3b4832c5173167c756e1bac9796518b64800d5dc374986fe4d"
 
+        # Independent cipher projections exercise the new command surface.
+        bde_data = fixture.parent
+        for method, sector_size, credential in [
+            (0x8001, 512, {}),
+            (0x8005, 4096, {"startupKeyPath": str(bde_data / "parity-startup.bek")}),
+            (0x8004, 512, {"vmkHex": "46" * 32}),
+            (0x8001, 4096, {"fvekHex": bytes(range(1, 33)).hex(), "tweakHex": bytes(range(65, 97)).hex()}),
+        ]:
+            projection = (bde_data / f"parity-{method:04x}-{sector_size}.bin").read_bytes()
+            block_size = struct.unpack_from("<I", projection, 4)[0]
+            image = bytearray(0x80000)
+            image[:512] = projection[8:520]
+            for offset in [0x20000, 0x30000, 0x40000]:
+                image[offset:offset + block_size] = projection[520:520 + block_size]
+            sectors = projection[520 + block_size:]
+            image[0x10000:0x10000 + sector_size] = sectors[:sector_size]
+            image[0x12000:0x12000 + sector_size] = sectors[sector_size:]
+            encrypted = root / f"bde-{method:04x}-{sector_size}.bin"
+            encrypted.write_bytes(image)
+            decrypted = root / f"bde-{method:04x}-{sector_size}-plain.bin"
+            requests = [
+                {"id": "open", "command": "image_load", "args": {"path": str(encrypted)}},
+                {"id": "metadata", "command": "bitlocker_metadata", "args": {"partitionId": partition}},
+                {"id": "unlock", "command": "bitlocker_unlock_with_vmk" if "vmkHex" in credential else "bitlocker_unlock", "args": {"partitionId": partition, **credential}},
+                {"id": "export", "command": "bitlocker_export_decrypted_image", "args": {"partitionId": partition, "destination": str(decrypted), "taskId": "parity-export"}},
+            ]
+            result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+            rows = [json.loads(line) for line in result.stdout.splitlines()]
+            assert all("result" in row for row in rows), rows
+            metadata = rows[1]["result"]
+            assert metadata["encryption_method"] == method and metadata["bytes_per_sector"] == sector_size
+            assert metadata["protector_types"] == [0, 0x0200]
+            if "vmkHex" in credential:
+                assert rows[2]["result"]["status"]["locked"] is False
+                assert rows[2]["result"]["recovery_key"] == ""
+            else:
+                assert rows[2]["result"]["locked"] is False
+            plain = bytearray((index * 7 + 19) % 256 for index in range(sector_size))
+            plain[3:11] = b"NTFS    "
+            content = decrypted.read_bytes()
+            assert len(content) == len(image) and content[:sector_size] == plain
+            assert content[0x12000:0x12000 + sector_size] == plain
+            assert content[0x10000:0x10000 + sector_size] == bytes(sector_size)
+            assert content[0x20000:0x30000] == bytes(0x10000)
+
         if capabilities["qrcode"] or capabilities["ocr"]:
             blank = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 256, 64, 8, 2, 0, 0, 0))
             blank += chunk(b"IDAT", zlib.compress((b"\0" + b"\xff" * (256 * 3)) * 64)) + chunk(b"IEND", b"")

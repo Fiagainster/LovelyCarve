@@ -62,7 +62,7 @@ just --dry-run pack           # 展开依赖与命令，不执行构建
 | Windows 桌面 | `dev`、`build`、`build-release`、`pack`、`repack`；QR/OCR 使用对应 `*-full` |
 | CLI | `run-cli`、`build-cli`、`build-cli-full`、`test-cli`、`smoke-cli <exe>`；Windows `pack-cli`、`pack-cli-full`、`repack-cli` |
 | 插件 | `build-plugins [--release]`、`test-plugins`、`clippy-plugins`；Windows `pack-plugins` |
-| 读取器 | `test-vendor <目录>`、`test-ewf`、`test-vmdk`、`test-vhd`、`test-vhdx`、`test-qcow2`、`test-vdi`、`test-bitlocker`、`test-luks` / `clippy-luks`、`test-veracrypt`、`test-vsc`、`test-refs`、`test-ad1`、`test-sqlite-core`、`test-ios-backup` |
+| 读取器 | `test-vendor <目录>`、`test-ewf`、`test-vmdk`、`test-vhd`、`test-vhdx`、`test-qcow2`、`test-vdi`、`test-bitlocker` / `clippy-bitlocker`、`test-luks` / `clippy-luks`、`test-veracrypt`、`test-vsc`、`test-refs`、`test-ad1`、`test-sqlite-core`、`test-ios-backup` |
 | 探针与性能 | `run-example`、`run-example-fast`、`bench-filedb-store`、`probe-refs` |
 | 依赖更新 | `update-fe`、`update-rust`、`update-plugins`、`update-tauri`、`update-file-viewer <版本>` |
 | 资源维护 | `icons`、`qr-env`、`build-opencv-contrib`、`qr-test <图片>` |

@@ -246,9 +246,16 @@ just test-vmdk
 解锁进度仍使用原事件：密钥派生前为 0，认证完成后为卷大小；它不表示已复制的数据。
 取消在派生前后检查，派生进行中可能稍后才响应。错误密码/密钥认证失败和截断密文均报错。
 
-支持 512 字节扇区上的 AES-128-CBC + Elephant Diffuser、AES-128/256-CBC、XTS-AES-128/256。
-上游尚未验证 AES-256-CBC + Elephant Diffuser（0x8001），当前也不支持非 512 字节扇区；
-两者会明确拒绝。TPM、clear-key 和 BEK 解锁未接入现有命令参数。
+支持六种 AES-CBC / Elephant Diffuser / XTS 方法，包括 0x8001，以及按 BPB 扇区大小解密。
+新增明文密钥、BEK、直接 VMK/FVEK，修复 Vista 和 used-space-only EOW 读取。
+完整 libbde 对照、真实样本验证范围和限制见 [BITLOCKER](BITLOCKER.md)。
+
+`bitlocker_metadata` 无需凭据，返回算法、卷 GUID、原始 FILETIME（十进制字符串）、卷描述和
+保护器 ID/类型，不返回密钥 payload。`bitlocker_unlock` 只选一种参数：`password`、
+`recoveryPassword`、`startupKeyPath` 或 `fvekHex`（Diffuser 时加 `tweakHex`）；全不传则尝试卷内
+明文密钥。原始 FVEK 没有认证标签，须核验解密结果。`bitlocker_unlock_with_vmk` 直接认证 FVEK，
+卷没有恢复密码保护器时也可解锁；结果 `recovery_key` 在无可提取密码时为空字符串。
+TPM/SID 不支持。导出不覆盖已有文件，遇到已审计的合成源字节会失败，可查询 `image_bad_regions`。
 
 ```powershell
 just run-cli open D:\evidence\encrypted.E01

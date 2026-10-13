@@ -384,6 +384,12 @@ test-vdi:
 test-bitlocker *args:
     cargo test {{ args }}
 
+# Lint the BitLocker reader, including its independent corpus tests.
+[group("readers")]
+[working-directory("src-tauri/vendor/bitlocker")]
+clippy-bitlocker *args:
+    cargo clippy --all-targets {{ args }}
+
 # Test the Volume Shadow Copy reader; set VSC_ORACLE_IMAGE to dfVFS vss.raw for the pyvshadow oracle.
 [group("readers")]
 [working-directory("src-tauri/vendor/vsc")]

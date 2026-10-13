@@ -134,6 +134,7 @@ pub(crate) fn application_builder() -> tauri::Builder<tauri::Wry> {
             commands::system::mount::fs_available_mount_points,
             commands::system::mount::fs_create_mount_dir,
             commands::evidence::bitlocker::bitlocker_status,
+            commands::evidence::bitlocker::bitlocker_metadata,
             commands::evidence::bitlocker::bitlocker_unlock,
             commands::evidence::encrypted_volume::encrypted_volume_unlock,
             commands::evidence::ios_backup::ios_backup_unlock,

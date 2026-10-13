@@ -151,6 +151,7 @@ pub fn aes_ccm_wrap(key: &[u8; 32], nonce: &[u8; 12], plaintext: &[u8]) -> Vec<u
 // for no benefit, so the size skew is deliberate.
 #[allow(clippy::large_enum_variant)]
 enum SectorTransform {
+    None,
     /// AES-128-CBC (methods 0x8000/0x8002). `tweak` `Some` ⇒ the Elephant
     /// Diffuser is applied (0x8000); `None` ⇒ the CBC plaintext is final (0x8002).
     Cbc128 {
@@ -159,11 +160,19 @@ enum SectorTransform {
         tweak: Option<Aes128>,
     },
     /// AES-256-CBC, no diffuser (method 0x8003).
-    Cbc256 { fvek: [u8; 32], fvek_ecb: Aes256 },
+    Cbc256 {
+        fvek: [u8; 32],
+        fvek_ecb: Aes256,
+        tweak: Option<Aes256>,
+    },
     /// XTS-AES-128, tweak = sector number (method 0x8004).
-    Xts128 { xts: XtsCipher<Aes128> },
+    Xts128 {
+        xts: XtsCipher<Aes128>,
+    },
     /// XTS-AES-256, tweak = sector number (method 0x8005).
-    Xts256 { xts: XtsCipher<Aes256> },
+    Xts256 {
+        xts: XtsCipher<Aes256>,
+    },
 }
 
 /// The volume sector cipher: a validated [`SectorTransform`] plus the read-path
@@ -173,6 +182,11 @@ pub struct SectorCipher {
 }
 
 impl SectorCipher {
+    pub fn unencrypted() -> Self {
+        Self {
+            transform: SectorTransform::None,
+        }
+    }
     /// Build a method-0x8000 cipher (AES-128-CBC + Elephant Diffuser) from the
     /// 16-byte FVEK and TWEAK keys.
     #[must_use]
@@ -207,6 +221,19 @@ impl SectorCipher {
             transform: SectorTransform::Cbc256 {
                 fvek,
                 fvek_ecb: Aes256::new(GenericArray::from_slice(&fvek)),
+                tweak: None,
+            },
+        }
+    }
+
+    /// Build AES-256-CBC with Elephant Diffuser (0x8001).
+    #[must_use]
+    pub fn new_cbc256_diffuser(fvek: [u8; 32], tweak: [u8; 32]) -> Self {
+        Self {
+            transform: SectorTransform::Cbc256 {
+                fvek,
+                fvek_ecb: Aes256::new(GenericArray::from_slice(&fvek)),
+                tweak: Some(Aes256::new(GenericArray::from_slice(&tweak))),
             },
         }
     }
@@ -257,7 +284,10 @@ impl SectorCipher {
 
     /// The 32-byte diffuser per-sector key: `ECB(TWEAK, LE128(off))` ‖
     /// `ECB(TWEAK, LE128(off) with byte[15]=0x80)`.
-    fn sector_key(tweak: &Aes128, byte_offset: u64) -> [u8; 32] {
+    fn sector_key<C: BlockEncrypt + BlockSizeUser<BlockSize = U16>>(
+        tweak: &C,
+        byte_offset: u64,
+    ) -> [u8; 32] {
         let mut iv = Self::le128(byte_offset);
         let lower = Self::ecb(tweak, &iv);
         iv[15] = 0x80;
@@ -289,7 +319,7 @@ impl SectorCipher {
     }
 
     /// XTS-decrypt one sector in place. BitLocker keys the XTS data unit off the
-    /// sector number (`byte_offset / 512`). Generic over the AES key size so
+    /// sector number (`byte_offset / buf.len() as u64`). Generic over the AES key size so
     /// XTS-128 and XTS-256 share one body. The 16-byte guard keeps the panic-free
     /// contract if a caller ever passes a sub-block slice (the read path never
     /// does); XTS needs at least one full block.
@@ -298,7 +328,10 @@ impl SectorCipher {
         C: BlockEncrypt + BlockDecrypt + BlockCipher,
     {
         if buf.len() >= 16 {
-            xts.decrypt_sector(buf, get_tweak_default(u128::from(byte_offset / 512)));
+            xts.decrypt_sector(
+                buf,
+                get_tweak_default(u128::from(byte_offset / buf.len() as u64)),
+            );
         }
     }
 
@@ -309,7 +342,10 @@ impl SectorCipher {
     where
         C: BlockEncrypt + BlockDecrypt + BlockCipher,
     {
-        xts.encrypt_sector(buf, get_tweak_default(u128::from(byte_offset / 512)));
+        xts.encrypt_sector(
+            buf,
+            get_tweak_default(u128::from(byte_offset / buf.len() as u64)),
+        );
     }
 
     /// Decrypt one sector of `cipher` at volume byte offset `byte_offset`.
@@ -319,6 +355,7 @@ impl SectorCipher {
         let mut buf = cipher.to_vec();
         let iv = Self::le128(byte_offset);
         match &self.transform {
+            SectorTransform::None => {}
             SectorTransform::Cbc128 {
                 fvek,
                 fvek_ecb,
@@ -332,9 +369,19 @@ impl SectorCipher {
                     elephant_diffuser::decrypt(&mut buf[..plain_len], &sector_key);
                 }
             }
-            SectorTransform::Cbc256 { fvek, fvek_ecb } => {
+            SectorTransform::Cbc256 {
+                fvek,
+                fvek_ecb,
+                tweak,
+            } => {
                 let cbc_iv = Self::ecb(fvek_ecb, &iv);
-                let _ = Self::cbc_decrypt_inplace::<Aes256>(fvek, &cbc_iv, &mut buf);
+                let plain_len = Self::cbc_decrypt_inplace::<Aes256>(fvek, &cbc_iv, &mut buf);
+                if let Some(tweak) = tweak {
+                    elephant_diffuser::decrypt(
+                        &mut buf[..plain_len],
+                        &Self::sector_key(tweak, byte_offset),
+                    );
+                }
             }
             SectorTransform::Xts128 { xts } => Self::xts_decrypt_sector(xts, &mut buf, byte_offset),
             SectorTransform::Xts256 { xts } => Self::xts_decrypt_sector(xts, &mut buf, byte_offset),
@@ -352,6 +399,7 @@ impl SectorCipher {
         let iv = Self::le128(byte_offset);
         let len = buf.len() - (buf.len() % 16);
         match &self.transform {
+            SectorTransform::None => {}
             SectorTransform::Cbc128 {
                 fvek,
                 fvek_ecb,
@@ -369,7 +417,17 @@ impl SectorCipher {
                 .encrypt_padded_mut::<NoPadding>(&mut buf[..len], len)
                 .unwrap();
             }
-            SectorTransform::Cbc256 { fvek, fvek_ecb } => {
+            SectorTransform::Cbc256 {
+                fvek,
+                fvek_ecb,
+                tweak,
+            } => {
+                if let Some(tweak) = tweak {
+                    elephant_diffuser::encrypt(
+                        &mut buf[..len],
+                        &Self::sector_key(tweak, byte_offset),
+                    );
+                }
                 let cbc_iv = Self::ecb(fvek_ecb, &iv);
                 cbc::Encryptor::<Aes256>::new(
                     GenericArray::from_slice(fvek),

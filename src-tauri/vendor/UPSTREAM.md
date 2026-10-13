@@ -13,7 +13,7 @@
 | `ad1` | `0.1.2` | [afc3963659a1](https://github.com/SecurityRonin/ad1-forensic/commit/afc3963659a13acf10082e7d76194d3ab789583e) | 来源记录与上游最新提交一致，保留现有本地补丁。 |
 | `apfs` | `0.4.1` | [3a73ee28fdab](https://github.com/Dil4rd/dpp/commit/3a73ee28fdab192fcdfbe8edcad7b520867f2417) | 升级 0.2.4 → 0.4.1；保留多卷、MACB 时间、可取消的批量目录遍历与压缩流接口。 |
 | `backhand` | `0.25.5` | [bf678c7f9237](https://github.com/wcampbell0x2a/backhand/commit/bf678c7f923799a57d972cf695daf69d8c6ddafb) | 升级 0.25.1 → 0.25.5；保留精简特性、std I/O 别名及可读错误信息，修复 Windows 根路径判断。 |
-| `bitlocker` | `0.3.5` | [e6674dcda241](https://github.com/SecurityRonin/bitlocker-forensic/commit/e6674dcda2413b1a02a915f2255af8fda787a154) | 来源记录与上游最新提交一致，保留现有本地补丁。 |
+| `bitlocker` | `0.3.5` | [e6674dcda241](https://github.com/SecurityRonin/bitlocker-forensic/commit/e6674dcda2413b1a02a915f2255af8fda787a154) | 2026-10-13 对照 libbde 补六种 AES、变长扇区、Vista/EOW、BEK/clear/VMK/FVEK 和 metadata 查询；验证边界见 [BITLOCKER](../../docs/BITLOCKER.md)。 |
 | `btrfs-diskformat` | `0.5.1` | [bb84745422ed](https://github.com/GodTamIt/btrfs-diskformat/commit/bb84745422ed2c2aa99b3b151f6247a3b51638f4) | 已最新；保留 zerocopy Immutable 兼容补丁。 |
 | `cdfs` | `0.2.3` | [8cc434a31983](https://git.sr.ht/~az1/iso9660-rs/commit/8cc434a319832ae43d1c7685477809d75f313990) | 发布版本及核心解析器已最新；保留现有独立 crate 布局。 |
 | `cmpfs` | `0.1.0` | [3a73ee28fdab](https://github.com/Dil4rd/dpp/commit/3a73ee28fdab192fcdfbe8edcad7b520867f2417) | 新增上游共享 Apple decmpfs 解码器，供 APFS/HFS+ 使用。 |

@@ -14,7 +14,7 @@
 //! | Method | Key | Mode | Diffuser | Validated (oracle) |
 //! |---|---|---|---|---|
 //! | `0x8000` | 128 | CBC | yes | ✅ dfvfs `bdetogo.raw` |
-//! | `0x8001` | 256 | CBC | yes | — |
+//! | `0x8001` | 256 | CBC | yes | independent Python vectors |
 //! | `0x8002` | 128 | CBC | no  | ✅ picoCTF `bitlocker-1.dd` |
 //! | `0x8003` | 256 | CBC | no  | — |
 //! | `0x8004` | 128 | XTS | no  | — |
@@ -47,6 +47,8 @@ pub struct EncryptionMethod {
 pub enum SectorCipherKind {
     /// AES-128-CBC + Elephant Diffuser (method 0x8000).
     Cbc128Diffuser,
+    /// AES-256-CBC + Elephant Diffuser (0x8001).
+    Cbc256Diffuser,
     /// AES-128-CBC, no diffuser (method 0x8002).
     Cbc128,
     /// AES-256-CBC, no diffuser (method 0x8003).
@@ -86,11 +88,11 @@ impl EncryptionMethod {
     }
 
     /// The validated sector-cipher kind for this method, or `None` if the method
-    /// is recognized but has no oracle yet (so it must be refused, never
-    /// decrypted by construction).
+    /// is not supported by the tested transform implementation.
     #[must_use]
     pub fn validated_kind(self) -> Option<SectorCipherKind> {
         match (self.mode, self.key_bits, self.diffuser) {
+            (CipherMode::Cbc, 256, true) => Some(SectorCipherKind::Cbc256Diffuser),
             (CipherMode::Cbc, 128, true) => Some(SectorCipherKind::Cbc128Diffuser),
             (CipherMode::Cbc, 128, false) => Some(SectorCipherKind::Cbc128),
             (CipherMode::Cbc, 256, false) => Some(SectorCipherKind::Cbc256),
@@ -153,11 +155,11 @@ mod tests {
             EncryptionMethod::decode(0x8005).unwrap().validated_kind(),
             Some(SectorCipherKind::Xts256)
         );
-        // No oracle-backed decrypt yet: only CBC-256 + Elephant Diffuser (0x8001).
+        // CBC-256 + Elephant Diffuser has independent Python vectors.
         assert_eq!(
             EncryptionMethod::decode(0x8001).unwrap().validated_kind(),
-            None,
-            "0x8001 has no oracle yet"
+            Some(SectorCipherKind::Cbc256Diffuser),
+            "0x8001 has independent cipher vectors"
         );
     }
 }

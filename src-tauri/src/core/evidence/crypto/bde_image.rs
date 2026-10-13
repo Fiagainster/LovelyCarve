@@ -2,6 +2,28 @@
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::Weak;
 
+/// Public metadata only; key entry payloads never cross IPC.
+#[derive(Debug, serde::Serialize)]
+pub struct BdeMetadataInfo {
+    pub version: u16,
+    pub bytes_per_sector: u16,
+    pub volume_guid: String,
+    /// Decimal FILETIME preserves all 64 bits across the JavaScript boundary.
+    pub creation_time: String,
+    pub description: Option<String>,
+    pub encryption_method: u16,
+    pub protector_types: Vec<u16>,
+    pub key_protectors: Vec<BdeProtectorInfo>,
+    pub encrypted_volume_size: u64,
+    pub used_space_only: bool,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct BdeProtectorInfo {
+    pub identifier: String,
+    pub protection_type: u16,
+}
+
 use anyhow::{ensure, Context};
 
 /// Supplies encrypted bytes from an image without owning it. Implementers must
@@ -12,6 +34,10 @@ pub trait VolumeByteReader: Send + Sync {
 
 pub enum BdeUnlockKey<'a> {
     RecoveryPassword(&'a str),
+    Clear,
+    StartupKey(&'a [u8]),
+    Vmk(&'a [u8]),
+    Keys { fvek: &'a [u8], tweak: &'a [u8] },
     Password(&'a str),
 }
 
@@ -44,6 +70,7 @@ impl BdeEncryptionMethod {
 
 pub struct BdeVolume {
     volume: ::bitlocker::DecryptedVolume<VolumeReader>,
+    source: Weak<dyn VolumeByteReader>,
 }
 
 impl std::fmt::Debug for BdeVolume {
@@ -57,6 +84,47 @@ impl std::fmt::Debug for BdeVolume {
 }
 
 impl BdeVolume {
+    pub fn read_metadata_io(
+        reader: Weak<dyn VolumeByteReader>,
+        offset: u64,
+        length: u64,
+    ) -> anyhow::Result<BdeMetadataInfo> {
+        offset
+            .checked_add(length)
+            .context("BitLocker slice offset overflow")?;
+        let mut reader = VolumeReader {
+            reader,
+            offset,
+            length,
+            position: 0,
+        };
+        let mut boot = [0; 512];
+        reader.read_exact(&mut boot)?;
+        let header = ::bitlocker::VolumeHeader::parse(&boot)?;
+        let metadata = ::bitlocker::BitLockerVolume::read_metadata(&mut reader)?;
+        Ok(BdeMetadataInfo {
+            version: metadata.version,
+            bytes_per_sector: header.bytes_per_sector,
+            volume_guid: ::bitlocker::format_guid(&metadata.volume_guid),
+            creation_time: metadata.creation_time.to_string(),
+            description: metadata.description()?,
+            encryption_method: metadata.encryption_method,
+            protector_types: metadata.protector_types(),
+            key_protectors: metadata
+                .vmk_entries()
+                .filter_map(|entry| {
+                    let identifier: [u8; 16] = entry.data.get(..16)?.try_into().ok()?;
+                    Some(BdeProtectorInfo {
+                        identifier: ::bitlocker::format_guid(&identifier),
+                        protection_type: entry.protection_type()?,
+                    })
+                })
+                .collect(),
+            encrypted_volume_size: metadata.encrypted_volume_size,
+            used_space_only: header.variant == ::bitlocker::BdeVariant::UsedDiskSpaceOnly,
+        })
+    }
+
     pub fn open_with_key_io(
         reader: Weak<dyn VolumeByteReader>,
         offset: u64,
@@ -70,6 +138,7 @@ impl BdeVolume {
         offset
             .checked_add(length)
             .context("BitLocker slice offset overflow")?;
+        let source = reader.clone();
         let mut reader = VolumeReader {
             reader,
             offset,
@@ -79,11 +148,9 @@ impl BdeVolume {
         let mut header = [0; 512];
         reader.read_exact(&mut header)?;
         let header = ::bitlocker::VolumeHeader::parse(&header)?;
-        // The upstream sector cipher currently uses fixed 512-byte data units.
         ensure!(
-            header.bytes_per_sector == 512,
-            "unsupported BitLocker sector size {}; this reader requires 512 bytes",
-            header.bytes_per_sector
+            length.is_multiple_of(u64::from(header.bytes_per_sector)),
+            "BitLocker length is not sector aligned"
         );
         reader.seek(SeekFrom::Start(0))?;
         let volume = match key {
@@ -93,9 +160,17 @@ impl BdeVolume {
             BdeUnlockKey::RecoveryPassword(password) => {
                 ::bitlocker::BitLockerVolume::unlock_with_recovery_password(reader, password)
             }
+            BdeUnlockKey::Clear => ::bitlocker::BitLockerVolume::unlock_clear_key(reader),
+            BdeUnlockKey::StartupKey(key) => {
+                ::bitlocker::BitLockerVolume::unlock_with_startup_key(reader, key)
+            }
+            BdeUnlockKey::Vmk(key) => ::bitlocker::BitLockerVolume::unlock_with_vmk(reader, key),
+            BdeUnlockKey::Keys { fvek, tweak } => {
+                ::bitlocker::BitLockerVolume::unlock_with_keys(reader, fvek, tweak)
+            }
         }
         .context("BitLocker key derivation or authenticated key unwrap failed")?;
-        Ok(Self { volume })
+        Ok(Self { volume, source })
     }
 
     pub fn size(&self) -> u64 {
@@ -105,6 +180,11 @@ impl BdeVolume {
         BdeEncryptionMethod::from_raw(self.volume.metadata().encryption_method)
     }
     pub fn read_at(&mut self, offset: u64, buffer: &mut [u8]) -> anyhow::Result<usize> {
+        // Hold the source only for this call, including format-defined zero regions.
+        let _source = self
+            .source
+            .upgrade()
+            .context("BitLocker source image is closed")?;
         let count = self.size().saturating_sub(offset).min(buffer.len() as u64) as usize;
         if count == 0 {
             return Ok(0);

@@ -104,6 +104,7 @@ fn bitlocker_password_slice_matches_independent_pybde_oracle_and_releases_source
     assert_eq!(unaligned.as_slice(), &whole[499..536]);
     assert_eq!(volume.read_at(u64::MAX, &mut whole).unwrap(), 0);
     drop(source);
+    assert!(volume.read_at(34603008, &mut whole).is_err());
     assert!(format!("{:#}", volume.read_at(0, &mut whole).unwrap_err())
         .contains("source image is closed"));
 }
@@ -146,10 +147,10 @@ fn bitlocker_bad_credentials_and_truncated_ciphertext_fail() {
 }
 
 #[test]
-fn bitlocker_unsupported_sector_size_and_cipher_are_explicit_errors() {
+fn bitlocker_invalid_sector_size_and_cipher_are_explicit_errors() {
     let mut bytes = evidence();
     let length = bytes.len() as u64;
-    bytes[11..13].copy_from_slice(&4096u16.to_le_bytes());
+    bytes[11..13].copy_from_slice(&768u16.to_le_bytes());
     let source: Arc<dyn VolumeByteReader> = Arc::new(MemorySource {
         bytes: bytes.clone(),
         end: None,
@@ -161,11 +162,9 @@ fn bitlocker_unsupported_sector_size_and_cipher_are_explicit_errors() {
         BdeUnlockKey::Password("bde-TEST"),
     )
     .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("unsupported BitLocker sector size 4096"));
+    assert!(error.to_string().contains("unsupported bytes per sector"));
     bytes[11..13].copy_from_slice(&512u16.to_le_bytes());
-    bytes[34603008 + 100..34603008 + 102].copy_from_slice(&0x8001u16.to_le_bytes());
+    bytes[34603008 + 100..34603008 + 102].copy_from_slice(&0x8006u16.to_le_bytes());
     let source: Arc<dyn VolumeByteReader> = Arc::new(MemorySource { bytes, end: None });
     let error = BdeVolume::open_with_key_io(
         Arc::downgrade(&source),
@@ -174,7 +173,7 @@ fn bitlocker_unsupported_sector_size_and_cipher_are_explicit_errors() {
         BdeUnlockKey::Password("bde-TEST"),
     )
     .unwrap_err();
-    assert!(format!("{error:#}").contains("0x8001"));
+    assert!(format!("{error:#}").contains("0x8006"));
 }
 
 #[test]

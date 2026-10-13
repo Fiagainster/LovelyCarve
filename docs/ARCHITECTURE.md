@@ -321,7 +321,7 @@ WAV、SQLite 等）即使有误，也最多让扫描漏看当前窗口剩余部�
 | VMDK | `core::evidence::readers::vmdk_image` + `vendor/vmdk` | vmdk-forensic 的纯 Rust flat / sparse / streamOptimized 读取；分卷与父盘源变化检测 |
 | QCOW2 | vendored `qcow2` | v2/v3 稀疏虚拟盘，只读随机访问；压缩簇、加密和 backing file 明确拒绝 |
 | VDI | vendored `vdi` | VirtualBox VDI 1.1 动态盘与固定盘，只读稀疏随机访问；差分盘明确拒绝 |
-| BitLocker | `core::evidence::crypto::bde_image` + `vendor/bitlocker` | 纯 Rust 密码/恢复密码解锁；直接读取分区，无 DLL 或临时整卷转储；格式边界见 CLI 手册 |
+| BitLocker | `core::evidence::crypto::bde_image` + `vendor/bitlocker` | 纯 Rust 密码/恢复密码/明文密钥/BEK/VMK/FVEK；六种 AES、Vista、EOW；直接读取分区，无 DLL 或临时整卷转储；验证边界见 [BITLOCKER](BITLOCKER.md) |
 | VHD / VHDX | `core::evidence::readers::vhd_image` → `vendor/vhd` / `vendor/vhdx` | 纯 Rust 固定/动态盘随机读取；VHDX 日志仅在内存重放，差分盘无父盘参数时明确拒绝 |
 | DMG | vendored `udif` + `hfsplus` | UDIF 容器与 HFS+ |
 | Xiaomi HDR1 firmware | `core::evidence::partitions::xiaomi_firmware` | 按字节偏移解析固件段，将其中可识别的文件系统作为卷浏览；原始容器字节保持不变 |

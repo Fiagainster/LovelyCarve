@@ -2,8 +2,32 @@ import { invokeCmd } from './client';
 
 
 
-export function bitlockerStatus(args: { imageId: string; partitionId: number }): Promise<{ locked: boolean }> {
-  return invokeCmd<{ locked: boolean }>('bitlocker_status', args);
+export interface BitlockerStatus {
+  locked: boolean;
+  size_bytes: number | null;
+  encryption_method: string | null;
+  cached_dump: string | null;
+}
+
+export interface BitlockerMetadata {
+  version: number;
+  bytes_per_sector: number;
+  volume_guid: string;
+  creation_time: string;
+  description: string | null;
+  encryption_method: number;
+  protector_types: number[];
+  key_protectors: { identifier: string; protection_type: number }[];
+  encrypted_volume_size: number;
+  used_space_only: boolean;
+}
+
+export function bitlockerMetadata(args: { imageId: string; partitionId: number }): Promise<BitlockerMetadata> {
+  return invokeCmd<BitlockerMetadata>('bitlocker_metadata', args);
+}
+
+export function bitlockerStatus(args: { imageId: string; partitionId: number }): Promise<BitlockerStatus> {
+  return invokeCmd<BitlockerStatus>('bitlocker_status', args);
 }
 
 export function bitlockerUnlock(args: {
@@ -12,8 +36,11 @@ export function bitlockerUnlock(args: {
   taskId: string;
   recoveryPassword?: string | null;
   password?: string | null;
-}): Promise<void> {
-  return invokeCmd<void>('bitlocker_unlock', args);
+  startupKeyPath?: string | null;
+  fvekHex?: string | null;
+  tweakHex?: string | null;
+}): Promise<BitlockerStatus> {
+  return invokeCmd<BitlockerStatus>('bitlocker_unlock', args);
 }
 
 export function bitlockerUnlockWithVmk(args: {
@@ -21,8 +48,8 @@ export function bitlockerUnlockWithVmk(args: {
   partitionId: number;
   taskId: string;
   vmkHex: string;
-}): Promise<void> {
-  return invokeCmd<void>('bitlocker_unlock_with_vmk', args);
+}): Promise<{ status: BitlockerStatus; recovery_key: string }> {
+  return invokeCmd<{ status: BitlockerStatus; recovery_key: string }>('bitlocker_unlock_with_vmk', args);
 }
 
 export function bitlockerScanMemory<T>(args: {

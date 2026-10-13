@@ -6,6 +6,25 @@ use std::sync::Barrier;
 use std::time::Duration;
 
 #[test]
+fn bitlocker_source_rejects_audited_synthetic_ciphertext() {
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(&[0; 4096]).unwrap();
+    file.flush().unwrap();
+    let image = DiskImage::open(file.path()).unwrap();
+    image.record_faults(vec![BadRegion {
+        offset: 512,
+        len: 512,
+    }]);
+    let mut output = [0; 512];
+    assert_eq!(
+        VolumeByteReader::read_at(&image, 0, &mut output).unwrap(),
+        512
+    );
+    let error = VolumeByteReader::read_at(&image, 512, &mut output).unwrap_err();
+    assert!(error.to_string().contains("synthesized source bytes"));
+}
+
+#[test]
 fn opens_raw_gpt_with_crc_validated_geometry_and_backup_recovery() {
     for sector_size in [512, 1024, 2048, 4096] {
         for populated in [0, 1] {

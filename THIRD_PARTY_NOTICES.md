@@ -362,6 +362,12 @@ provenance are documented alongside the crate. The minimized `bdetogo.raw`
 projection is derived from the Apache-2.0 dfVFS test corpus by Joachim Metz
 and the dfVFS project: <https://github.com/log2timeline/dfvfs>.
 
+The local BitLocker format comparison uses documentation and observable read
+semantics from [libyal/libbde](https://github.com/libyal/libbde), by Joachim Metz
+and contributors (LGPL-3.0-or-later library; GPL tools). No libbde C implementation
+is linked or vendored. The new synthetic cipher projections are LovelyCarve
+Apache-2.0 contributions; generation and digests accompany the fixtures.
+
 ## VHD / VHDX readers
 
 `src-tauri/vendor/vhd` contains `vhd-core` 0.1.4 from

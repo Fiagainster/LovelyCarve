@@ -1,4 +1,4 @@
-export type BitlockerUnlockMode = 'password' | 'recovery' | 'vmk';
+export type BitlockerUnlockMode = 'password' | 'recovery' | 'vmk' | 'key';
 
 export interface BitlockerUnlockJob {
   imageId: string;
@@ -33,7 +33,13 @@ export interface BitlockerVmkScanResult {
   candidates: BitlockerVmkCandidate[];
 }
 
-export type BitlockerInputMode = 'password' | 'recovery' | 'memory';
+export type BitlockerInputMode = 'password' | 'recovery' | 'memory' | 'key';
+
+export type BitlockerKeyCredential =
+  | { kind: 'clear' }
+  | { kind: 'startup'; startupKeyPath: string }
+  | { kind: 'vmk'; vmkHex: string }
+  | { kind: 'fvek'; fvekHex: string; tweakHex: string };
 
 function formatBitlockerBytes(n: number): string {
   if (n < 1024) return `${n} B`;

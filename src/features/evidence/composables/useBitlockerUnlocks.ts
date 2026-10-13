@@ -9,7 +9,7 @@ import { onEvent, type UnlistenFn } from '../../../lib/ipc/events';
 // the backend tokio task continues regardless; this just keeps the UI's
 // observable progress alive so any component can pick it back up.
 
-import type { BitlockerUnlockMode, BitlockerUnlockJob, BitlockerScanJob, BitlockerVmkScanResult } from '../model/bitlocker';
+import type { BitlockerKeyCredential, BitlockerUnlockMode, BitlockerUnlockJob, BitlockerScanJob, BitlockerVmkScanResult } from '../model/bitlocker';
 
 interface UnlockProgressEvent {
   task_id: string;
@@ -191,6 +191,13 @@ export function startBitlockerVmkUnlock(
     'bitlocker_unlock_with_vmk',
     `Partition ${partitionId} 已通过 VMK 解锁`,
   );
+}
+
+export function startBitlockerKeyUnlock(imageId: string, partitionId: number, credential: BitlockerKeyCredential): Promise<boolean> {
+  if (credential.kind === 'vmk') return startBitlockerVmkUnlock(imageId, partitionId, credential.vmkHex);
+  const payload = credential.kind === 'startup' ? { startupKeyPath: credential.startupKeyPath }
+    : credential.kind === 'fvek' ? { fvekHex: credential.fvekHex, tweakHex: credential.tweakHex || null } : {};
+  return runUnlock(imageId, partitionId, 'key', payload, 'bitlocker_unlock', `分区 ${partitionId} 已解锁`);
 }
 
 export async function cancelBitlockerUnlock(imageId: string, partitionId: number): Promise<void> {

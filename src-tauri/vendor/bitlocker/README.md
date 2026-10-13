@@ -1,5 +1,8 @@
 # bitlocker-forensic
 
+This is the upstream README snapshot. LovelyCarve local capabilities and
+validation boundaries supersede its scope claims: see [LOVELYCARVE.md](LOVELYCARVE.md).
+
 [![Crates.io: bitlocker-core](https://img.shields.io/crates/v/bitlocker-core.svg?label=bitlocker-core)](https://crates.io/crates/bitlocker-core)
 [![Crates.io: bitlocker-forensic](https://img.shields.io/crates/v/bitlocker-forensic.svg?label=bitlocker-forensic)](https://crates.io/crates/bitlocker-forensic)
 [![Docs.rs](https://img.shields.io/docsrs/bitlocker-core?label=docs.rs)](https://docs.rs/bitlocker-core)

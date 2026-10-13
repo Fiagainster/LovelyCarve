@@ -18,6 +18,8 @@ pub enum BdeVariant {
     WindowsVista,
     /// Windows 7 and later (`-FVE-FS-`, boot `EB 58 90`).
     Windows7OrLater,
+    /// Windows used-space-only encryption with Encrypt-on-Write maps.
+    UsedDiskSpaceOnly,
     /// BitLocker To Go on a FAT volume (`MSWIN4.1`).
     BitLockerToGo,
 }
@@ -36,6 +38,8 @@ pub struct VolumeHeader {
     /// For the Vista layout only the first is derived here (the block header
     /// carries all three authoritatively).
     pub fve_metadata_offsets: [u64; 3],
+    /// Encrypt-on-Write descriptor offsets, zero for other layouts.
+    pub eow_offsets: [u64; 2],
 }
 
 const SIG_FVE: &[u8; 8] = b"-FVE-FS-";
@@ -49,6 +53,9 @@ impl VolumeHeader {
     /// Returns [`BdeError::NotBitLocker`] (carrying the offending signature bytes)
     /// when neither the `-FVE-FS-` nor the `MSWIN4.1` signature is present.
     pub fn parse(sector: &[u8]) -> Result<VolumeHeader> {
+        if sector.len() < 512 {
+            return Err(BdeError::InvalidData("truncated volume header"));
+        }
         let mut signature = [0u8; 8];
         if let Some(s) = sector.get(3..11) {
             signature.copy_from_slice(s);
@@ -56,6 +63,9 @@ impl VolumeHeader {
         let mut bytes_per_sector = le_u16(sector, 11);
         if bytes_per_sector == 0 {
             bytes_per_sector = 512;
+        }
+        if !matches!(bytes_per_sector, 512 | 1024 | 2048 | 4096) {
+            return Err(BdeError::InvalidData("unsupported bytes per sector"));
         }
 
         if &signature == SIG_TO_GO {
@@ -68,14 +78,29 @@ impl VolumeHeader {
                     le_u64(sector, 448),
                     le_u64(sector, 456),
                 ],
+                eow_offsets: [0; 2],
             });
         }
 
         if &signature == SIG_FVE {
             let boot = sector.get(0..3).unwrap_or(&[]);
-            if boot == BOOT_WIN7 {
+            let used_space = read_guid(sector, 160)
+                == [
+                    0x3b, 0x4d, 0xa8, 0x92, 0x80, 0xdd, 0x0e, 0x4d, 0x9e, 0x4e, 0xb1, 0xe3, 0x28,
+                    0x4e, 0xae, 0xd8,
+                ];
+            let standard_guid = read_guid(sector, 160)
+                == [
+                    0x3b, 0xd6, 0x67, 0x49, 0x29, 0x2e, 0xd8, 0x4a, 0x83, 0x99, 0xf6, 0xa3, 0x39,
+                    0xe3, 0xd0, 0x01,
+                ];
+            if boot == BOOT_WIN7 || used_space || standard_guid {
                 return Ok(VolumeHeader {
-                    variant: BdeVariant::Windows7OrLater,
+                    variant: if used_space {
+                        BdeVariant::UsedDiskSpaceOnly
+                    } else {
+                        BdeVariant::Windows7OrLater
+                    },
                     bytes_per_sector,
                     bitlocker_guid: read_guid(sector, 160),
                     fve_metadata_offsets: [
@@ -83,18 +108,29 @@ impl VolumeHeader {
                         le_u64(sector, 184),
                         le_u64(sector, 192),
                     ],
+                    eow_offsets: if used_space {
+                        [le_u64(sector, 200), le_u64(sector, 208)]
+                    } else {
+                        [0; 2]
+                    },
                 });
             }
             // Windows Vista: block 1 is a cluster number at offset 56; the cluster
             // size is bytes-per-sector × sectors-per-cluster (offset 13).
             let sectors_per_cluster = u64::from(sector.get(13).copied().unwrap_or(1).max(1));
             let cluster_size = u64::from(bytes_per_sector) * sectors_per_cluster;
-            let block1 = le_u64(sector, 56).saturating_mul(cluster_size);
+            if boot != [0xeb, 0x52, 0x90] {
+                return Err(BdeError::InvalidData("unrecognized volume header layout"));
+            }
+            let block1 = le_u64(sector, 56)
+                .checked_mul(cluster_size)
+                .ok_or(BdeError::InvalidData("metadata cluster offset overflow"))?;
             return Ok(VolumeHeader {
                 variant: BdeVariant::WindowsVista,
                 bytes_per_sector,
                 bitlocker_guid: [0u8; 16],
                 fve_metadata_offsets: [block1, 0, 0],
+                eow_offsets: [0; 2],
             });
         }
 
@@ -179,7 +215,7 @@ mod tests {
     fn short_sector_does_not_panic() {
         assert!(matches!(
             VolumeHeader::parse(&[0u8; 4]),
-            Err(BdeError::NotBitLocker { .. })
+            Err(BdeError::InvalidData(_))
         ));
     }
 }

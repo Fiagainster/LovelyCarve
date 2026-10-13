@@ -60,6 +60,20 @@ impl DiskImage {
         password: Option<&str>,
         observer: &bitlocker::UnlockObserver<'_>,
     ) -> anyhow::Result<BitlockerStatus> {
+        let key = match (recovery_password, password) {
+            (Some(value), _) if !value.trim().is_empty() => BdeUnlockKey::RecoveryPassword(value),
+            (_, Some(value)) if !value.is_empty() => BdeUnlockKey::Password(value),
+            _ => BdeUnlockKey::Clear,
+        };
+        self.unlock_bitlocker_key_with_observer(partition_id, key, observer)
+    }
+
+    pub fn unlock_bitlocker_key_with_observer(
+        self: &Arc<Self>,
+        partition_id: u8,
+        key: BdeUnlockKey<'_>,
+        observer: &bitlocker::UnlockObserver<'_>,
+    ) -> anyhow::Result<BitlockerStatus> {
         let partition = self
             .partitions
             .iter()
@@ -72,15 +86,16 @@ impl DiskImage {
         if self.bitlocker_unlocked(partition_id).is_some() {
             return self.bitlocker_status(partition_id);
         }
-        let key = match (recovery_password, password) {
-            (Some(value), _) if !value.trim().is_empty() => BdeUnlockKey::RecoveryPassword(value),
-            (_, Some(value)) if !value.is_empty() => BdeUnlockKey::Password(value),
-            _ => anyhow::bail!("recovery password or password is required"),
-        };
         let location = bitlocker::BitLockerLocation {
             partition_id: Some(partition_id),
-            offset: partition.start_lba * self.sector_size as u64,
-            length: partition.length_lba * self.sector_size as u64,
+            offset: partition
+                .start_lba
+                .checked_mul(self.sector_size as u64)
+                .context("BitLocker partition offset overflow")?,
+            length: partition
+                .length_lba
+                .checked_mul(self.sector_size as u64)
+                .context("BitLocker partition size overflow")?,
         };
         let unlocked = bitlocker::unlock_location(self, location, key, observer)?;
         let unlocked = Arc::new(unlocked);
@@ -125,14 +140,33 @@ impl DiskImage {
         if partition.kind != PartitionKind::Bitlocker {
             anyhow::bail!("partition {partition_id} is not BitLocker");
         }
-        let recovery = bde_vmk::recovery_key_from_vmk(self, &partition, vmk)?
-            .ok_or_else(|| anyhow!("the supplied VMK does not unlock this BitLocker volume"))?;
-        let status = self.unlock_bitlocker_partition_with_observer(
+        // Keep the legacy 128-bit recovery-datum path while allowing real 256-bit
+        // VMKs to unwrap the FVEK without any recovery-password protector.
+        if vmk.len() == 16 {
+            let recovery = bde_vmk::recovery_key_from_vmk(self, &partition, vmk)?
+                .ok_or_else(|| anyhow!("the supplied key does not unlock a recovery datum"))?;
+            let status = self.unlock_bitlocker_partition_with_observer(
+                partition_id,
+                Some(&recovery),
+                None,
+                observer,
+            )?;
+            return Ok((status, recovery));
+        }
+        let status = self.unlock_bitlocker_key_with_observer(
             partition_id,
-            Some(&recovery),
-            None,
+            BdeUnlockKey::Vmk(vmk),
             observer,
         )?;
+        let recovery = match bde_vmk::recovery_key_from_vmk(self, &partition, vmk) {
+            Ok(recovery) => recovery.unwrap_or_default(),
+            Err(error) => {
+                tracing::warn!(
+                    "BitLocker unlocked; recovery-password extraction unavailable: {error:#}"
+                );
+                String::new()
+            }
+        };
         Ok((status, recovery))
     }
 }

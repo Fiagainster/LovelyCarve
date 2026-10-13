@@ -5,7 +5,7 @@
 
 use std::{
     fs::File,
-    io::{BufWriter, Write},
+    io::{BufWriter, Read, Write},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -17,6 +17,7 @@ use std::{
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app::workflows::evidence::ImageExportProgress;
+use crate::core::evidence::crypto::bde_image::BdeUnlockKey;
 use crate::core::evidence::crypto::bde_vmk::{
     self, BitlockerScanProgress, BitlockerVmkUnlockResult, VmkCandidate, VmkScanCandidate,
     VmkScanResult,
@@ -35,6 +36,45 @@ use {
 const EXPORT_CHUNK_BYTES: usize = 16 * 1024 * 1024;
 const EXPORT_PROGRESS_THROTTLE: Duration = Duration::from_millis(150);
 
+/// Inspect format, protector kinds and volume identity without credentials.
+#[tauri::command]
+pub async fn bitlocker_metadata(
+    state: State<'_, AppState>,
+    image_id: String,
+    partition_id: u8,
+) -> Result<crate::core::evidence::crypto::bde_image::BdeMetadataInfo, AppError> {
+    let image = loaded_image_app_error(&state, &image_id).await?;
+    reject_if_folder(&image)?;
+    tokio::task::spawn_blocking(move || {
+        let partition = image
+            .partitions
+            .iter()
+            .find(|partition| partition.id == partition_id)
+            .ok_or_else(|| AppError::not_found("partition not found"))?;
+        if partition.kind != PartitionKind::Bitlocker {
+            return Err(AppError::invalid_input("partition is not BitLocker"));
+        }
+        let offset = partition
+            .start_lba
+            .checked_mul(image.sector_size as u64)
+            .ok_or_else(|| AppError::invalid_input("partition offset overflow"))?;
+        let length = partition
+            .length_lba
+            .checked_mul(image.sector_size as u64)
+            .ok_or_else(|| AppError::invalid_input("partition size overflow"))?;
+        let source: Arc<dyn crate::core::evidence::crypto::bde_image::VolumeByteReader> =
+            image.disk_image().clone();
+        crate::core::evidence::crypto::bde_image::BdeVolume::read_metadata_io(
+            Arc::downgrade(&source),
+            offset,
+            length,
+        )
+        .map_err(AppError::from_anyhow)
+    })
+    .await
+    .map_err(|error| AppError::task_panicked("bitlocker_metadata", error))?
+}
+
 #[tauri::command]
 pub async fn bitlocker_status(
     state: State<'_, AppState>,
@@ -49,6 +89,7 @@ pub async fn bitlocker_status(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn bitlocker_unlock(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -56,6 +97,9 @@ pub async fn bitlocker_unlock(
     partition_id: u8,
     recovery_password: Option<String>,
     password: Option<String>,
+    startup_key_path: Option<String>,
+    fvek_hex: Option<String>,
+    tweak_hex: Option<String>,
     task_id: Option<String>,
 ) -> Result<BitlockerStatus, AppError> {
     let image = loaded_image_app_error(&state, &image_id).await?;
@@ -121,12 +165,56 @@ pub async fn bitlocker_unlock(
             cancel: cancel_flag.as_ref(),
         };
 
-        let result = unlock_image.unlock_bitlocker_partition_with_observer(
-            partition_id,
-            recovery_for_call.as_deref(),
-            password_for_call.as_deref(),
-            &observer,
-        );
+        let result = (|| {
+            let count = [
+                recovery_for_call.is_some(),
+                password_for_call.is_some(),
+                startup_key_path.is_some(),
+                fvek_hex.is_some(),
+            ]
+            .into_iter()
+            .filter(|present| *present)
+            .count();
+            anyhow::ensure!(count <= 1, "choose exactly one BitLocker credential kind");
+            anyhow::ensure!(
+                tweak_hex.is_none() || fvek_hex.is_some(),
+                "TWEAK requires FVEK"
+            );
+            let mut startup_key = Vec::new();
+            if let Some(path) = startup_key_path {
+                File::open(path)?
+                    .take(65537)
+                    .read_to_end(&mut startup_key)?;
+                anyhow::ensure!(startup_key.len() <= 65536, "BEK file exceeds 64 KiB");
+            }
+            let decode = |value: &str| -> anyhow::Result<Vec<u8>> {
+                anyhow::ensure!(value.len() <= 256, "key hex input is too long");
+                hex::decode(value.split_whitespace().collect::<String>())
+                    .map_err(|_| anyhow::anyhow!("invalid key hex"))
+            };
+            let fvek = fvek_hex.as_deref().map(decode).transpose()?;
+            let tweak = tweak_hex
+                .as_deref()
+                .map(decode)
+                .transpose()?
+                .unwrap_or_default();
+            let key = if let Some(value) = recovery_for_call.as_deref() {
+                BdeUnlockKey::RecoveryPassword(value)
+            } else if let Some(value) = password_for_call.as_deref() {
+                BdeUnlockKey::Password(value)
+            } else if !startup_key.is_empty() {
+                BdeUnlockKey::StartupKey(&startup_key)
+            } else if let Some(fvek) = fvek.as_deref() {
+                BdeUnlockKey::Keys {
+                    fvek,
+                    tweak: &tweak,
+                }
+            } else {
+                anyhow::ensure!(count == 0, "empty BEK file");
+                BdeUnlockKey::Clear
+            };
+            unlock_image.unlock_bitlocker_key_with_observer(partition_id, key, &observer)
+        })();
 
         scan_done.store(true, Ordering::Relaxed);
         if let Some(handle) = watcher {
@@ -399,13 +487,16 @@ pub async fn bitlocker_export_decrypted_image(
         })?;
 
         let total = image.len();
-        let partition_start = partition.start_lba * image.sector_size as u64;
-        let partition_len = partition.length_lba * image.sector_size as u64;
+        let partition_start = partition.start_lba.checked_mul(image.sector_size as u64)
+            .ok_or_else(|| AppError::invalid_input("partition offset overflow"))?;
+        let partition_len = partition.length_lba.checked_mul(image.sector_size as u64)
+            .ok_or_else(|| AppError::invalid_input("partition size overflow"))?;
         let plaintext_len = partition_len.min(unlocked.size());
-        let plaintext_end = partition_start.saturating_add(plaintext_len);
+        let plaintext_end = partition_start.checked_add(plaintext_len)
+            .filter(|end| *end <= total).ok_or_else(|| AppError::invalid_input("BitLocker plaintext range outside image"))?;
 
         let path = PathBuf::from(&destination);
-        let file = File::create(&path)
+        let file = File::options().write(true).create_new(true).open(&path)
             .map_err(|err| AppError::from_io(format!("create {}", path.display()), err))?;
         let mut writer = BufWriter::with_capacity(EXPORT_CHUNK_BYTES, file);
         let mut offset = 0u64;
@@ -437,8 +528,11 @@ pub async fn bitlocker_export_decrypted_image(
             }
 
             let want = (total - offset).min(EXPORT_CHUNK_BYTES as u64) as usize;
-            let read_len = image
-                .read_into(offset, &mut buffer[..want])
+            let (read_result, faults) = image.collect_read_faults(|| image.read_into(offset, &mut buffer[..want]));
+            if faults.read_faults_detected {
+                return Err(AppError::new(ErrorCode::Io, format!("BitLocker export encountered {} synthesized source bytes; see image_bad_regions", faults.synthetic_bytes)));
+            }
+            let read_len = read_result
                 .map_err(|err| AppError::new(ErrorCode::Io, format!("read {offset}: {err:#}")))?;
             if read_len == 0 {
                 break;

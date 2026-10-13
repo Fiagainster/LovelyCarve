@@ -287,7 +287,13 @@ fn noop_observer(_: OpenProgress) {}
 /// file handle) alive past case-close.
 impl VolumeByteReader for DiskImage {
     fn read_at(&self, offset: u64, buf: &mut [u8]) -> anyhow::Result<usize> {
-        self.read_into(offset, buf)
+        let (result, faults) = self.collect_read_faults(|| self.read_into(offset, buf));
+        anyhow::ensure!(
+            !faults.read_faults_detected,
+            "BitLocker ciphertext contains {} synthesized source bytes; refusing decryption",
+            faults.synthetic_bytes
+        );
+        result
     }
 }
 
