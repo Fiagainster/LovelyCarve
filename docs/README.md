@@ -21,6 +21,8 @@ vendor [GZIP 读取器](formats/GZIP.md) 参照 libgzipf 实现多成员、元�
 
 vendor [RAW / 分段 RAW](formats/SMRAW.md) 参照 libsmraw 实现分段读写与完整性检查，读取接入桌面和 CLI。
 
+vendor [QCOW / QCOW2](formats/QCOW.md) 对照 libqcow 全部 42 API，支持 v1/2/3、DEFLATE、差分父链和 legacy AES 凭据读取。
+
 vendored 读取器的上游版本与本地补丁记录在 [vendor/UPSTREAM.md](../src-tauri/vendor/UPSTREAM.md)，后端探针程序见 [examples/README.md](../src-tauri/examples/README.md)。
 
 ## 开发

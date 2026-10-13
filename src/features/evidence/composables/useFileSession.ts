@@ -21,6 +21,9 @@ type OpenFileOptions = {
    *  Set for folder sources, which have no disk-image extension and would
    *  otherwise be rejected by extension sniffing. */
   forceImage?: boolean;
+  /** Transient legacy QCOW credentials, forwarded only to this load call. */
+  qcowPassword?: string;
+  qcowKeyHex?: string;
 };
 
 /** Payload of the backend `image-load-progress` event (commands::image). */
@@ -245,6 +248,8 @@ export function useFileSession() {
         unlistenImageLoadProgress = stop;
         const info = await imageLoadFull<ImageInfo>({
           path: filePath,
+          qcowPassword: options.qcowPassword,
+          qcowKeyHex: options.qcowKeyHex,
         });
         if (generation !== loadGeneration) return { opened: false };
         imageId.value = info.id;

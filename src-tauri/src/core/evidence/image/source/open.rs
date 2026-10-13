@@ -210,10 +210,8 @@ impl ImageSource {
 
         let extension = lower_extension(path);
         if matches!(extension.as_deref(), Some("qcow" | "qcow2")) || has_qcow2_signature(path)? {
-            let file = File::open(path)
-                .with_context(|| format!("failed to open QCOW2 image: {}", path.display()))?;
-            let reader = qcow2::Qcow2::open(file)
-                .with_context(|| format!("failed to parse QCOW2 image: {}", path.display()))?;
+            let reader = qcow2::Qcow2::open_path(path)
+                .with_context(|| format!("failed to parse QCOW image: {}", path.display()))?;
             let size_bytes = reader.guest_size();
             return Ok(Self::Qcow2 { reader, size_bytes });
         }

@@ -421,11 +421,22 @@ test-vhd *args:
 test-vhdx *args:
     cargo test {{ args }}
 
-# Test the QCOW2 reader.
+# Test the QCOW 1/2/3 reader and independent fixtures.
 [group("readers")]
 [working-directory("src-tauri/vendor/qcow2")]
-test-qcow2:
-    cargo test
+test-qcow2 *args:
+    cargo test {{ args }}
+
+# Lint the QCOW reader and every test target.
+[group("readers")]
+[working-directory("src-tauri/vendor/qcow2")]
+clippy-qcow2:
+    cargo clippy --all-targets -- -D warnings
+
+# Regenerate invented QCOW fixtures (Python cryptography required).
+[group("readers")]
+generate-qcow-fixtures:
+    {{ python }} src-tauri/vendor/qcow2/tests/data/generate.py
 
 # Test the VDI reader.
 [group("readers")]

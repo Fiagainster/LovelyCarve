@@ -42,6 +42,26 @@ Its license, provenance and scope remain in its vendor directory; all 72
 public APIs are compared in [SMRAW](docs/formats/SMRAW.md).
 The project-generated synthetic tests contain no real evidence.
 
+## QCOW reader capability reference
+
+`src-tauri/vendor/qcow2` retains Dave Vasilevsky's MIT-licensed qcow2-rs
+feature-name parsing and utility/error infrastructure. Original LovelyCarve
+QCOW1/2/3 header/read/chain/crypto implementations and invented new test fixtures
+are AGPL-3.0-only; both LICENSE-MIT and LICENSE-AGPL are retained in the crate.
+Its manifest records `MIT AND AGPL-3.0-only`. Exact origin and change boundaries
+are recorded in [LOVELYCARVE.md](src-tauri/vendor/qcow2/LOVELYCARVE.md).
+
+Joachim Metz and contributors' [libyal/libqcow](https://github.com/libyal/libqcow/commit/3e390fbb465f37f3da92c1362c5df3da04ff9efe)
+is a public capability/format reference, not incorporated code. It is
+LGPL-3.0-or-later; its format document is GFDL-1.3-or-later. No C sources,
+documentation text, upstream test data, binaries or bindings are copied.
+All 42 public declarations are compared in [QCOW](docs/formats/QCOW.md).
+New dependencies use unmodified RustCrypto aes 0.9.3 / zeroize 1.9.1
+(MIT OR Apache-2.0) and flate2 1.1.10 (MIT OR Apache-2.0), using pure Rust
+miniz_oxide rather than native zlib. Versions are pinned in the Rust lockfiles.
+Independent Python zlib/OpenSSL fixture generation and SHA-256 records remain
+in the test directory; those packages are not runtime dependencies.
+
 ## GZIP reader capability reference
 
 `src-tauri/vendor/gzipf` is original LovelyCarve Rust code (AGPL-3.0-only),

@@ -76,6 +76,8 @@ just --dry-run pack           # 展开依赖与命令，但不执行
 
 `verify-fe` 汇总 IPC、结构、类型检查、前端测试和生产构建；`verify-rust` 汇总格式化、编译、Clippy 和后端测试；`verify-plugins` 汇总格式化、插件 Clippy 和插件测试。按 [贡献指南](../CONTRIBUTING.md#验证) 选择验证范围。
 
+QCOW 使用 `just test-qcow2` / `just clippy-qcow2`；宿主回归用 `just test qcow --lib --jobs 1`，CLI 用 `just test-cli`。`just generate-qcow-fixtures` 可重建独立 Python zlib/OpenSSL 样本（需 cryptography），能力与边界见 [QCOW](formats/QCOW.md)。
+
 `fmt` 覆盖主 crate、插件与维护中的读取器。独立 GZIP 库的验证入口为 `just test-gzipf` / `just clippy-gzipf`，也可使用 `just test-vendor gzipf`；宿主 GZIP 回归用 `just test gzip --lib`，CLI 接入用 `just test-cli`，格式范围见 [GZIP](formats/GZIP.md)。公共读取接口改动后运行 `check-examples`。参数含空格时，需要保留一层传给子 shell 的引号：
 
 ```powershell

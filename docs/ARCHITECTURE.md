@@ -183,7 +183,7 @@ LVM 标签/CRC/活动副本位于 `evidence/partitions/lvm2/header.rs`，有界�
 | RAW / DD / IMG / ISO | `core::evidence::image` + `vendor/smraw` | 单文件 mmap，分段 RAW 纯 Rust positioned I/O 与所有段稳定性检查；ISO 由 CDFS 探针识别，边界见 [SMRAW](formats/SMRAW.md) |
 | E01 / Ex01 | `core::evidence::readers::ewf_image` → vendored `ewf` (SecurityRonin/ewf-forensic) | 纯 Rust、多分卷、随机读取、v1 延迟块索引；无需 libewf DLL |
 | VMDK | `core::evidence::readers::vmdk_image` + `vendor/vmdk` | vmdk-forensic 的纯 Rust flat / sparse / streamOptimized 读取；分卷与父盘源变化检测 |
-| QCOW2 | vendored `qcow2` | v2/v3 稀疏虚拟盘，只读随机访问；压缩簇、加密和 backing file 明确拒绝 |
+| QCOW / QCOW2 | vendored `qcow2` | v1/2/3 稀疏/DEFLATE 虚拟盘、RAW/QCOW backing chains；legacy AES 通过 image_load 可选凭据打开，能力与边界见 [QCOW](formats/QCOW.md) |
 | VDI | vendored `vdi` | VirtualBox VDI 1.1 动态盘与固定盘，只读稀疏随机访问；差分盘明确拒绝 |
 | BitLocker | `core::evidence::crypto::bde_image` + `vendor/bitlocker` | 纯 Rust 密码/恢复密码/明文密钥/BEK/VMK/FVEK；六种 AES、Vista、EOW；直接读取分区，无 DLL 或临时整卷转储；验证边界见 [BITLOCKER](formats/BITLOCKER.md) |
 | VHD / VHDX | `core::evidence::readers::vhd_image` → `vendor/vhd` / `vendor/vhdx` | 纯 Rust 固定/动态盘随机读取；VHDX 日志仅在内存重放，差分盘无父盘参数时明确拒绝 |

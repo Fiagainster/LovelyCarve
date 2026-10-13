@@ -190,6 +190,19 @@ CLI 退出不保存内存雕刻记录；应在同一个会话中扫描、分页�
 `run commands.txt` 执行逐行终端命令，忽略空行和 `#` 注释，遇错停止。
 命令成功退出 0，运行/协议失败退出 1，命令行语法错误退出 2。
 
+## QCOW 镜像
+
+QCOW v1/v2/v3 的压缩簇和差分父链自动读取；legacy AES 镜像可在 `image_load` 中
+传递 `qcowPassword` 或 `qcowKeyHex`（16 字节 key，二选一），例如：
+
+```jsonl
+{"id":"qcow","command":"image_load","args":{"path":"D:/evidence/disk.qcow2","qcowPassword":"qcow-test"}}
+```
+
+以上密码来自公开测试夹具。真实凭据宜经 stdin 传递；不写入案件、任务描述或日志。
+legacy AES 没有密钥验证器，成功打开不证明密码正确；QCOW 内嵌 LUKS、Zstd、
+extended L2、external data file 和历史快照切换不支持。完整对照见 [QCOW](formats/QCOW.md)。
+
 ## 生命周期与边界
 
 CLI 与 GUI 复用后端初始化，但清空 Tauri 配置的窗口列表，绝不创建隐藏 WebView。

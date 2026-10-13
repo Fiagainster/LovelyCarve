@@ -43,6 +43,39 @@ def main():
         run(["fs-read", "--help"])
         run(["--unknown"], expected=2)
 
+        # The actual generated image_load dispatch must accept transient QCOW
+        # credentials, export logical bytes, and preserve the source image.
+        qcow_fixtures = Path(__file__).resolve().parents[1] / "src-tauri/vendor/qcow2/tests/data"
+        qcow_plain = (qcow_fixtures / "plain.bin").read_bytes()
+        qcow_key_hex = (b"qcow-test" + bytes(7)).hex()
+        for version in (1, 2, 3):
+            for encoding, credential in [("deflate", {}), ("aes", {"qcowPassword": "qcow-test"}),
+                                         ("aes", {"qcowKeyHex": qcow_key_hex})]:
+                source_path = qcow_fixtures / f"v{version}-{encoding}.qcow"
+                original = source_path.read_bytes()
+                destination = root / f"qcow-{version}-{encoding}-{len(credential)}-{list(credential)}.raw"
+                requests = [
+                    {"id": "open", "command": "image_load", "args": {"path": str(source_path), **credential}},
+                    {"id": "export", "command": "image_export_raw", "args": {
+                        "destination": str(destination), "taskId": "qcow-export", "readFaultPolicy": "strict"}},
+                    {"id": "close", "command": "image_unload", "args": {"imageId": {"$ref": "open#/id"}}},
+                ]
+                result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+                rows = [json.loads(line) for line in result.stdout.splitlines()]
+                assert all("result" in row for row in rows), rows
+                assert rows[0]["result"]["source_format"] == "qcow2", rows
+                expected = qcow_plain + bytes(4096) if encoding == "deflate" else bytes(4096) + qcow_plain
+                assert destination.read_bytes() == expected
+                assert source_path.read_bytes() == original
+                assert "qcow-test" not in result.stdout + result.stderr
+                assert qcow_key_hex not in result.stdout + result.stderr
+        for credential in [{}, {"qcowPassword": "qcow-test", "qcowKeyHex": qcow_key_hex},
+                           {"qcowKeyHex": "aa"}, {"qcowPassword": "非 ASCII"}]:
+            request = {"id": "invalid", "command": "image_load", "args": {
+                "path": str(qcow_fixtures / "v2-aes.qcow"), **credential}}
+            result = run(["session"], json.dumps(request), expected=1)
+            assert "error" in json.loads(result.stdout), result
+
         # Independent Python/zlib multi-member GZIP through the actual evidence
         # commands: headers/data may cross member boundaries, including empties.
         tar_stream = io.BytesIO()
