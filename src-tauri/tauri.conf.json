@@ -52,7 +52,8 @@
       "../LICENSE": "LICENSE",
       "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "binaries/dokan2.dll": "dokan2.dll",
-      "binaries/libcrypto-4-x64.dll": "libcrypto-4-x64.dll"
+      "binaries/libcrypto-4-x64.dll": "libcrypto-4-x64.dll",
+      "binaries/vcruntime140.dll": "vcruntime140.dll"
     }
   }
 }

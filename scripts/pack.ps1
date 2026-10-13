@@ -52,8 +52,9 @@ Get-ChildItem -LiteralPath $binaries -Filter '*.dll' -File | Where-Object {
     $_.Name -notin @('libewf.dll', 'libvmdk.dll', 'libbde.dll', 'libvhdi.dll', 'librefs-13.dll', 'bzip2.dll', 'zlib.dll') -and
     ($QrOcr -or $_.Name -ne 'opencv_world4130.dll')
 } | Copy-Item -Destination $stage -Force
-$dlls = Get-ChildItem (Join-Path $stage '*.dll')
-Write-Host "==> staged $($dlls.Count) runtime DLLs next to the exe"
+Write-Host "==> staged $((Get-ChildItem (Join-Path $stage '*.dll')).Count) runtime DLLs next to the exe"
+# The app-local Visual C++ runtime stays exactly as Microsoft signed it.
+$dlls = Get-ChildItem (Join-Path $stage '*.dll') | Where-Object { $_.Name -notlike 'vcruntime*.dll' }
 
 # UPX -9 the staged DLLs too (the freshly-copied ones, never the originals under
 # src-tauri\binaries). One upx invocation packs them all in a single table; the
@@ -65,7 +66,7 @@ $dllBefore = ($dlls | Measure-Object Length -Sum).Sum
 Write-Host "==> UPX -9 $($dlls.Count) runtime DLLs (un-packable ones shipped uncompressed)"
 & $Upx -9 @($dlls.FullName)
 $upxDllExit = $LASTEXITCODE
-$dllAfter = (Get-ChildItem (Join-Path $stage '*.dll') | Measure-Object Length -Sum).Sum
+$dllAfter = ($dlls | ForEach-Object { (Get-Item -LiteralPath $_.FullName).Length } | Measure-Object -Sum).Sum
 if ($upxDllExit -ne 0) {
     Write-Host "    note: upx exit $upxDllExit — one or more DLLs left uncompressed (see table above)"
 }

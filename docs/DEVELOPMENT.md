@@ -92,7 +92,7 @@ just run-example probe_partitions '"D:\Evidence Files\disk.E01"'
 
 安装包和便携包共用 `src-tauri/tauri.plugins.conf.json`：主程序旁放置 `lc-plugin-host.exe`，插件目录包含 `plugins/linuxinfo/plugin.toml` 和 DLL，插件不嵌入主程序。单独部署插件使用 `just pack-plugins`；更换文件前退出应用，重启后会重新发现。接口与工件来源见 [插件协议](PLUGIN_PROTOCOL.md) 和 [Linux 基本信息插件](LINUXINFO.md)。
 
-ReFS 使用纯 Rust 读取器；旧的 `librefs-13.dll` 只在显式的 `refs-dll-oracle` 特性下用于对照，不随正式包分发。Dokan、OpenSSL 与可选的 OpenCV DLL，以及模型和许可证属于构建 / 运行资源，按打包配置分发。测试夹具及其来源说明保存在 vendor 与 tests 目录中，不要用真实检材替换。
+ReFS 使用纯 Rust 读取器；旧的 `librefs-13.dll` 只在显式的 `refs-dll-oracle` 特性下用于对照，不随正式包分发。Dokan、OpenSSL 与可选的 OpenCV DLL，以及模型和许可证属于构建 / 运行资源，按打包配置分发。`src-tauri/binaries/vcruntime140.dll` 是 Visual Studio 可再发行目录中的 VC++ 运行库，随主程序放在同一目录：主程序静态链接 VC 运行库，但 `lc-plugin-host`、`linuxinfo` 和 OpenSSL 的 `libcrypto` 动态依赖它；便携包打包时不对它做 UPX 压缩。发布前用 `dumpbin /dependents` 核对主程序、CLI、插件宿主、插件和随附 DLL 的依赖，除 Windows 自带组件外都应能在包内找到。测试夹具及其来源说明保存在 vendor 与 tests 目录中，不要用真实检材替换。
 
 图标保留透明和带背景两张原图，位于 `src-tauri/icons/source*.png`；修改后执行 `just icons` 同步各平台图标和前端 512px 资源。
 

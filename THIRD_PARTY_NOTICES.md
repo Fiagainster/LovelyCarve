@@ -48,7 +48,17 @@ WeChat QRCode model notices and license terms are retained in
 [`src-tauri/resources/qrcode/MODEL_LICENSE`](src-tauri/resources/qrcode/MODEL_LICENSE).
 Runtime libraries under `src-tauri/binaries` and OCR models under
 `src-tauri/resources/ocr` must be checked against their actual upstream
-distribution before release. The resources shipped depend on the build
+distribution before release.
+
+`src-tauri/binaries/vcruntime140.dll` is the unmodified, Microsoft-signed
+Visual C++ runtime from the Visual Studio redistributable folder
+(`VC\Redist\MSVC\14.50.35710\x64\Microsoft.VC145.CRT`, file version
+14.50.35719.0). It is deployed next to the executables because
+`lc-plugin-host.exe`, the bundled `linuxinfo` plugin and OpenSSL's
+`libcrypto-4-x64.dll` link the Visual C++ runtime dynamically. It is
+redistributed as Distributable Code under the Microsoft Visual Studio license
+terms (<https://aka.ms/vs/18/redistribution>); the Universal CRT it uses ships
+with Windows 10 and later. The resources shipped depend on the build
 features; a package's Rust or JavaScript license does not by itself document
 the provenance of every separately bundled DLL or model.
 
