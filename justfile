@@ -104,6 +104,7 @@ fmt:
     cd src-tauri/vendor/luks && cargo fmt
     cd src-tauri/vendor/veracrypt && cargo fmt
     cd src-tauri/vendor/vsc && cargo fmt
+    cd src-tauri/vendor/gzipf && cargo fmt
     cd src-tauri/vendor/refs-reader && cargo fmt
     cd src-tauri/vendor/sqlite-core && cargo fmt
     cd src-tauri/vendor/ad1 && cargo fmt
@@ -343,6 +344,18 @@ clippy-refs:
 [group("readers")]
 test-vendor name *args:
     cargo test --manifest-path src-tauri/vendor/{{ name }}/Cargo.toml --lib {{ args }}
+
+# Test the standalone pure Rust GZIP member reader and its independent corpus.
+[group("readers")]
+[working-directory("src-tauri/vendor/gzipf")]
+test-gzipf *args:
+    cargo test {{ args }}
+
+# Lint the GZIP reader without desktop dependencies.
+[group("readers")]
+[working-directory("src-tauri/vendor/gzipf")]
+clippy-gzipf *args:
+    cargo clippy --all-targets {{ args }}
 
 # Test the FileVault core and forensic auditor, including optional libfvde oracle.
 [group("readers")]

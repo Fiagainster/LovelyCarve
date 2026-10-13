@@ -209,6 +209,12 @@ CPU 架构的 manifest；同时存在 `index.json` 与 `manifest.json` 的混合
 manifest。`.tar` 加载先建立一次普通 TAR 成员索引，确认容器标记后把同一个 mmap 和成员位置交给 Docker
 合层器；各层建索引通过 seek 跳过文件体，只读取 tar header，避免重复扫描外层归档或读穿层内文件内容。
 
+`.tar.gz` / `.tgz`、Docker / OCI 的 GZIP 层与小米 `.bak` 中的 GZIP payload
+使用 vendored `gzipf` 完整消费拼接成员并校验所有 CRC / ISIZE。TAR / 备份
+解压到自动清理的临时文件，压缩层保留 8 GiB 解压上限；校验成功后才发布
+文件树或开始备份提取。原证据路径保留，损坏 tar.gz 沿用原始字节 RAW 探测
+回退。宿主接入、限额和验证边界见 [GZIP](formats/GZIP.md)。
+
 普通磁盘镜像中的 Docker Engine 数据由 `core::filesystem::docker::host_docker` 惰性探测：只检查 Ext4 分区与 LVM 内的
 Ext4 逻辑卷是否存在 `/var/lib/docker`，把发现的容器作为磁盘根下的“Docker 容器”合成节点。首次展开
 某个容器时，`core::filesystem::docker::host_docker_overlay` 才解析 overlay2 的 `lower` 链，并按从底层到 init/可写层的

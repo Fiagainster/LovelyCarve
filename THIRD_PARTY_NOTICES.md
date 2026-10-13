@@ -30,6 +30,25 @@ no libfsapfs C sources or binaries are incorporated. The new APFS fixtures
 are invented, reproducible project test structures (AGPL-3.0-only), documented
 in `src-tauri/vendor/apfs/tests/data/README.md`.
 
+## GZIP reader capability reference
+
+`src-tauri/vendor/gzipf` is original LovelyCarve Rust code (AGPL-3.0-only),
+using RFC 1952 and the public capabilities of Joachim Metz's
+[libyal/libgzipf](https://github.com/libyal/libgzipf/commit/d1b4e6ba5911e1b86a3f9d4ca3fd31f1d69a6b68)
+as references. The upstream implementation is LGPL-3.0-or-later and its
+format documentation is GFDL-1.3-or-later. No upstream C code, document text,
+test data, binaries or bindings are incorporated. The new crate's license,
+provenance, API comparison and invented test-data records are retained in its
+directory and [docs/formats/GZIP.md](docs/formats/GZIP.md).
+
+The crate uses `flate2` 1.1.10 and `crc32fast` 1.5.2, both declaring
+MIT OR Apache-2.0. DEFLATE uses the pure Rust miniz_oxide backend; it does not
+link native zlib. Exact transitive versions are pinned in the crate's own
+Cargo.lock; the host Cargo.lock also records the path dependency. Host tar.gz,
+Docker/OCI GZIP layers and Xiaomi GZIP backups use this reader. The independent
+test corpus is invented project data encoded by
+Python's C zlib, licensed AGPL-3.0-only, with a reproducible generator and hashes.
+
 ## Flyfish File Viewer
 
 The Vue preview component `@file-viewer/vue3-full` and the asset-copy plugin

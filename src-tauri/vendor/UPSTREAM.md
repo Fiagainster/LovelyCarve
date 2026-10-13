@@ -55,4 +55,5 @@
 
 | 新增 vendor | 来源 | 本地范围 |
 | --- | --- | --- |
+| `gzipf` | [libyal/libgzipf d1b4e6ba5911](https://github.com/libyal/libgzipf/commit/d1b4e6ba5911e1b86a3f9d4ca3fd31f1d69a6b68)，公开能力参照；原创 Rust 0.1.0 / AGPL-3.0-only | GZIP 流与多成员元数据读取、CRC/长度校验、seek、限额和取消；不含上游 C 源码或 DLL，接入 tar.gz / tgz、Docker / OCI GZIP 层与小米备份。42 API 对照与验证边界见 [GZIP](../../docs/formats/GZIP.md)、目录内 ORIGIN.md。 |
 | `filevault` (`core` / `forensic`) | [857e04033e09](https://github.com/SecurityRonin/filevault-forensic/commit/857e04033e09c84324948b2cbfdd9e043b24d62b)，0.1.5 / Apache-2.0 | libfvde 对照补受检 metadata copies、多 LV、碎片映射、CF plist、恢复 key、取消与读完整性；实际调用 audit_info。见 [FILEVAULT](../../docs/formats/FILEVAULT.md) 和目录内 LOVELYCARVE.md。 |

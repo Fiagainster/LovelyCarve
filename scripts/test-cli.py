@@ -4,6 +4,7 @@ import hashlib
 import ctypes
 from ctypes import wintypes
 import json
+import io
 import os
 from pathlib import Path
 import struct
@@ -11,6 +12,7 @@ import subprocess
 import signal
 import sys
 import tempfile
+import tarfile
 import zlib
 
 
@@ -40,6 +42,52 @@ def main():
         run(["--help"])
         run(["fs-read", "--help"])
         run(["--unknown"], expected=2)
+
+        # Independent Python/zlib multi-member GZIP through the actual evidence
+        # commands: headers/data may cross member boundaries, including empties.
+        tar_stream = io.BytesIO()
+        with tarfile.open(fileobj=tar_stream, mode="w") as archive:
+            for name, data in [("first.txt", b"first"), ("second.txt", content)]:
+                header = tarfile.TarInfo(name)
+                header.size = len(data)
+                archive.addfile(header, io.BytesIO(data))
+        tar_bytes = tar_stream.getvalue()
+        gzip_bytes = b"".join(gzip.compress(chunk, mtime=0) for chunk in
+                              [b"", tar_bytes[:600], tar_bytes[600:1300], tar_bytes[1300:], b""])
+        for suffix in [".tgz", ".tar.gz"]:
+            compressed_tar = root / ("multi-member" + suffix)
+            compressed_tar.write_bytes(gzip_bytes)
+            output = root / ("gzip-read" + suffix + ".txt")
+            requests = [
+                {"id": "open", "command": "image_load", "args": {"path": str(compressed_tar)}},
+                {"id": "children", "command": "fs_children", "args": {"parentId": "tar:"}},
+                {"id": "read", "command": "fs_read", "args": {"nodeId": "tar:" + b"second.txt".hex()}, "output": str(output)},
+                {"id": "digest", "command": "fs_digest", "args": {"nodeId": "tar:" + b"second.txt".hex(), "algos": ["sha256"]}},
+                {"id": "wait", "command": "wait"},
+                {"id": "close", "command": "image_unload", "args": {"imageId": {"$ref": "open#/id"}}},
+            ]
+            result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+            rows = {row["id"]: row for row in map(json.loads, result.stdout.splitlines())}
+            assert all("result" in row for row in rows.values()), rows
+            assert rows["open"]["result"]["source_format"] == "tar", rows
+            assert output.read_bytes() == content
+            assert rows["digest"]["result"]["sha256"] == hashlib.sha256(content).hexdigest()
+            assert compressed_tar.read_bytes() == gzip_bytes
+
+        # A bad trailer after a valid tar must not publish a partial tar tree.
+        # Preserve the extension probe's existing RAW fallback for inspection.
+        corrupt_gzip = bytearray(gzip_bytes)
+        corrupt_gzip[-8] ^= 1
+        corrupt_tar = root / "corrupt-tail.tgz"
+        corrupt_tar.write_bytes(corrupt_gzip)
+        requests = [
+            {"id": "open", "command": "image_load", "args": {"path": str(corrupt_tar)}},
+            {"id": "close", "command": "image_unload", "args": {"imageId": {"$ref": "open#/id"}}},
+        ]
+        result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        assert all("result" in row for row in rows), rows
+        assert rows[0]["result"]["source_format"] == "raw", rows
 
         encrypted_fixtures = Path(__file__).resolve().parents[1] / "src-tauri/tests/data/encrypted"
         plaintext = (encrypted_fixtures / "plain.img").read_bytes()
