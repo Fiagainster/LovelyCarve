@@ -42,6 +42,8 @@
 
 QCOW 支持 v1/v2/v3、DEFLATE 压缩和 RAW/QCOW 差分父链；相对父路径按子镜像所在目录解析，缺少父文件会报错。legacy AES 镜像可通过 CLI / IPC 提供密码或原始密钥，桌面文件选择器尚无专用密码弹窗。完整能力和边界见 [QCOW](formats/QCOW.md)。
 
+Parallels 镜像请选择 `DiskDescriptor.xml` 或 `.hdd` 目录，保留数据文件在原目录内；支持 v2 固定、稀疏、分段及差分父链。独立 `.hds` 仅适用于没有父链的基础盘；有描述符时会提示选择描述符。扩展 HDS / v1 / Parallels 加密明确报错，范围与验证见 [PHDI](formats/PHDI.md)。
+
 ## 镜像信息
 
 ![镜像信息页](images/image-info.png)

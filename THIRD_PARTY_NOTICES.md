@@ -30,6 +30,21 @@ no libfsapfs C sources or binaries are incorporated. The new APFS fixtures
 are invented, reproducible project test structures (AGPL-3.0-only), documented
 in `src-tauri/vendor/apfs/tests/data/README.md`.
 
+## Parallels image capability reference
+
+`src-tauri/vendor/phdi` is original LovelyCarve Rust code (AGPL-3.0-only),
+referencing the public format and API of Joachim Metz and contributors'
+[libyal/libphdi fb132dceb2a1](https://github.com/libyal/libphdi/commit/fb132dceb2a1a43c2597b10bbf9e65757d08cf7c).
+The upstream library is LGPL-3.0-or-later, its tools GPL-3.0-or-later,
+and its format document GFDL-1.3-or-later. No upstream C implementation,
+document text, test data or binaries are incorporated. The runtime uses
+the unmodified [quick-xml 0.42.0](https://github.com/tafia/quick-xml) crate
+under MIT; dependency versions remain pinned in Cargo.lock.
+Original synthetic tests and an independent Python oracle accompany the reader.
+The public dfVFS test image was verified outside the repository and is not
+redistributed. Provenance and all 56 API comparisons are recorded in
+[PHDI](docs/formats/PHDI.md) and the vendor ORIGIN.md / LICENSE.
+
 ## RAW image capability reference
 
 `src-tauri/vendor/smraw` is original LovelyCarve Rust code (AGPL-3.0-only),

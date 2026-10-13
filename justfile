@@ -106,6 +106,7 @@ fmt:
     cd src-tauri/vendor/vsc && cargo fmt
     cd src-tauri/vendor/gzipf && cargo fmt
     cd src-tauri/vendor/smraw && cargo fmt
+    cd src-tauri/vendor/phdi && cargo fmt
     cd src-tauri/vendor/refs-reader && cargo fmt
     cd src-tauri/vendor/sqlite-core && cargo fmt
     cd src-tauri/vendor/ad1 && cargo fmt
@@ -437,6 +438,18 @@ clippy-qcow2:
 [group("readers")]
 generate-qcow-fixtures:
     {{ python }} src-tauri/vendor/qcow2/tests/data/generate.py
+
+# Test the standalone Parallels reader and malformed-image regressions.
+[group("readers")]
+[working-directory("src-tauri/vendor/phdi")]
+test-phdi *args:
+    cargo test {{ args }}
+
+# Lint the Parallels reader and every test target.
+[group("readers")]
+[working-directory("src-tauri/vendor/phdi")]
+clippy-phdi:
+    cargo clippy --all-targets -- -D warnings
 
 # Test the VDI reader.
 [group("readers")]

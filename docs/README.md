@@ -23,6 +23,8 @@ vendor [RAW / 分段 RAW](formats/SMRAW.md) 参照 libsmraw 实现分段读写�
 
 vendor [QCOW / QCOW2](formats/QCOW.md) 对照 libqcow 全部 42 API，支持 v1/2/3、DEFLATE、差分父链和 legacy AES 凭据读取。
 
+vendor [Parallels PHDI](formats/PHDI.md) 对照 libphdi 56 API，读取 XML / .hdd bundle、v2 Plain / Sparse / Split 和差分父链；接入桌面与 CLI。
+
 vendored 读取器的上游版本与本地补丁记录在 [vendor/UPSTREAM.md](../src-tauri/vendor/UPSTREAM.md)，后端探针程序见 [examples/README.md](../src-tauri/examples/README.md)。
 
 ## 开发

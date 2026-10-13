@@ -43,6 +43,49 @@ def main():
         run(["fs-read", "--help"])
         run(["--unknown"], expected=2)
 
+        # Parallels: an independently built split plain/sparse disk is exposed
+        # as guest bytes by the same image_load/export/unload command surface.
+        phdi_bundle = root / "Parallels evidence.hdd"
+        phdi_bundle.mkdir()
+        phdi_plain = b"plain guest sector".ljust(512, b"\0")
+        (phdi_bundle / "plain.hds").write_bytes(phdi_plain)
+        phdi_sparse = bytearray(1024)
+        phdi_sparse[:16] = b"WithoutFreeSpace"
+        for offset, value in [(16, 2), (28, 1), (32, 2), (48, 1), (64, 1)]:
+            struct.pack_into("<I", phdi_sparse, offset, value)
+        struct.pack_into("<Q", phdi_sparse, 36, 2)
+        phdi_sparse[512:] = b"sparse guest sector".ljust(512, b"\0")
+        (phdi_bundle / "sparse.hds").write_bytes(phdi_sparse)
+        phdi_descriptor = """<?xml version="1.0" encoding="UTF-8"?>
+<Parallels_disk_image Version="1.0"><Disk_Parameters><Disk_size>3</Disk_size></Disk_Parameters>
+<StorageData><Storage><Start>0</Start><End>1</End><Blocksize>1</Blocksize><Image>
+<GUID>{11111111-1111-1111-1111-111111111111}</GUID><Type>Plain</Type><File>plain.hds</File>
+</Image></Storage><Storage><Start>1</Start><End>3</End><Blocksize>1</Blocksize><Image>
+<GUID>{11111111-1111-1111-1111-111111111111}</GUID><Type>Compressed</Type><File>sparse.hds</File>
+</Image></Storage></StorageData></Parallels_disk_image>"""
+        (phdi_bundle / "DiskDescriptor.xml").write_text(phdi_descriptor, encoding="utf-8")
+        for suffix, source_path in [("bundle", phdi_bundle), ("descriptor", phdi_bundle / "DiskDescriptor.xml")]:
+            destination = root / f"phdi-{suffix}.raw"
+            requests = [
+                {"id": "open", "command": "image_load", "args": {"path": str(source_path)}},
+                {"id": "export", "command": "image_export_raw", "args": {
+                    "destination": str(destination), "taskId": f"phdi-{suffix}", "readFaultPolicy": "strict"}},
+                {"id": "close", "command": "image_unload", "args": {"imageId": {"$ref": "open#/id"}}},
+            ]
+            result = run(["session"], "\n".join(json.dumps(request) for request in requests))
+            rows = [json.loads(line) for line in result.stdout.splitlines()]
+            assert all("result" in row for row in rows), rows
+            assert rows[0]["result"]["source_format"] == "phdi", rows
+            assert destination.read_bytes() == phdi_plain + bytes(phdi_sparse[512:]) + bytes(512)
+            assert (phdi_bundle / "plain.hds").read_bytes() == phdi_plain
+            assert (phdi_bundle / "sparse.hds").read_bytes() == phdi_sparse
+
+        # A recognized corrupt descriptor must fail, rather than become RAW.
+        (phdi_bundle / "DiskDescriptor.xml").write_text("broken", encoding="utf-8")
+        result = run(["session"], json.dumps({"id": "broken-phdi", "command": "image_load", "args": {
+            "path": str(phdi_bundle / "DiskDescriptor.xml")}}), expected=1)
+        assert "error" in json.loads(result.stdout), result
+
         # The actual generated image_load dispatch must accept transient QCOW
         # credentials, export logical bytes, and preserve the source image.
         qcow_fixtures = Path(__file__).resolve().parents[1] / "src-tauri/vendor/qcow2/tests/data"

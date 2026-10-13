@@ -60,6 +60,8 @@ export const DISK_IMAGE_EXTENSIONS = [
   'vmdk',
   'qcow',
   'qcow2',
+  'hdd',
+  'hds',
   'vdi',
   'pmfx',
   'ldbk',
@@ -69,7 +71,7 @@ export const DISK_IMAGE_EXTENSIONS = [
   '7z',
 ];
 
-const PICKER_IMAGE_EXTENSIONS = [...DISK_IMAGE_EXTENSIONS, 'gz'];
+const PICKER_IMAGE_EXTENSIONS = [...DISK_IMAGE_EXTENSIONS, 'gz', 'xml'];
 
 export function isDiskImageExtension(extension: string | undefined | null): boolean {
   return DISK_IMAGE_EXTENSIONS.includes((extension || '').toLowerCase());
@@ -78,7 +80,7 @@ export function isDiskImageExtension(extension: string | undefined | null): bool
 function isDiskImagePath(fileName: string): boolean {
   const lower = fileName.toLowerCase();
   const extension = lower.split('.').pop();
-  return lower.endsWith('.tar.gz') || isDiskImageExtension(extension);
+  return lower.endsWith('.tar.gz') || lower.split(/[\\/]/).pop() === 'diskdescriptor.xml' || isDiskImageExtension(extension);
 }
 
 // Image ids we've already raised the locked-BitLocker alert for. Module-scoped

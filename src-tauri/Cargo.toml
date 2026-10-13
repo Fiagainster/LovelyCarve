@@ -147,6 +147,7 @@ opencv = { version = "0.101.1", optional = true, default-features = false }
 # build script 在构建期拉取并静态链接 ONNX Runtime，运行时无需额外 DLL。
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["ndarray", "std", "download-binaries", "tls-native"] }
 parking_lot = "0.12.5"
+phdi = { path = "vendor/phdi" }
 plist = "1.10.1"
 qcow2 = { path = "vendor/qcow2" }
 quick-xml = "0.42.0"
