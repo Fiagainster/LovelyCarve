@@ -219,6 +219,7 @@ build-full:
 [windows]
 build-release *args:
     {{ cargo_env }}bun scripts/build-plugins.mjs --release
+    pwsh -NoProfile -File '{{ justfile_directory() }}\scripts\prune-bundle-dlls.ps1'
     {{ windowsenv }}; bun run tauri build --config '{{ justfile_directory() }}\src-tauri\tauri.plugins.conf.json' {{ args }}
 
 # Build the desktop release bundle with QR/OCR, models and plugins (Windows).

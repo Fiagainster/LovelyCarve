@@ -53,8 +53,9 @@ Get-ChildItem -LiteralPath $binaries -Filter '*.dll' -File | Where-Object {
     ($QrOcr -or $_.Name -ne 'opencv_world4130.dll')
 } | Copy-Item -Destination $stage -Force
 Write-Host "==> staged $((Get-ChildItem (Join-Path $stage '*.dll')).Count) runtime DLLs next to the exe"
-# The app-local Visual C++ runtime stays exactly as Microsoft signed it.
-$dlls = Get-ChildItem (Join-Path $stage '*.dll') | Where-Object { $_.Name -notlike 'vcruntime*.dll' }
+# The app-local Visual C++ runtime (vcruntime140*, msvcp140*) stays exactly as
+# Microsoft signed it.
+$dlls = Get-ChildItem (Join-Path $stage '*.dll') | Where-Object { $_.Name -notlike 'vcruntime*.dll' -and $_.Name -notlike 'msvcp*.dll' }
 
 # UPX -9 the staged DLLs too (the freshly-copied ones, never the originals under
 # src-tauri\binaries). One upx invocation packs them all in a single table; the
