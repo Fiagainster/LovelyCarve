@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn detect_partitions_tree_descends_into_gpt_then_stops_at_lvm() {
         let sector = 512usize;
-        let mut buf = vec![0u8; sector * 200];
+        let mut buf = vec![0u8; sector * 400];
 
         buf[sector..sector + 8].copy_from_slice(b"EFI PART");
         buf[sector + 72..sector + 80].copy_from_slice(&2u64.to_le_bytes());
@@ -562,11 +562,10 @@ mod tests {
         let entries = sector * 2;
         buf[entries..entries + 16].copy_from_slice(&[1u8; 16]);
         buf[entries + 32..entries + 40].copy_from_slice(&100u64.to_le_bytes());
-        buf[entries + 40..entries + 48].copy_from_slice(&199u64.to_le_bytes());
+        buf[entries + 40..entries + 48].copy_from_slice(&399u64.to_le_bytes());
 
         let pv_off = 100 * sector;
-        buf[pv_off..pv_off + 8].copy_from_slice(b"LABELONE");
-        buf[pv_off + 24..pv_off + 32].copy_from_slice(b"LVM2 001");
+        lvm2::test_support::put_label(&mut buf[pv_off..], 0, &[]);
 
         let src = BufSource(buf);
         let tree = detect_partitions_tree(&src, sector, 3).expect("tree");

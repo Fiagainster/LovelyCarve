@@ -81,7 +81,7 @@ impl<'a> BtrfsVolume<'a> {
                 }
             }
         }
-        Ok(runs)
+        crate::core::filesystem::volumes::lvm::physical_runs(self.layout.as_ref(), runs)
     }
 
     pub(super) fn collect_extents(
@@ -162,7 +162,12 @@ impl<'a> BtrfsVolume<'a> {
                         })?;
                     let phys = self.base_offset + map.physical;
                     let want = (*num_bytes as usize).min(max).min(map.length as usize);
-                    self.image.read_range(phys, want)
+                    crate::core::filesystem::volumes::lvm::read_backing_range(
+                        self.image,
+                        self.layout.as_ref(),
+                        phys,
+                        want,
+                    )
                 } else {
                     let map = self.logical_to_physical(*disk_bytenr).ok_or_else(|| {
                         anyhow!(
@@ -171,7 +176,12 @@ impl<'a> BtrfsVolume<'a> {
                     })?;
                     let phys = self.base_offset + map.physical;
                     let on_disk = (*disk_num_bytes as usize).min(map.length as usize);
-                    let raw = self.image.read_range(phys, on_disk)?;
+                    let raw = crate::core::filesystem::volumes::lvm::read_backing_range(
+                        self.image,
+                        self.layout.as_ref(),
+                        phys,
+                        on_disk,
+                    )?;
                     let decoded = decompress(
                         *compression,
                         &raw,

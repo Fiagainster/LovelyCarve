@@ -108,6 +108,48 @@ fn open_image(bytes: &[u8]) -> (tempfile::NamedTempFile, DiskImage) {
 }
 
 #[test]
+fn lvm_fragmented_ntfs_full_range_stream_and_deleted_provenance() {
+    use crate::core::evidence::partitions::lvm2::test_support::fragmented;
+    let mut logical = image();
+    let expected: Vec<_> = (0..2 * CLUSTER).map(|index| (index % 251) as u8).collect();
+    // Data crosses the midpoint of the two LVM segments.
+    logical[63 * CLUSTER..65 * CLUSTER].copy_from_slice(&expected);
+    let mut attribute = non_resident(
+        "",
+        &[0x11, 2, 63, 0],
+        expected.len() as u64,
+        expected.len() as u64,
+        expected.len() as u64,
+    );
+    attribute[12..14].fill(0);
+    record(&mut logical, 16, &[attribute]);
+    let (_file, image) = open_image(&fragmented(&logical));
+    let volume = NtfsVolume::open_lvm(&image, &image.partitions[0], 0).unwrap();
+    assert_eq!(volume.read_file(16, usize::MAX).unwrap(), expected);
+    assert_eq!(
+        volume.read_range(16, 4090, 20).unwrap(),
+        expected[4090..4110]
+    );
+    let mut streamed = Vec::new();
+    volume
+        .stream_file(16, 4093, |bytes| {
+            streamed.extend_from_slice(bytes);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(streamed, expected);
+    let mut reader = volume.backing.reader();
+    let record = volume.ntfs.file(&mut reader, 16).unwrap();
+    let runs = volume.capture_data_runs(&record, &mut reader, expected.len() as u64);
+    assert_eq!(runs.len(), 2);
+    let original: Vec<_> = runs
+        .into_iter()
+        .flat_map(|(offset, length)| image.read_range(offset, length as usize).unwrap())
+        .collect();
+    assert_eq!(original, expected);
+}
+
+#[test]
 fn compressed_raw_sparse_and_partial_units_share_all_read_paths() {
     let mut image = image();
     let runs = [

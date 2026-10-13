@@ -16,12 +16,13 @@ use ext4_view::{Ext4, Ext4Read, FileType};
 
 use crate::core::evidence::image::find_partition;
 use crate::core::evidence::image::DiskImage;
+use crate::core::evidence::partitions::lvm2::layout::LinearLayout;
 use crate::core::filesystem::tree::fs_tree::{FsDataRun, FsNode, NodeKind};
 use crate::core::filesystem::volumes::ext4_raw::{
     data_runs_from_inode, plan_data_pieces, recover_slack_entries, DataPiece, RawInode, SlackEntry,
 };
 use crate::core::filesystem::volumes::ext4_xattr::Ext4Xattr;
-use crate::core::filesystem::volumes::lvm::LvmVolume;
+use crate::core::filesystem::volumes::lvm::{read_backing_into, read_backing_range, LvmVolume};
 
 pub type Ext4Inode = RawInode;
 
@@ -101,6 +102,7 @@ pub fn open_ext4_source(image: &Arc<DiskImage>, source: Ext4Source) -> anyhow::R
 #[derive(Debug)]
 pub struct Ext4Volume {
     image: Arc<DiskImage>,
+    layout: Option<LinearLayout>,
     fs: Ext4,
     source: Ext4Source,
     root_parent_id: String,
@@ -117,8 +119,21 @@ impl Ext4Volume {
         length_bytes: u64,
         root_parent_id: String,
     ) -> anyhow::Result<Self> {
+        let (base_offset, layout) = match source {
+            Ext4Source::Lvm { part_id, lv_index } => {
+                let partition = find_partition(&image, &part_id.to_string())?;
+                let volume = LvmVolume::open(&image, partition)?;
+                volume
+                    .logical_volumes
+                    .get(lv_index)
+                    .ok_or_else(|| anyhow::anyhow!("LVM LV missing"))?
+                    .reader_geometry()?
+            }
+            Ext4Source::Partition(_) => (base_offset, None),
+        };
         let reader = ImageSliceReader {
             image: Arc::clone(&image),
+            layout: layout.clone(),
             base_offset,
             length_bytes,
         };
@@ -127,6 +142,7 @@ impl Ext4Volume {
         let block_size = fs.block_size() as u64;
         Ok(Self {
             image,
+            layout,
             fs,
             source,
             root_parent_id,
@@ -237,7 +253,12 @@ impl Ext4Volume {
             while consumed < run.length {
                 let chunk_len = (run.length - consumed).min(self.block_size);
                 let absolute_offset = run.physical_offset + consumed;
-                let block = self.image.read_range(absolute_offset, chunk_len as usize)?;
+                let block = read_backing_range(
+                    &self.image,
+                    self.layout.as_ref(),
+                    absolute_offset,
+                    chunk_len as usize,
+                )?;
                 if block.is_empty() {
                     break;
                 }
@@ -365,7 +386,7 @@ impl Ext4Volume {
             if run.logical_offset != 0 || (run.length as usize) < len {
                 return None; // 首块缺失或不完整，目标必然残缺
             }
-            self.image.read_range(run.physical_offset, len).ok()?
+            read_backing_range(&self.image, self.layout.as_ref(), run.physical_offset, len).ok()?
         };
         let target = String::from_utf8_lossy(&bytes);
         let trimmed = target.trim_end_matches('\0');
@@ -449,7 +470,13 @@ impl Ext4Volume {
                     let dst =
                         &mut out[usize::try_from(from - offset)?..usize::try_from(to - offset)?];
                     // 来源短读必须报错，避免导出或哈希把补零当成完整证据。
-                    if self.image.read_into(physical + (from - logical), dst)? != dst.len() {
+                    if read_backing_into(
+                        &self.image,
+                        self.layout.as_ref(),
+                        physical + (from - logical),
+                        dst,
+                    )? != dst.len()
+                    {
                         anyhow::bail!("short ext4 inode {} range read", inode.number);
                     }
                 }
@@ -460,6 +487,13 @@ impl Ext4Volume {
             }
         }
         Ok(out)
+    }
+
+    pub fn physical_data_runs(&self, inode: &Ext4Inode) -> anyhow::Result<Vec<FsDataRun>> {
+        crate::core::filesystem::volumes::lvm::physical_runs(
+            self.layout.as_ref(),
+            self.data_runs(inode)?,
+        )
     }
 
     pub fn data_runs(&self, inode: &Ext4Inode) -> anyhow::Result<Vec<FsDataRun>> {
@@ -550,7 +584,12 @@ impl Ext4Volume {
                 let part = usize::try_from(remaining.min(slab))?;
                 match physical.as_mut() {
                     Some(offset) => {
-                        let read = self.image.read_into(*offset, &mut buf[..part])?;
+                        let read = read_backing_into(
+                            &self.image,
+                            self.layout.as_ref(),
+                            *offset,
+                            &mut buf[..part],
+                        )?;
                         // 已分配片短读不能冒充完整内容。
                         if read != part {
                             anyhow::bail!("short ext4 inode {} stream read", inode.number);
@@ -577,7 +616,12 @@ impl Ext4Volume {
             return Ok(Vec::new());
         }
         let len = (self.length_bytes - offset).min(len as u64) as usize;
-        self.image.read_range(self.base_offset + offset, len)
+        read_backing_range(
+            &self.image,
+            self.layout.as_ref(),
+            self.base_offset + offset,
+            len,
+        )
     }
 
     fn node_id(&self, inode: u64) -> String {
@@ -613,6 +657,7 @@ fn file_type_byte(ft: FileType) -> u8 {
 /// it was opened on.
 struct ImageSliceReader {
     image: Arc<DiskImage>,
+    layout: Option<LinearLayout>,
     base_offset: u64,
     length_bytes: u64,
 }
@@ -633,7 +678,7 @@ impl Ext4Read for ImageSliceReader {
         let absolute = self.base_offset + start_byte;
         // Read straight into the caller's buffer: every inode, extent-tree and
         // directory-block read of a filesystem walk or scan comes through here.
-        let filled = self.image.read_into(absolute, dst).map_err(
+        let filled = read_backing_into(&self.image, self.layout.as_ref(), absolute, dst).map_err(
             |err| -> Box<dyn std::error::Error + Send + Sync + 'static> {
                 Box::new(std::io::Error::other(err.to_string()))
             },

@@ -9,9 +9,26 @@ impl<'a> BtrfsVolume<'a> {
         length_bytes: u64,
         root_parent_id: String,
     ) -> anyhow::Result<Self> {
-        let sb = image
-            .read_range(base_offset + BTRFS_PRIMARY_SUPERBLOCK, 4096)
-            .context("btrfs: read primary superblock")?;
+        let (base_offset, layout) = match source {
+            BtrfsSource::Lvm { part_id, lv_index } => {
+                let partition = find_partition(image, &part_id.to_string())?;
+                let volume =
+                    crate::core::filesystem::volumes::lvm::LvmVolume::open(image, partition)?;
+                volume
+                    .logical_volumes
+                    .get(lv_index)
+                    .ok_or_else(|| anyhow!("LVM LV missing"))?
+                    .reader_geometry()?
+            }
+            BtrfsSource::Partition(_) => (base_offset, None),
+        };
+        let sb = crate::core::filesystem::volumes::lvm::read_backing_range(
+            image,
+            layout.as_ref(),
+            base_offset + BTRFS_PRIMARY_SUPERBLOCK,
+            4096,
+        )
+        .context("btrfs: read primary superblock")?;
         if sb.len() < 4096 {
             bail!("btrfs: primary superblock truncated ({} bytes)", sb.len());
         }
@@ -47,7 +64,13 @@ impl<'a> BtrfsVolume<'a> {
 
         let mut chunks: Vec<ChunkMapping> = Vec::new();
         {
-            let walker = TreeWalker::new(image, base_offset, &bootstrap, nodesize as usize);
+            let walker = TreeWalker::new(
+                image,
+                base_offset,
+                &bootstrap,
+                nodesize as usize,
+                layout.as_ref(),
+            );
             walker.iter_range(
                 chunk_root,
                 chunk_root_level,
@@ -81,7 +104,13 @@ impl<'a> BtrfsVolume<'a> {
 
         let mut subvolumes: BTreeMap<u64, SubvolEntry> = BTreeMap::new();
         {
-            let walker = TreeWalker::new(image, base_offset, &chunks, nodesize as usize);
+            let walker = TreeWalker::new(
+                image,
+                base_offset,
+                &chunks,
+                nodesize as usize,
+                layout.as_ref(),
+            );
             walker.iter_range(
                 root,
                 root_level,
@@ -169,6 +198,7 @@ impl<'a> BtrfsVolume<'a> {
 
         Ok(Self {
             image,
+            layout,
             source,
             base_offset,
             length_bytes,

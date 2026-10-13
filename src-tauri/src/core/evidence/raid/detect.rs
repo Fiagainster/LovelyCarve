@@ -36,7 +36,7 @@ pub fn detect_with_sources(images: &[Arc<DiskImage>]) -> (RaidStack, Vec<Assembl
         });
     }
 
-    let volume_groups = group_pvs_into_vgs(&pvs);
+    let volume_groups = group_pvs_into_vgs(&pvs, &mut diagnostics);
     let lv_devices = materialise_logical_volumes(images, &volume_groups);
 
     // Pass 2 — collect mdadm members. Both LV-on-LVM and whole-disk

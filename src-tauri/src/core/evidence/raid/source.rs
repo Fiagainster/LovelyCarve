@@ -65,22 +65,28 @@ impl LinearLvSource {
         let mut out = Vec::with_capacity(remaining);
         let mut seg_start = 0u64;
         for segment in &self.segments {
-            let seg_end = seg_start.saturating_add(segment.byte_length);
+            let seg_end = seg_start
+                .checked_add(segment.byte_length)
+                .ok_or_else(|| anyhow::anyhow!("LVM segment boundary overflow"))?;
             if cursor < seg_end {
                 let local_off = cursor - seg_start;
                 let take = (segment.byte_length - local_off).min(remaining as u64) as usize;
                 if take == 0 {
                     break;
                 }
-                let bytes = segment
-                    .image
-                    .read_range(segment.byte_offset + local_off, take)?;
+                let bytes = segment.image.read_range(
+                    segment
+                        .byte_offset
+                        .checked_add(local_off)
+                        .ok_or_else(|| anyhow::anyhow!("LVM source offset overflow"))?,
+                    take,
+                )?;
+                if bytes.len() != take {
+                    anyhow::bail!("short LVM allocated segment read");
+                }
                 out.extend_from_slice(&bytes);
                 cursor += bytes.len() as u64;
                 remaining -= bytes.len();
-                if bytes.len() < take {
-                    break;
-                }
                 if remaining == 0 {
                     break;
                 }
@@ -89,6 +95,9 @@ impl LinearLvSource {
             if seg_start >= self.size_bytes {
                 break;
             }
+        }
+        if remaining != 0 {
+            anyhow::bail!("incomplete LVM segment map");
         }
         Ok(out)
     }

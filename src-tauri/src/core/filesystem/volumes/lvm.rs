@@ -1,27 +1,18 @@
-//! Read-only LVM2 physical-volume parser.
-//!
-//! Parses the textual metadata block embedded in the first ~4 MiB of an LVM2
-//! PV, then materializes each logical volume as a slice on the underlying
-//! `DiskImage`. Only enough of the metadata is decoded to enumerate logical
-//! volumes and resolve their first FLAT segment back to a byte offset.
-//!
-//! Active-snapshot selection follows the on-disk binary `mda_header`: the
-//! `LABELONE` PV label points at the `PhysicalVolumeHeader`, whose first
-//! `metadata_descriptor` points at a `MetadataAreaHeader`, whose first
-//! `location_descriptor` carries the byte offset and size of the currently
-//! active metadata text. That's the same pointer LVM itself uses, so we
-//! don't have to guess which copy of the rotating snapshot buffer is
-//! current. When the binary layout doesn't match (truncated probe, custom
-//! MDA layout, on-disk wrap), we fall back to scanning the whole probe and
-//! picking the VG block with the highest `seqno`.
+//! Read-only LVM navigation over verified metadata and complete linear LV maps.
+//! Fragmented single-PV LVs retain their logical size and source ranges.
 
-use crate::core::evidence::image::{detect_filesystem, DiskImage, Partition, PartitionKind};
-use crate::core::evidence::partitions::lvm2::metadata::{
-    active_logical_volumes_block, locate_active_metadata_region, lvm_metadata_text, named_blocks,
-    parse_assignment_u64, parse_first_segment,
+use crate::core::evidence::image::{
+    detect_filesystem, find_partition, DiskImage, Partition, PartitionKind,
 };
-use crate::core::filesystem::tree::fs_tree::{FsNode, Mactb, NodeKind};
+use crate::core::evidence::partitions::lvm2::{
+    header::read_metadata,
+    layout::{linear_layout, LinearLayout},
+    text::VolumeGroup,
+};
+use crate::core::filesystem::tree::fs_tree::{FsDataRun, FsNode, Mactb, NodeKind};
 use crate::core::filesystem::unalloc;
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug)]
 pub struct LvmVolume {
@@ -30,9 +21,13 @@ pub struct LvmVolume {
     /// metadata, in image bytes). Below this lies the LVM label + metadata,
     /// not allocatable PE space.
     pe_start_bytes: u64,
-    /// Absolute byte offset of the PV's end (partition end), bounding the data
+    /// Absolute byte offset after the last declared PE, bounding the data
     /// area. `[pe_start_bytes, pv_end_bytes)` is the allocatable region.
     pv_end_bytes: u64,
+    allocation_known: bool,
+    occupied: Vec<(u64, u64)>,
+    pub metadata: VolumeGroup,
+    pub diagnostics: Vec<String>,
     pub logical_volumes: Vec<LvmLogicalVolume>,
 }
 
@@ -40,9 +35,14 @@ pub struct LvmVolume {
 pub struct LvmLogicalVolume {
     pub index: usize,
     pub name: String,
+    /// First physical segment offset. The complete map is `layout`, not a
+    /// contiguous `[absolute_offset, absolute_offset + size_bytes)` span.
     pub absolute_offset: u64,
     pub size_bytes: u64,
     pub kind: PartitionKind,
+    pub identifier: String,
+    pub layout: Option<LinearLayout>,
+    pub read_error: Option<String>,
 }
 
 impl LvmVolume {
@@ -51,70 +51,101 @@ impl LvmVolume {
             anyhow::bail!("partition {} is not an LVM2 physical volume", partition.id);
         }
 
-        let partition_offset = partition.start_lba * image.sector_size as u64;
-        let probe_len =
-            (partition.length_lba * image.sector_size as u64).min(4 * 1024 * 1024) as usize;
-        let probe = image.read_range(partition_offset, probe_len)?;
-        // Binary mda_header points at the active snapshot directly; fall
-        // through to a full-buffer text scan only when the header doesn't
-        // parse (corrupt, custom layout, or the active region wrapped the
-        // rotating buffer).
-        let metadata = locate_active_metadata_region(&probe)
-            .and_then(|(start, end)| lvm_metadata_text(&probe[start..end]))
-            .or_else(|| lvm_metadata_text(&probe))
-            .ok_or_else(|| anyhow::anyhow!("LVM2 metadata not found"))?;
-        let extent_size = parse_assignment_u64(&metadata, "extent_size")
-            .ok_or_else(|| anyhow::anyhow!("LVM extent_size not found"))?;
-        let pe_start = parse_assignment_u64(&metadata, "pe_start")
-            .ok_or_else(|| anyhow::anyhow!("LVM pe_start not found"))?;
-        let logical_block = active_logical_volumes_block(&metadata)
-            .ok_or_else(|| anyhow::anyhow!("LVM logical_volumes block not found"))?;
-
+        let partition_offset = partition
+            .start_lba
+            .checked_mul(image.sector_size as u64)
+            .ok_or_else(|| anyhow::anyhow!("LVM partition offset overflow"))?;
+        let partition_size = partition
+            .length_lba
+            .checked_mul(image.sector_size as u64)
+            .ok_or_else(|| anyhow::anyhow!("LVM partition size overflow"))?;
+        let metadata = read_metadata(image, partition_offset, partition_size)?;
+        let group = &metadata.volume_group;
+        let pv = group
+            .physical_volumes
+            .iter()
+            .find(|pv| pv.identifier.replace('-', "") == metadata.header.identifier)
+            .ok_or_else(|| anyhow::anyhow!("LVM label PV identifier absent from metadata"))?;
+        let pe_start_bytes = pv
+            .pe_start_sectors
+            .checked_mul(512)
+            .and_then(|offset| partition_offset.checked_add(offset))
+            .ok_or_else(|| anyhow::anyhow!("LVM PE start overflow"))?;
+        let pv_end_bytes = pv
+            .extent_count
+            .checked_mul(group.extent_size_sectors)
+            .and_then(|size| size.checked_mul(512))
+            .and_then(|size| pe_start_bytes.checked_add(size))
+            .ok_or_else(|| anyhow::anyhow!("LVM PE end overflow"))?;
+        let partition_end = partition_offset
+            .checked_add(partition_size)
+            .ok_or_else(|| anyhow::anyhow!("LVM partition end overflow"))?;
+        if pv_end_bytes > partition_end {
+            anyhow::bail!("LVM PE space exceeds partition");
+        }
         let mut logical_volumes = Vec::new();
-        for (name, lv_block) in named_blocks(logical_block) {
-            let Some((physical_extent, extent_count)) = parse_first_segment(&lv_block) else {
-                continue;
-            };
-            // Extent math is attacker-influenced (the metadata is parsed from
-            // the image), so every multiply/add is checked: a crafted or
-            // corrupt extent_size/count must skip the LV with a diagnostic
-            // rather than panic in debug or wrap to a bogus offset in release.
-            let sector_bytes = image.sector_size as u64;
-            let geometry = physical_extent
-                .checked_mul(extent_size)
-                .and_then(|pe| pe.checked_add(pe_start))
-                .and_then(|start_sector| {
-                    let sectors = extent_count.checked_mul(extent_size)?;
-                    let absolute_offset = start_sector
-                        .checked_mul(sector_bytes)
-                        .and_then(|off| partition_offset.checked_add(off))?;
-                    let size_bytes = sectors.checked_mul(sector_bytes)?;
-                    Some((absolute_offset, size_bytes))
-                });
-            let Some((absolute_offset, size_bytes)) = geometry else {
-                tracing::warn!(
-                    "LVM LV {name}: extent geometry overflows u64 \
-                     (pe={physical_extent}, count={extent_count}, extent_size={extent_size}); skipping"
-                );
-                continue;
-            };
-            let signature = image.read_range(absolute_offset, 4096)?;
-            let kind = detect_filesystem(&signature, PartitionKind::Unknown);
+        let mut occupied = Vec::new();
+        let mut diagnostics = metadata.diagnostics;
+        let mut allocation_known = true;
+        for volume in &group.logical_volumes {
+            let size_bytes = volume.segments.iter().try_fold(0u64, |total, segment| {
+                segment
+                    .extent_count
+                    .checked_mul(group.extent_size_sectors)
+                    .and_then(|size| size.checked_mul(512))
+                    .and_then(|size| total.checked_add(size))
+                    .ok_or_else(|| anyhow::anyhow!("LVM LV size overflow"))
+            })?;
+            let (layout, read_error, absolute_offset, kind) =
+                match linear_layout(group, volume, pv, partition_offset, partition_size) {
+                    Ok(layout) => {
+                        for segment in &layout.segments {
+                            occupied.push((segment.physical_offset, segment.size));
+                        }
+                        let signature = layout.read(
+                            image,
+                            0,
+                            crate::core::evidence::partitions::BTRFS_PROBE_END_OFFSET as usize,
+                        )?;
+                        let kind = detect_filesystem(&signature, PartitionKind::Unknown);
+                        let offset = layout
+                            .segments
+                            .first()
+                            .map_or(0, |segment| segment.physical_offset);
+                        (Some(layout), None, offset, kind)
+                    }
+                    Err(error) => {
+                        let message = error.to_string();
+                        diagnostics.push(format!("LV {}: {message}", volume.name));
+                        // Unknown segment types can reserve local extents. Avoid
+                        // falsely labelling allocated data as unallocated space.
+                        allocation_known = false;
+                        (None, Some(message), 0, PartitionKind::Unknown)
+                    }
+                };
             logical_volumes.push(LvmLogicalVolume {
                 index: logical_volumes.len(),
-                name,
+                name: volume.name.clone(),
+                identifier: volume.identifier.clone(),
                 absolute_offset,
                 size_bytes,
                 kind,
+                layout,
+                read_error,
             });
         }
-
+        for diagnostic in &diagnostics {
+            tracing::warn!("LVM: {diagnostic}");
+        }
         Ok(Self {
             partition_id: partition.id,
-            pe_start_bytes: partition_offset.saturating_add(pe_start * image.sector_size as u64),
-            pv_end_bytes: partition_offset
-                .saturating_add(partition.length_lba * image.sector_size as u64),
+            pe_start_bytes,
+            pv_end_bytes,
+            allocation_known,
+            occupied,
             logical_volumes,
+            metadata: metadata.volume_group,
+            diagnostics,
         })
     }
 
@@ -131,7 +162,7 @@ impl LvmVolume {
                 kind: if is_navigable_lv_kind(lv.kind) {
                     NodeKind::Dir
                 } else {
-                    NodeKind::Unallocated
+                    NodeKind::File
                 },
                 size: lv.size_bytes,
                 deleted: false,
@@ -143,39 +174,35 @@ impl LvmVolume {
             .collect())
     }
 
-    /// Virtual "未使用空间N" files for the PE space in this volume group that
-    /// no logical volume claims. The allocatable region is
-    /// `[pe_start_bytes, pv_end_bytes)`; subtracting every LV's
-    /// `[absolute_offset, +size_bytes)` yields the free segments. One LVM2
-    /// extent (typically 4 MiB) is the noise floor — smaller leftovers are
-    /// alignment slack, not meaningful free space. Single-PV only; spanning a
-    /// VG across multiple PVs is out of scope for this parser.
+    /// Free physical extents, excluding every segment and non-PE tail bytes.
+    /// If any allocation cannot be resolved safely, no free-space claim is made.
     pub fn vg_unalloc_nodes(&self) -> Vec<FsNode> {
-        if self.pv_end_bytes <= self.pe_start_bytes {
+        if !self.allocation_known || self.pv_end_bytes <= self.pe_start_bytes {
             return Vec::new();
         }
-        let occupied: Vec<(u64, u64)> = self
-            .logical_volumes
-            .iter()
-            .map(|lv| (lv.absolute_offset, lv.size_bytes))
-            .collect();
+        let occupied = &self.occupied;
         let total = self.pv_end_bytes - self.pe_start_bytes;
-        unalloc::free_intervals(self.pe_start_bytes, total, &occupied, 4 * 1024 * 1024)
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (offset, len))| FsNode {
-                id: format!("unalloc:lvm:{}:0x{offset:x}:0x{len:x}", self.partition_id),
-                name: format!("未使用空间{}", idx + 1),
-                parent_id: Some(format!("part:{}", self.partition_id)),
-                kind: NodeKind::File,
-                size: len,
-                deleted: false,
-                inode: None,
-                timestamps: Mactb::default(),
-                link_target: None,
-                has_snapshot: false,
-            })
-            .collect()
+        unalloc::free_intervals(
+            self.pe_start_bytes,
+            total,
+            occupied,
+            self.metadata.extent_size_sectors * 512,
+        )
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (offset, len))| FsNode {
+            id: format!("unalloc:lvm:{}:0x{offset:x}:0x{len:x}", self.partition_id),
+            name: format!("未使用空间{}", idx + 1),
+            parent_id: Some(format!("part:{}", self.partition_id)),
+            kind: NodeKind::File,
+            size: len,
+            deleted: false,
+            inode: None,
+            timestamps: Mactb::default(),
+            link_target: None,
+            has_snapshot: false,
+        })
+        .collect()
     }
 }
 
@@ -198,4 +225,126 @@ pub fn parse_lvm_id(id: &str) -> Option<(&str, usize)> {
         }
         _ => None,
     }
+}
+
+impl LvmLogicalVolume {
+    pub fn readable_layout(&self) -> anyhow::Result<&LinearLayout> {
+        self.layout.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "LVM {}: {}",
+                self.name,
+                self.read_error
+                    .as_deref()
+                    .unwrap_or("volume is unavailable")
+            )
+        })
+    }
+
+    /// A contiguous volume uses its original image offset; fragmented maps
+    /// use LV-relative offsets inside the filesystem reader.
+    pub fn reader_geometry(&self) -> anyhow::Result<(u64, Option<LinearLayout>)> {
+        let layout = self.readable_layout()?;
+        match layout.contiguous_offset() {
+            Some(offset) => Ok((offset, None)),
+            None => Ok((0, Some(layout.clone()))),
+        }
+    }
+}
+
+pub(crate) fn read_backing_range(
+    image: &DiskImage,
+    layout: Option<&LinearLayout>,
+    offset: u64,
+    length: usize,
+) -> anyhow::Result<Vec<u8>> {
+    match layout {
+        Some(layout) => layout.read(image, offset, length),
+        None => image.read_range(offset, length),
+    }
+}
+
+pub(crate) fn read_backing_into(
+    image: &DiskImage,
+    layout: Option<&LinearLayout>,
+    offset: u64,
+    buffer: &mut [u8],
+) -> anyhow::Result<usize> {
+    match layout {
+        Some(layout) => {
+            let bytes = layout.read(image, offset, buffer.len())?;
+            buffer[..bytes.len()].copy_from_slice(&bytes);
+            Ok(bytes.len())
+        }
+        None => image.read_into(offset, buffer),
+    }
+}
+
+/// Project filesystem runs to original image offsets for hex/provenance views.
+pub(crate) fn physical_runs(
+    layout: Option<&LinearLayout>,
+    runs: Vec<FsDataRun>,
+) -> anyhow::Result<Vec<FsDataRun>> {
+    let Some(layout) = layout else {
+        return Ok(runs);
+    };
+    let mut output = Vec::new();
+    for run in runs {
+        run.logical_offset
+            .checked_add(run.length)
+            .ok_or_else(|| anyhow::anyhow!("LVM file logical run end overflow"))?;
+        for range in layout.ranges(run.physical_offset, run.length)? {
+            let logical_offset = run
+                .logical_offset
+                .checked_add(range.logical_offset - run.physical_offset)
+                .ok_or_else(|| anyhow::anyhow!("LVM file logical run offset overflow"))?;
+            output.push(FsDataRun {
+                logical_offset,
+                physical_offset: range.physical_offset,
+                length: range.size,
+            });
+        }
+    }
+    Ok(output)
+}
+
+pub(crate) fn logical_volume_for_id(
+    image: &DiskImage,
+    id: &str,
+) -> anyhow::Result<LvmLogicalVolume> {
+    let (partition_id, index) =
+        parse_lvm_id(id).ok_or_else(|| anyhow::anyhow!("invalid LVM node {id}"))?;
+    let partition = find_partition(image, partition_id)?;
+    LvmVolume::open(image, partition)?
+        .logical_volumes
+        .into_iter()
+        .nth(index)
+        .ok_or_else(|| anyhow::anyhow!("logical volume missing: {id}"))
+}
+
+pub(crate) fn logical_volume_stat(
+    image: &DiskImage,
+    id: &str,
+) -> anyhow::Result<crate::core::filesystem::tree::fs_tree::FsStat> {
+    let volume = logical_volume_for_id(image, id)?;
+    let layout = volume.readable_layout()?;
+    let sample = layout.read(image, 0, 4096)?;
+    Ok(crate::core::filesystem::tree::fs_tree::FsStat {
+        node_id: id.to_owned(),
+        size: layout.size,
+        inode: None,
+        mode: None,
+        mime: crate::core::filesystem::tree::fs_tree::detect_mime_bytes(&sample).to_owned(),
+        magic_hex: (!sample.is_empty()).then(|| hex::encode(&sample[..sample.len().min(32)])),
+        entropy: (!sample.is_empty())
+            .then(|| crate::core::filesystem::tree::fs_tree::shannon_entropy(&sample)),
+        data_runs: layout
+            .segments
+            .iter()
+            .map(|segment| FsDataRun {
+                logical_offset: segment.logical_offset,
+                physical_offset: segment.physical_offset,
+                length: segment.size,
+            })
+            .collect(),
+    })
 }

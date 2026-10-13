@@ -9,6 +9,8 @@
 
 ### Added
 
+- 补齐 LVM2 的 VG/PV/LV/segment/stripe 元数据与原始 LV 范围读取，支持单 PV 碎片多段卷，提供 libvslvm 全部 69 个公开 API 的能力对照。
+
 - 补齐 GPT 原始槽位、类型/唯一 GUID、属性、UTF-16 名称、主备头校验与有界 seek/read，增加分区探针 `--gpt` 及 libvsgpt 全部 42 个公开 API 对照。
 
 - 补齐 MBR/EBR 原始类型、启动标志、CHS、槽位来源和有边界限制的 seek/read 接口，提供分区探针 `--mbr` 及 libvsmbr 全部 38 个公开 API 的能力对照。
@@ -24,6 +26,8 @@
 - 插件 SDK、隔离宿主与 `linuxinfo` 改由独立的 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 子模块维护；源码构建需递归克隆或运行 `just bootstrap` 初始化子模块。
 
 ### Fixed
+
+- LVM2 验证标签、元数据头及文本 CRC，拼接活动环形缓冲回绕并读取远端备份；修复同大小 PV 身份、4Kn 的固定 512 字节单位、首段截断与未使用 PE 判定，跨镜像缺失/冲突成员不再组装为残缺 LV。
 
 - GPT 优先采用头与数组 CRC 完整的副本，磁盘 GUID 与分区保持同一来源；修复 1024/2048/4096 字节几何、单扇区分区和完整范围校验，超过 256 个可浏览分区明确报错，避免 ID 回绕。
 

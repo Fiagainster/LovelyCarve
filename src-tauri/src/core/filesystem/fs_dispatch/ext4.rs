@@ -69,7 +69,7 @@ impl Volume for Ext4Vol {
             .ok_or_else(|| anyhow::anyhow!("ext4 id reparse failed: {id}"))?;
         let inode = self.volume.read_inode(inode_number)?;
         let data_runs = if inode.kind() == NodeKind::File {
-            self.volume.data_runs(&inode)?
+            self.volume.physical_data_runs(&inode)?
         } else {
             Vec::new()
         };

@@ -7,6 +7,60 @@ use std::{io::Write, sync::Arc};
 const FIXTURE: &[u8] = include_bytes!("../../../../vendor/ext4-view/test_data/audit_ext.bin");
 
 #[test]
+fn lvm_fragmented_ext4_navigation_full_range_stream_and_physical_runs() {
+    use crate::core::evidence::partitions::lvm2::test_support::fragmented;
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&fragmented(FIXTURE)).unwrap();
+    let image = Arc::new(DiskImage::open(file.path()).unwrap());
+    let source = Ext4Source::Lvm {
+        part_id: 0,
+        lv_index: 0,
+    };
+    let volume = super::ext4::open_ext4_source(&image, source).unwrap();
+    assert!(!volume.children(2, true).unwrap().is_empty());
+    for number in [12, 15, 19] {
+        let inode = volume.read_inode(number).unwrap();
+        let full = volume.read_inode_data(&inode, usize::MAX).unwrap();
+        let mut streamed = Vec::new();
+        volume
+            .stream_inode_data(&inode, 4103, |bytes| {
+                streamed.extend_from_slice(bytes);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(streamed, full);
+        for offset in [0, 60, 1020, 8190, full.len()] {
+            let from = offset.min(full.len());
+            let to = (offset + 4097).min(full.len());
+            assert_eq!(
+                volume
+                    .read_inode_range(&inode, offset as u64, 4097)
+                    .unwrap(),
+                full[from..to]
+            );
+        }
+        for run in volume.physical_data_runs(&inode).unwrap() {
+            let count =
+                run.length
+                    .min(inode.size.saturating_sub(run.logical_offset)) as usize;
+            if count > 0 {
+                assert_eq!(
+                    image.read_range(run.physical_offset, count).unwrap(),
+                    full[run.logical_offset as usize..run.logical_offset as usize + count]
+                );
+            }
+        }
+    }
+    assert_eq!(volume.extended_attributes(16).unwrap()[0].value.len(), 1024);
+    assert_eq!(
+        volume
+            .symlink_target(&volume.read_inode(18).unwrap())
+            .unwrap(),
+        format!("/{}", "p".repeat(79))
+    );
+}
+
+#[test]
 fn ext4_all_read_paths_agree_for_inline_sparse_indirect_and_unwritten_data() {
     let mut file = tempfile::NamedTempFile::new().unwrap();
     file.write_all(FIXTURE).unwrap();

@@ -89,6 +89,7 @@ impl<'a> BtrfsVolume<'a> {
             self.base_offset,
             &self.chunks,
             self.nodesize as usize,
+            self.layout.as_ref(),
         )
     }
 
@@ -198,6 +199,7 @@ pub(super) struct TreeWalker<'img, 'c> {
     pub(super) base_offset: u64,
     pub(super) chunks: &'c [ChunkMapping],
     pub(super) nodesize: usize,
+    layout: Option<&'c crate::core::evidence::partitions::lvm2::layout::LinearLayout>,
 }
 
 pub(super) struct Frame {
@@ -215,12 +217,14 @@ impl<'img, 'c> TreeWalker<'img, 'c> {
         base_offset: u64,
         chunks: &'c [ChunkMapping],
         nodesize: usize,
+        layout: Option<&'c crate::core::evidence::partitions::lvm2::layout::LinearLayout>,
     ) -> Self {
         Self {
             image,
             base_offset,
             chunks,
             nodesize,
+            layout,
         }
     }
 
@@ -232,7 +236,12 @@ impl<'img, 'c> TreeWalker<'img, 'c> {
             .ok_or_else(|| anyhow!("btrfs: tree node logical 0x{logical:x} unmapped"))?;
         let delta = logical - cm.logical;
         let phys = self.base_offset + cm.physical + delta;
-        let block = self.image.read_range(phys, self.nodesize)?;
+        let block = crate::core::filesystem::volumes::lvm::read_backing_range(
+            self.image,
+            self.layout,
+            phys,
+            self.nodesize,
+        )?;
         if block.len() < HEADER_SIZE {
             bail!(
                 "btrfs: tree node short-read: got {} bytes for logical 0x{logical:x}",

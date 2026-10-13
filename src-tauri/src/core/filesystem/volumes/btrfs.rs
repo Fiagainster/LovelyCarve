@@ -179,6 +179,7 @@ pub fn open_btrfs_source(
 #[derive(Debug)]
 pub struct BtrfsVolume<'a> {
     image: &'a DiskImage,
+    layout: Option<crate::core::evidence::partitions::lvm2::layout::LinearLayout>,
     source: BtrfsSource,
     base_offset: u64,
     length_bytes: u64,

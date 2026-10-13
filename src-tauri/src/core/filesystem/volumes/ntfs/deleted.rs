@@ -157,7 +157,7 @@ impl<'a> NtfsVolume<'a> {
         fs: &mut PartitionReader<'_>,
         logical_size: u64,
     ) -> Vec<(u64, u64)> {
-        let Some(base) = self.backing.base_offset() else {
+        let Some(_) = self.backing.base_offset() else {
             return Vec::new();
         };
         let length = self.backing.length();
@@ -213,10 +213,14 @@ impl<'a> NtfsVolume<'a> {
             {
                 return Vec::new();
             }
-            let Some(absolute) = base.checked_add(position.get()) else {
-                return Vec::new();
+            let ranges = match self.backing.physical_ranges(position.get(), count) {
+                Ok(ranges) => ranges,
+                Err(error) => {
+                    tracing::warn!("NTFS deleted source mapping: {error:#}");
+                    return Vec::new();
+                }
             };
-            runs.push((absolute, count));
+            runs.extend(ranges);
             emitted += count;
         }
         if emitted != logical_size || storage.allocated_size < logical_size {

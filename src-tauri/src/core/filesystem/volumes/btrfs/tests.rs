@@ -1,6 +1,38 @@
 use super::*;
 
 #[test]
+fn lvm_fragmented_btrfs_tree_node_crosses_pe_segment_boundary() {
+    use crate::core::evidence::partitions::lvm2::{
+        header::read_metadata, layout::linear_layout, test_support,
+    };
+    use std::io::Write;
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(&test_support::image(&test_support::text(), 1, false))
+        .unwrap();
+    let image = DiskImage::open(file.path()).unwrap();
+    let metadata = read_metadata(&image, 0, image.len()).unwrap();
+    let group = &metadata.volume_group;
+    let layout = linear_layout(
+        group,
+        &group.logical_volumes[0],
+        &group.physical_volumes[1],
+        0,
+        image.len(),
+    )
+    .unwrap();
+    let chunks = [ChunkMapping {
+        logical: 4096,
+        physical: 7168,
+        length: 8192,
+    }];
+    let walker = TreeWalker::new(&image, 0, &chunks, 4096, Some(&layout));
+    assert_eq!(
+        walker.read_node(4096).unwrap(),
+        [vec![0x11; 1024], vec![0x22; 3072]].concat()
+    );
+}
+
+#[test]
 fn cmp_key_orders_lexicographically() {
     let a = Key {
         objectid: 1u64.into(),

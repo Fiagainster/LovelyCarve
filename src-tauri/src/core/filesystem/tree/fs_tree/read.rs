@@ -15,6 +15,11 @@ impl<'a> FsSession<'a> {
     ) -> anyhow::Result<Vec<u8>> {
         let image = self.image.filesystem_session(node_id);
         image.require_source()?;
+        if parse_lvm_id(node_id).is_some() {
+            let volume =
+                crate::core::filesystem::volumes::lvm::logical_volume_for_id(image, node_id)?;
+            return volume.readable_layout()?.read(image.as_ref(), 0, max_bytes);
+        }
         if let Some(id) = host_docker::parse_host_docker_id(node_id) {
             return host_docker::read_file(image, &id, max_bytes);
         }
@@ -77,6 +82,9 @@ impl<'a> FsSession<'a> {
     pub fn file_stat(&mut self, node_id: &str) -> anyhow::Result<FsStat> {
         let image = self.image.filesystem_session(node_id);
         image.require_source()?;
+        if parse_lvm_id(node_id).is_some() {
+            return crate::core::filesystem::volumes::lvm::logical_volume_stat(image, node_id);
+        }
         if let Some(id) = host_docker::parse_host_docker_id(node_id) {
             return host_docker::file_stat(image, &id, node_id);
         }

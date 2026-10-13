@@ -66,3 +66,8 @@ NTFS 的普通 `$DATA` 和命名流通过同一逻辑读者处理 LZNT1：按压
 同目录硬链接按原始名称分别投影；符号链接与 junction 保留检材目标，不自动跟随宿主路径。
 元数据 API 分开保留 SI/FN 时间和原始 FILETIME，可读取属性映射、安全描述符与独立导出的 MFT。
 完整公开 API 对照、验证来源及未覆盖场景见 [NTFS 能力对照](NTFS.md)。
+
+
+## LVM2 与 libvslvm 对照
+
+LVM2 使用共享纯 Rust grammar、CRC 校验与完整线性 LV map，支持单 PV 碎片段和原始 LV 范围读取。活动副本按已提交 pointer 解析，ring 回绕拼接后校验，备份 MDA 可位于首段探测范围外；PV 以标签 UUID 匹配，LVM sector 字段固定为 512 字节。跨镜像 RAID 候选不会在缺员时产生缩短 LV。非线性 stripes、snapshot、thin、mirror 等仅保留元数据并拒绝读取；无法完整判定分配时不声称 PE 空闲。全部 69 个公开 API、源码差异、验证边界见 [LVM2](LVM.md)。

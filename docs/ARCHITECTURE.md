@@ -125,7 +125,7 @@ src-tauri/src/
 
 `core/extensions/task_scheduler` 保留台账、状态机、派发、恢复、进度、看门狗和 post-action 契约。生产 `PluginTaskRunner` 位于 `app/workflows/scheduler.rs`，负责实例存活、执行、analysis.db 落库、时间线投影和结果清理；清理失败仍按原语义记录告警并完成任务删除。插件 SDK 保留 ABI/LPP 和 wire 结果，`core/analysis/results/models.rs` 保存经过宿主校验的 JSON/IPC 投影；插件解析器做转换和限额校验，存储不依赖插件宿主。
 
-LVM 标签、活动 metadata region、文本解析和首段字节几何位于 `evidence/partitions/lvm2/metadata.rs`，文件系统 LvmVolume 与 RAID 共用。文件系统层仅构造导航节点和未分配空间投影，RAID 不反向调用导航实现。相关二进制 header 测试随解析器移动。
+LVM 标签/CRC/活动副本位于 `evidence/partitions/lvm2/header.rs`，有界文本 grammar 与 VG/PV/LV/segment/stripe 模型位于 `text.rs`，完整线性 LV 字节映射与 read/seek 位于 `layout.rs`；文件系统与 RAID 共用。活动 ring 回绕、远端备份和成员 UUID 按同一读取规则处理，不以历史文本扫描替代损坏的当前副本。原生 ext/XFS/Btrfs/NTFS 读者支持单 PV 碎片段，来源 runs 映射回原始镜像；多 PV 线性 LV 仍通过 RAID 候选流程消费，缺失成员不缩短为可读卷。文件系统层构造导航、原始 LV 文件与未使用 PE 投影，RAID 不反向调用导航实现。完整 libvslvm API 对照与限制见 [LVM2](LVM.md)。
 
 无元数据 RAID 的数据偏移探测保留小偏移候选，并以 512 KiB 步长扫描各成员前 256 MiB；只有命中 MBR、NTFS 或 ext4 签名的偏移才进入重组搜索，偏移候选总数最多 32 个，随后仍须通过文件系统结构和目录／MFT 验证。ext4 验证最多检查 256 个 inode 和 24 个目录，继续进入共享目录的子树并核对 `.`／`..`，不要求根下存在三个目录；备份超级块及已知文件格式的正文签名优先用于区分早期目录同样可读的布局，文件扩展名与签名不一致只是不贡献分数。此路径覆盖 mdadm 头被清空而数据区仍在大预留区之后的 NAS 检材。`just run-example probe_raid --member-signatures <image>...` 可只读检查成员头尾和该范围内的 ext4 签名；真实 NAS 回归可设置 `LOVELYCARVE_NAS_FIXTURE_DIR` 后运行 `just test real_nas_erased_mdadm -- --ignored`。
 

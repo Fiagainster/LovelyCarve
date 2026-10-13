@@ -1,5 +1,8 @@
 //! LVM member enumeration and RAID member sizing.
 use super::*;
+#[cfg(test)]
+#[path = "lvm_tests.rs"]
+mod lvm_tests;
 
 pub(super) fn assembled_bytes_for(level: i32, raid_disks: u32, per_member_bytes: u64) -> u64 {
     match level {
@@ -51,7 +54,10 @@ pub(super) fn collect_striped_members(
     Ok(out)
 }
 
-pub(super) fn group_pvs_into_vgs(pvs: &[LvmPvMetadata]) -> Vec<RaidVolumeGroup> {
+pub(super) fn group_pvs_into_vgs(
+    pvs: &[LvmPvMetadata],
+    diagnostics: &mut Vec<String>,
+) -> Vec<RaidVolumeGroup> {
     let mut grouped: BTreeMap<String, Vec<&LvmPvMetadata>> = BTreeMap::new();
     for pv in pvs {
         grouped.entry(pv.vg_uuid.clone()).or_default().push(pv);
@@ -59,37 +65,134 @@ pub(super) fn group_pvs_into_vgs(pvs: &[LvmPvMetadata]) -> Vec<RaidVolumeGroup> 
     grouped
         .into_iter()
         .map(|(vg_uuid, members)| {
-            let head = members[0];
-            let lvs = head
+            let head = members
+                .iter()
+                .max_by_key(|pv| pv.volume_group.sequence_number)
+                .copied()
+                .unwrap_or(members[0]);
+            let group = &head.volume_group;
+            let conflicting = members.iter().any(|pv| {
+                pv.volume_group.sequence_number == group.sequence_number
+                    && pv.volume_group != *group
+            });
+            if conflicting {
+                diagnostics.push(format!(
+                    "VG {} has conflicting copies at seqno {}",
+                    group.name, group.sequence_number
+                ));
+            }
+            let lvs = group
                 .logical_volumes
                 .iter()
-                .map(|lv| RaidLogicalVolume {
-                    name: lv.name.clone(),
-                    size_bytes: lv
-                        .segments
-                        .iter()
-                        .map(|seg| seg.extent_count * head.extent_size_sectors * 512)
-                        .sum(),
-                    segments: lv
-                        .segments
-                        .iter()
-                        .filter_map(|seg| {
-                            let pv = members.iter().find(|p| p.pv_local_id == seg.pv_local_id)?;
-                            let byte_offset = pv.partition_byte_offset
-                                + (pv.pe_start_sectors
-                                    + seg.pv_extent_offset * pv.extent_size_sectors)
-                                    * pv.sector_size as u64;
-                            let byte_length =
-                                seg.extent_count * pv.extent_size_sectors * pv.sector_size as u64;
-                            Some(RaidLvSegment {
-                                pv_local_id: seg.pv_local_id.clone(),
-                                image_id: pv.image_id.clone(),
-                                partition_id: pv.partition_id,
-                                byte_offset,
-                                byte_length,
-                            })
-                        })
-                        .collect(),
+                .filter_map(|lv| {
+                    let size_bytes = lv.segments.iter().try_fold(0u64, |total, segment| {
+                        segment
+                            .extent_count
+                            .checked_mul(group.extent_size_sectors)?
+                            .checked_mul(512)?
+                            .checked_add(total)
+                    });
+                    let Some(size_bytes) = size_bytes else {
+                        diagnostics.push(format!("LVM {} size overflow", lv.name));
+                        return None;
+                    };
+                    let mut segments = Vec::new();
+                    for segment in &lv.segments {
+                        if conflicting {
+                            break;
+                        }
+                        if segment.kind != "striped"
+                            || segment.stripe_count != 1
+                            || segment.stripes.len() != 1
+                        {
+                            diagnostics.push(format!(
+                                "LVM {}: unsupported segment {} with {} stripes",
+                                lv.name, segment.kind, segment.stripe_count
+                            ));
+                            segments.clear();
+                            break;
+                        }
+                        let stripe = &segment.stripes[0];
+                        let Some(pv_definition) = group
+                            .physical_volumes
+                            .iter()
+                            .find(|pv| pv.name == stripe.physical_volume)
+                        else {
+                            segments.clear();
+                            break;
+                        };
+                        let candidates: Vec<_> = members
+                            .iter()
+                            .filter(|pv| pv.pv_uuid == pv_definition.identifier)
+                            .collect();
+                        if candidates.len() != 1 {
+                            diagnostics.push(format!(
+                                "LVM {}: missing or ambiguous PV {}",
+                                lv.name, pv_definition.identifier
+                            ));
+                            segments.clear();
+                            break;
+                        }
+                        let pv = candidates[0];
+                        if pv.pe_start_sectors != pv_definition.pe_start_sectors {
+                            diagnostics.push(format!(
+                                "LVM {}: PV {} PE start conflicts with its label",
+                                lv.name, pv.pv_uuid
+                            ));
+                            segments.clear();
+                            break;
+                        }
+                        let mut single = segment.clone();
+                        single.start_extent = 0;
+                        let volume = crate::core::evidence::partitions::lvm2::text::LogicalVolume {
+                            name: lv.name.clone(),
+                            identifier: lv.identifier.clone(),
+                            segments: vec![single],
+                        };
+                        let layout = crate::core::evidence::partitions::lvm2::layout::linear_layout(
+                            group,
+                            &volume,
+                            pv_definition,
+                            pv.partition_byte_offset,
+                            pv.partition_byte_length.min(pv.pv_size_bytes),
+                        );
+                        let layout = match layout {
+                            Ok(layout) => layout,
+                            Err(error) => {
+                                diagnostics.push(format!("LVM {}: {error:#}", lv.name));
+                                segments.clear();
+                                break;
+                            }
+                        };
+                        let Some(range) = layout.segments.first() else {
+                            segments.clear();
+                            break;
+                        };
+                        if segments.iter().any(|previous: &RaidLvSegment| {
+                            previous.image_id == pv.image_id
+                                && previous.partition_id == pv.partition_id
+                                && previous.byte_offset < range.physical_offset + range.size
+                                && range.physical_offset
+                                    < previous.byte_offset + previous.byte_length
+                        }) {
+                            diagnostics
+                                .push(format!("LVM {}: overlapping physical extents", lv.name));
+                            segments.clear();
+                            break;
+                        }
+                        segments.push(RaidLvSegment {
+                            pv_local_id: pv_definition.name.clone(),
+                            image_id: pv.image_id.clone(),
+                            partition_id: pv.partition_id,
+                            byte_offset: range.physical_offset,
+                            byte_length: range.size,
+                        });
+                    }
+                    Some(RaidLogicalVolume {
+                        name: lv.name.clone(),
+                        size_bytes,
+                        segments,
+                    })
                 })
                 .collect();
             RaidVolumeGroup {
@@ -98,14 +201,20 @@ pub(super) fn group_pvs_into_vgs(pvs: &[LvmPvMetadata]) -> Vec<RaidVolumeGroup> 
                 extent_size_sectors: head.extent_size_sectors,
                 members: members
                     .iter()
-                    .map(|pv| RaidVgMember {
-                        image_id: pv.image_id.clone(),
-                        partition_id: pv.partition_id,
-                        pv_local_id: pv.pv_local_id.clone(),
-                        pv_uuid: pv.pv_uuid.clone(),
-                        pe_start_sectors: pv.pe_start_sectors,
-                        partition_byte_offset: pv.partition_byte_offset,
-                        partition_byte_length: pv.partition_byte_length,
+                    .filter_map(|pv| {
+                        let definition = group
+                            .physical_volumes
+                            .iter()
+                            .find(|definition| definition.identifier == pv.pv_uuid)?;
+                        Some(RaidVgMember {
+                            image_id: pv.image_id.clone(),
+                            partition_id: pv.partition_id,
+                            pv_local_id: definition.name.clone(),
+                            pv_uuid: pv.pv_uuid.clone(),
+                            pe_start_sectors: definition.pe_start_sectors,
+                            partition_byte_offset: pv.partition_byte_offset,
+                            partition_byte_length: pv.partition_byte_length,
+                        })
                     })
                     .collect(),
                 logical_volumes: lvs,
@@ -127,14 +236,26 @@ pub(super) fn materialise_logical_volumes(
                 let Some(image) = images.iter().find(|img| img.id == seg.image_id) else {
                     continue;
                 };
-                total += seg.byte_length;
+                let Some(next_total) = total.checked_add(seg.byte_length) else {
+                    segments.clear();
+                    break;
+                };
+                if seg
+                    .byte_offset
+                    .checked_add(seg.byte_length)
+                    .is_none_or(|end| end > image.len())
+                {
+                    segments.clear();
+                    break;
+                }
+                total = next_total;
                 segments.push(LvByteSegment {
                     image: image.clone(),
                     byte_offset: seg.byte_offset,
                     byte_length: seg.byte_length,
                 });
             }
-            if segments.is_empty() {
+            if segments.is_empty() || total != lv.size_bytes {
                 continue;
             }
             out.push(LinearLvSource {

@@ -347,13 +347,22 @@ impl VolumeProbe for LvmProbe {
     }
 
     fn probe(&self, ctx: &DetectCtx<'_>) -> Result<Option<VolumeProbeHit>> {
-        if has_lvm_label(ctx.head) {
+        if LVM2_SCAN_OFFSETS.iter().any(|&offset| {
+            ctx.head.get(offset..offset + 512).is_some_and(|label| {
+                crate::core::evidence::partitions::lvm2::header::parse_label(
+                    label,
+                    offset as u64,
+                    ctx.size,
+                )
+                .is_ok()
+            })
+        }) {
             Ok(Some(VolumeProbeHit::new(
                 self.name(),
                 PartitionKind::Lvm,
                 90,
                 0,
-                "LVM2 LABELONE/LVM2 label in boot probe",
+                "LVM2 physical volume label with valid CRC and geometry",
             )))
         } else {
             Ok(None)

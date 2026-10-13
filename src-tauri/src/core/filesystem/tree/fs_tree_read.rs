@@ -68,6 +68,20 @@ where
 {
     let image = image.filesystem_session(node_id);
     image.require_source()?;
+    if crate::core::filesystem::volumes::lvm::parse_lvm_id(node_id).is_some() {
+        let volume = crate::core::filesystem::volumes::lvm::logical_volume_for_id(image, node_id)?;
+        let layout = volume.readable_layout()?;
+        let mut offset = 0u64;
+        while offset < layout.size {
+            let bytes = layout.read(image.as_ref(), offset, chunk_size.max(1))?;
+            if bytes.is_empty() {
+                anyhow::bail!("LVM LV ended before EOF");
+            }
+            visitor(&bytes)?;
+            offset += bytes.len() as u64;
+        }
+        return Ok(offset);
+    }
     if let Some(id) = host_docker::parse_host_docker_id(node_id) {
         return host_docker::stream_file(image, &id, chunk_size, visitor);
     }
@@ -186,6 +200,15 @@ impl FsSession<'_> {
         offset: u64,
         length: usize,
     ) -> anyhow::Result<Option<Vec<u8>>> {
+        if crate::core::filesystem::volumes::lvm::parse_lvm_id(node_id).is_some() {
+            let image = self.image().filesystem_session(node_id);
+            let volume =
+                crate::core::filesystem::volumes::lvm::logical_volume_for_id(image, node_id)?;
+            return volume
+                .readable_layout()?
+                .read(image.as_ref(), offset, length)
+                .map(Some);
+        }
         if let Some((source, record, stream)) = parse_ntfs_ads_id(node_id) {
             return open_ntfs_for_source(self.image(), source)?
                 .read_data_stream_range(record, &stream, offset, length)

@@ -137,6 +137,7 @@ impl<'a> NtfsVolume<'a> {
             image,
             base_offset: partition.start_lba * image.sector_size as u64,
             length_bytes: partition.length_lba * image.sector_size as u64,
+            layout: None,
         };
         Self::from_backing(backing, NtfsSource::Partition(partition.id))
     }
@@ -150,10 +151,12 @@ impl<'a> NtfsVolume<'a> {
             .logical_volumes
             .get(lv_index)
             .ok_or_else(|| anyhow!("logical volume not found: lvm:{}:{lv_index}", partition.id))?;
+        let (base_offset, layout) = lv.reader_geometry()?;
         let backing = PartitionBacking::Image {
             image,
-            base_offset: lv.absolute_offset,
+            base_offset,
             length_bytes: lv.size_bytes,
+            layout,
         };
         Self::from_backing(
             backing,

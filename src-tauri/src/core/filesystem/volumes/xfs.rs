@@ -29,10 +29,11 @@ use xfs_fuse::{FileType, Volume, XfsIno};
 
 use crate::core::evidence::image::find_partition;
 use crate::core::evidence::image::{DiskImage, Partition};
+use crate::core::evidence::partitions::lvm2::layout::LinearLayout;
 use crate::core::filesystem::tree::fs_tree::{
     detect_mime_bytes, shannon_entropy, FsDataRun, FsNode, FsStat, Mactb, NodeKind,
 };
-use crate::core::filesystem::volumes::lvm::LvmVolume;
+use crate::core::filesystem::volumes::lvm::{read_backing_range, LvmVolume};
 
 const SAMPLE_BYTES: usize = 4096;
 const STREAM_FLOOR: usize = 64 * 1024;
@@ -137,8 +138,21 @@ impl XfsVolume {
         length_bytes: u64,
         root_parent_id: String,
     ) -> Result<Self> {
+        let (base_offset, layout) = match source {
+            XfsSource::Lvm { part_id, lv_index } => {
+                let partition = find_partition(&image, &part_id.to_string())?;
+                let volume = LvmVolume::open(&image, partition)?;
+                volume
+                    .logical_volumes
+                    .get(lv_index)
+                    .ok_or_else(|| anyhow!("LVM LV missing"))?
+                    .reader_geometry()?
+            }
+            XfsSource::Partition(_) => (base_offset, None),
+        };
         let cursor = PartitionCursor {
             image,
+            layout,
             base_offset,
             length_bytes,
             position: 0,
@@ -461,6 +475,7 @@ fn join_unix(parent: &str, name: &str) -> String {
 /// copies, so there's no aliasing risk.
 pub struct PartitionCursor {
     image: Arc<DiskImage>,
+    layout: Option<LinearLayout>,
     base_offset: u64,
     length_bytes: u64,
     position: u64,
@@ -473,10 +488,13 @@ impl Read for PartitionCursor {
         }
         let remaining = self.length_bytes - self.position;
         let want = (buf.len() as u64).min(remaining) as usize;
-        let bytes = self
-            .image
-            .read_range(self.base_offset + self.position, want)
-            .map_err(|err| io::Error::other(err.to_string()))?;
+        let bytes = read_backing_range(
+            &self.image,
+            self.layout.as_ref(),
+            self.base_offset + self.position,
+            want,
+        )
+        .map_err(|err| io::Error::other(err.to_string()))?;
         let copied = bytes.len();
         buf[..copied].copy_from_slice(&bytes);
         self.position += copied as u64;
@@ -504,6 +522,32 @@ impl Seek for PartitionCursor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn lvm_fragmented_xfs_cursor_crosses_segments_and_seeks_from_end() {
+        use super::*;
+        use crate::core::evidence::partitions::lvm2::test_support;
+        use std::io::Write;
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&test_support::image(&test_support::text(), 1, false))
+            .unwrap();
+        let image = Arc::new(DiskImage::open(file.path()).unwrap());
+        let volume = LvmVolume::open(&image, &image.partitions[0]).unwrap();
+        let (base_offset, layout) = volume.logical_volumes[0].reader_geometry().unwrap();
+        let mut cursor = PartitionCursor {
+            image,
+            base_offset,
+            layout,
+            length_bytes: 16384,
+            position: 0,
+        };
+        cursor.seek(SeekFrom::Start(8190)).unwrap();
+        let mut bytes = [0; 4];
+        cursor.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, [0x11, 0x11, 0x22, 0x22]);
+        cursor.seek(SeekFrom::End(-2)).unwrap();
+        assert_eq!(cursor.read(&mut bytes).unwrap(), 2);
+        assert_eq!(&bytes[..2], &[0x22, 0x22]);
+    }
     use super::*;
     use crate::core::evidence::image::PartitionKind;
 

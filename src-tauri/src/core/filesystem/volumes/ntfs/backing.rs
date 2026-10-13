@@ -10,6 +10,7 @@ pub(super) enum PartitionBacking<'a> {
         image: &'a DiskImage,
         base_offset: u64,
         length_bytes: u64,
+        layout: Option<crate::core::evidence::partitions::lvm2::layout::LinearLayout>,
     },
     Bitlocker {
         unlocked: Arc<UnlockedVolume>,
@@ -25,25 +26,62 @@ impl<'a> PartitionBacking<'a> {
         }
     }
 
-    /// Absolute image byte offset of this volume's start, for translating
-    /// volume-relative data-run positions into image-absolute byte runs.
-    /// `None` for BitLocker backings (their plaintext stream has no stable
-    /// image offset), which simply skips run capture.
+    /// Coordinate base for run capture: original image offset for a slice,
+    /// zero for a mapped LV. `physical_ranges` resolves original image offsets.
+    /// BitLocker has no direct source runs and returns `None`.
     pub(super) fn base_offset(&self) -> Option<u64> {
         match self {
-            Self::Image { base_offset, .. } => Some(*base_offset),
+            Self::Image {
+                base_offset,
+                layout: None,
+                ..
+            } => Some(*base_offset),
+            Self::Image {
+                layout: Some(_), ..
+            } => Some(0),
             Self::Bitlocker { .. } => None,
+        }
+    }
+
+    pub(super) fn physical_ranges(&self, position: u64, length: u64) -> Result<Vec<(u64, u64)>> {
+        match self {
+            Self::Image {
+                layout: Some(layout),
+                ..
+            } => Ok(layout
+                .ranges(position, length)?
+                .into_iter()
+                .map(|range| (range.physical_offset, range.size))
+                .collect()),
+            Self::Image {
+                base_offset,
+                layout: None,
+                ..
+            } => Ok(vec![(
+                base_offset
+                    .checked_add(position)
+                    .ok_or_else(|| anyhow!("NTFS source offset overflow"))?,
+                length,
+            )]),
+            Self::Bitlocker { .. } => Ok(Vec::new()),
         }
     }
 
     pub(super) fn read_into(&self, position: u64, buf: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Image {
-                image, base_offset, ..
+                image,
+                base_offset,
+                layout,
+                ..
             } => {
-                let bytes = image
-                    .read_range(base_offset + position, buf.len())
-                    .map_err(|err| io::Error::other(err.to_string()))?;
+                let bytes = crate::core::filesystem::volumes::lvm::read_backing_range(
+                    image,
+                    layout.as_ref(),
+                    base_offset + position,
+                    buf.len(),
+                )
+                .map_err(|err| io::Error::other(err.to_string()))?;
                 let copied = bytes.len();
                 buf[..copied].copy_from_slice(&bytes);
                 Ok(copied)
