@@ -36,6 +36,59 @@ use super::{
     utils::{decode_from, Uuid},
 };
 
+/// Decode targets by inode length; V5 sl_offset is a logical offset, not a seek delta.
+pub(crate) fn read<R: BufRead + Reader + Seek>(
+    reader: &mut R,
+    sb: &Sb,
+    inode: &super::dinode::Dinode,
+    owner: u64,
+) -> Result<Vec<u8>, i32> {
+    use super::{checked::*, compat::EIO, dinode::DiU};
+    let length = usize::try_from(inode.di_core.di_size).map_err(|_| EIO)?;
+    if length == 0 || length > 1024 {
+        return Err(EIO);
+    }
+    if let DiU::Symlink(data) = &inode.di_u {
+        if data.len() != length || data.contains(&0) {
+            return Err(EIO);
+        }
+        return Ok(data.clone());
+    }
+    let records = super::logical::data_extents(reader, sb, inode)?;
+    if records.iter().any(|r| r.br_flag) {
+        return Err(EIO);
+    }
+    let mut output = Vec::with_capacity(length);
+    let mut logical_block = 0;
+    while output.len() < length {
+        let (raw, offset) = super::attributes::block(reader, sb, &records, logical_block)?;
+        let (header, count) = if sb.version() == 5 {
+            crc(&raw, 12)?;
+            let count = u32be(&raw, 8)? as usize;
+            if u32be(&raw, 0)? != XFS_SYMLINK_MAGIC
+                || u32be(&raw, 4)? as usize != output.len()
+                || count == 0
+                || count > raw.len() - 56
+                || count > length - output.len()
+                || bytes(&raw, 16, 16)? != sb.metadata_uuid.as_bytes()
+                || u64be(&raw, 32)? != owner
+                || u64be(&raw, 40)? != offset / 512
+            {
+                return Err(EIO);
+            }
+            (56, count)
+        } else {
+            (0, raw.len().min(length - output.len()))
+        };
+        output.extend_from_slice(bytes(&raw, header, count)?);
+        logical_block += 1;
+    }
+    if output.contains(&0) {
+        return Err(EIO);
+    }
+    Ok(output)
+}
+
 #[derive(Clone, Copy, Debug, Decode)]
 pub struct DsymlinkHdr {
     sl_magic: u32,

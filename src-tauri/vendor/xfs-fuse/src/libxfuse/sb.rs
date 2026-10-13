@@ -25,11 +25,13 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+use super::{
+    checked::*,
+    compat::{EINVAL, EIO},
+};
 use std::io::{prelude::*, SeekFrom};
 
 use bitflags::bitflags;
-use byteorder::{BigEndian, LittleEndian, ReadBytesExt};
-use crc::{Crc, CRC_32_ISCSI};
 
 use super::{definitions::*, utils::Uuid};
 
@@ -45,7 +47,7 @@ mod constants {
     pub const XFS_SB_VERSION_SECTORBIT: u16 = 0x0800;
     pub const XFS_SB_VERSION_EXTFLGBIT: u16 = 0x1000;
     pub const XFS_SB_VERSION_DIRV2BIT: u16 = 0x2000;
-    pub const XFS_SB_VERSION_MOREBITSBIT: u16 = 0x4000;
+    pub const XFS_SB_VERSION_MOREBITSBIT: u16 = 0x8000;
 
     pub const XFS_UQUOTA_ACCT: u16 = 0x0001;
     pub const XFS_UQUOTA_ENFD: u16 = 0x0002;
@@ -198,7 +200,11 @@ pub struct Sb {
     // sb_sectsize: u16,
     sb_inodesize: u16,
     // sb_inopblock: u16,
-    // sb_fname: [u8; 12],
+    pub label: [u8; 12],
+    pub metadata_uuid: Uuid,
+    pub features_compat: u32,
+    pub features_ro_compat: u32,
+    pub features_log_incompat: u32,
     pub sb_blocklog: u8,
     // sb_sectlog: u8,
     pub sb_inodelog: u8,
@@ -234,138 +240,169 @@ pub struct Sb {
 impl Sb {
     const BBSHIFT: u8 = 9;
 
-    pub fn from<T: BufRead + Seek>(buf_reader: &mut T) -> Sb {
-        let sb_magicnum = buf_reader.read_u32::<BigEndian>().unwrap();
-        if sb_magicnum != XFS_SB_MAGIC {
-            panic!("Superblock magic number is invalid");
+    /// Parse and validate the superblock without unwinding on bad evidence.
+    pub fn read<T: BufRead + Seek>(reader: &mut T) -> Result<Sb, i32> {
+        reader.seek(SeekFrom::Start(0)).map_err(|_| EIO)?;
+        let mut raw = vec![0; 512];
+        reader.read_exact(&mut raw).map_err(|_| EIO)?;
+        if u32be(&raw, 0)? != XFS_SB_MAGIC {
+            return Err(EIO);
         }
-
-        let sb_blocksize = buf_reader.read_u32::<BigEndian>().unwrap();
-        let sb_dblocks = buf_reader.read_u64::<BigEndian>().unwrap();
-        let sb_rblocks = buf_reader.read_u64::<BigEndian>().unwrap();
-        let _sb_rextents = buf_reader.read_u64::<BigEndian>().unwrap();
-        let sb_uuid = Uuid::from_u128(buf_reader.read_u128::<BigEndian>().unwrap());
-        let _sb_logstart = buf_reader.read_u64::<BigEndian>().unwrap();
-        let sb_rootino = buf_reader.read_u64::<BigEndian>().unwrap();
-        let _sb_rbmino = buf_reader.read_u64::<BigEndian>().unwrap();
-        let _sb_rsumino = buf_reader.read_u64::<BigEndian>().unwrap();
-        let _sb_rextsize = buf_reader.read_u32::<BigEndian>().unwrap();
-        let sb_agblocks = buf_reader.read_u32::<BigEndian>().unwrap();
-        let sb_agcount = buf_reader.read_u32::<BigEndian>().unwrap();
-        let _sb_rbmblocks = buf_reader.read_u32::<BigEndian>().unwrap();
-        let sb_logblocks = buf_reader.read_u32::<BigEndian>().unwrap();
-        let sb_versionnum = buf_reader.read_u16::<BigEndian>().unwrap();
-        let sb_sectsize = buf_reader.read_u16::<BigEndian>().unwrap();
-        let sb_inodesize = buf_reader.read_u16::<BigEndian>().unwrap();
-        let _sb_inopblock = buf_reader.read_u16::<BigEndian>().unwrap();
-
-        let mut buf_fname = [0u8; 12];
-        buf_reader.read_exact(&mut buf_fname[..]).unwrap();
-        let _sb_fname = buf_fname;
-
-        let sb_blocklog = buf_reader.read_u8().unwrap();
-        let _sb_sectlog = buf_reader.read_u8().unwrap();
-        let sb_inodelog = buf_reader.read_u8().unwrap();
-        let sb_inopblog = buf_reader.read_u8().unwrap();
-        let sb_agblklog = buf_reader.read_u8().unwrap();
-        let _sb_rextslog = buf_reader.read_u8().unwrap();
-        let _sb_inprogress = buf_reader.read_u8().unwrap();
-        let _sb_imax_pct = buf_reader.read_u8().unwrap();
-        let sb_icount = buf_reader.read_u64::<BigEndian>().unwrap();
-        let sb_ifree = buf_reader.read_u64::<BigEndian>().unwrap();
-        let sb_fdblocks = buf_reader.read_u64::<BigEndian>().unwrap();
-        let _sb_frextents = buf_reader.read_u64::<BigEndian>().unwrap();
-        let _sb_uquotino = buf_reader.read_u64::<BigEndian>().unwrap();
-        let _sb_gquotino = buf_reader.read_u64::<BigEndian>().unwrap();
-        let _sb_qflags = buf_reader.read_u16::<BigEndian>().unwrap();
-        let _sb_flags = buf_reader.read_u8().unwrap();
-        let _sb_shared_vn = buf_reader.read_u8().unwrap();
-        let _sb_inoalignmt = buf_reader.read_u32::<BigEndian>().unwrap();
-        let _sb_unit = buf_reader.read_u32::<BigEndian>().unwrap();
-        let _sb_width = buf_reader.read_u32::<BigEndian>().unwrap();
-        let sb_dirblklog = buf_reader.read_u8().unwrap();
-        let _sb_logsectlog = buf_reader.read_u8().unwrap();
-        let _sb_logsectsize = buf_reader.read_u16::<BigEndian>().unwrap();
-        let _sb_logsunit = buf_reader.read_u32::<BigEndian>().unwrap();
-        let sb_features2 =
-            SbFeatures2::from_bits(buf_reader.read_u32::<BigEndian>().unwrap()).unwrap();
-        let _sb_bad_features2 = buf_reader.read_u32::<BigEndian>().unwrap();
-
-        /* Version 5 superblock features */
-        let _sb_features_compat = buf_reader.read_u32::<BigEndian>().unwrap();
-        let _sb_features_ro_compat = buf_reader.read_u32::<BigEndian>().unwrap();
-        let incompat_raw = buf_reader.read_u32::<BigEndian>().unwrap();
-        let sb_features_incompat = SbFeaturesIncompat::from_bits(incompat_raw)
-            .unwrap_or_else(|| panic!("Unknown value in sb_features_incompat: {incompat_raw:?}"));
-        let log_incompat_raw = buf_reader.read_u32::<BigEndian>().unwrap();
-        let _sb_features_log_incompat = SbFeaturesLogIncompat::from_bits(log_incompat_raw)
-            .unwrap_or_else(|| {
-                panic!("Unknown value in sb_features_log_incompat: {log_incompat_raw:?}")
-            });
-
-        buf_reader.seek(SeekFrom::Start(0)).unwrap();
-
-        const CASTAGNOLI: Crc<u32> = Crc::<u32>::new(&CRC_32_ISCSI);
-        let mut digest = CASTAGNOLI.digest();
-
-        let mut buf_bcrc = [0u8; 224];
-        buf_reader.read_exact(&mut buf_bcrc).unwrap();
-        digest.update(&buf_bcrc);
-        digest.update(&[0u8; 4]);
-
-        let sb_crc = buf_reader.read_u32::<LittleEndian>().unwrap();
-
-        let mut buf_acrc = vec![0u8; usize::from(sb_sectsize) - 228];
-        buf_reader.read_exact(&mut buf_acrc).unwrap();
-        digest.update(&buf_acrc);
-
-        if ![4, 5].contains(&(sb_versionnum & 0xF)) {
-            panic!(
-                "Unsupported filesystem version number {}",
-                sb_versionnum & 0xF
-            );
+        let version = u16be(&raw, 100)?;
+        if version & constants::XFS_SB_VERSION_SHAREDBIT != 0 || !(1..=5).contains(&(version & 15))
+        {
+            return Err(EINVAL);
         }
-        if sb_versionnum & 0xF == 5 && !sb_features2.crc() {
-            panic!("Version 5 file systems must set the CRC bit in sb_features2");
+        let sector_size = u16be(&raw, 102)? as usize;
+        if !sector_size.is_power_of_two() || !(512..=32768).contains(&sector_size) {
+            return Err(EIO);
         }
-        if sb_features2.crc() && digest.finalize() != sb_crc {
-            panic!("Crc check failed!");
+        if version & 15 == 5 {
+            raw.resize(sector_size, 0);
+            reader.read_exact(&mut raw[512..]).map_err(|_| EIO)?;
+            crc(&raw, 224)?;
         }
-        if sb_features_incompat.meta_uuid() {
-            panic!("The Metadata UUID feature is not supported");
+        let block_size = u32be(&raw, 4)?;
+        let inode_size = u16be(&raw, 104)?;
+        let block_log = raw[120];
+        let inode_log = raw[122];
+        let inop_log = raw[123];
+        let ag_log = raw[124];
+        let ag_blocks = u32be(&raw, 84)?;
+        let ag_count = u32be(&raw, 88)?;
+        let data_blocks = u64be(&raw, 8)?;
+        if !block_size.is_power_of_two()
+            || !(512..=65536).contains(&block_size)
+            || block_size < sector_size as u32
+            || block_log != block_size.trailing_zeros() as u8
+            || !inode_size.is_power_of_two()
+            || !(256..=2048).contains(&inode_size)
+            || inode_size as u32 > block_size
+            || inode_log != inode_size.trailing_zeros() as u8
+            || inop_log != block_log - inode_log
+            || u16be(&raw, 106)? as u32 != block_size / inode_size as u32
+            || ag_blocks == 0
+            || ag_count == 0
+            || ag_log
+                != ag_blocks
+                    .checked_next_power_of_two()
+                    .ok_or(EIO)?
+                    .trailing_zeros() as u8
+            || data_blocks == 0
+            || data_blocks > u64::from(ag_blocks) * u64::from(ag_count)
+            || data_blocks <= u64::from(ag_blocks) * u64::from(ag_count - 1)
+            || raw[192] > 6
+            || u32::from(block_log) + u32::from(raw[192]) > 16
+            || raw[121] != sector_size.trailing_zeros() as u8
+        {
+            return Err(EIO);
         }
-        if sb_features_incompat.needs_repair() {
-            panic!("The NeedsRepair feature is not supported");
+        let uuid = Uuid::from_u128(u128::from_be_bytes(
+            bytes(&raw, 32, 16)?.try_into().map_err(|_| EIO)?,
+        ));
+        // Legacy superblocks have no feature words; never interpret their padding as V5 flags.
+        let features2 = if version & 15 == 5 || version & constants::XFS_SB_VERSION_MOREBITSBIT != 0
+        {
+            u32be(&raw, 200)?
+        } else {
+            0
+        };
+        let incompat = if version & 15 == 5 {
+            u32be(&raw, 216)?
+        } else {
+            0
+        };
+        let features_incompat = SbFeaturesIncompat::from_bits(incompat).ok_or(EINVAL)?;
+        if features_incompat.intersects(
+            SbFeaturesIncompat::NeedsRepair
+                | SbFeaturesIncompat::Metadir
+                | SbFeaturesIncompat::Zoned
+                | SbFeaturesIncompat::ZONE_GAPS,
+        ) {
+            return Err(EINVAL);
         }
-        if sb_features_incompat.metadir() && sb_rblocks > 0 {
-            panic!("The Metadir feature is not supported in combination with a real-time volume");
-        }
-        if sb_features_incompat.zoned() && sb_rblocks > 0 {
-            panic!("The Zoned feature is not supported on real-time volumes");
-        }
+        let metadata_uuid = if features_incompat.meta_uuid() {
+            Uuid::from_u128(u128::from_be_bytes(
+                bytes(&raw, 248, 16)?.try_into().map_err(|_| EIO)?,
+            ))
+        } else {
+            uuid
+        };
+        let superblock = Sb {
+            sb_blocksize: block_size,
+            sb_dblocks: data_blocks,
+            sb_rblocks: u64be(&raw, 16)?,
+            sb_uuid: uuid,
+            metadata_uuid,
+            label: bytes(&raw, 108, 12)?.try_into().map_err(|_| EIO)?,
+            features_compat: if version & 15 == 5 {
+                u32be(&raw, 208)?
+            } else {
+                0
+            },
+            features_ro_compat: if version & 15 == 5 {
+                u32be(&raw, 212)?
+            } else {
+                0
+            },
+            features_log_incompat: if version & 15 == 5 {
+                u32be(&raw, 220)?
+            } else {
+                0
+            },
+            sb_rootino: u64be(&raw, 56)?,
+            sb_agblocks: ag_blocks,
+            sb_agcount: ag_count,
+            sb_logblocks: u32be(&raw, 96)?,
+            sb_versionnum: version,
+            sb_inodesize: inode_size,
+            sb_blocklog: block_log,
+            sb_inodelog: inode_log,
+            sb_inopblog: inop_log,
+            sb_agblklog: ag_log,
+            sb_icount: u64be(&raw, 128)?,
+            sb_ifree: u64be(&raw, 136)?,
+            sb_fdblocks: u64be(&raw, 144)?,
+            sb_dirblklog: raw[192],
+            sb_features2: SbFeatures2::from_bits_retain(features2),
+            sb_features_incompat: features_incompat,
+        };
+        superblock.inode_offset(superblock.sb_rootino)?;
+        Ok(superblock)
+    }
 
-        Sb {
-            sb_blocksize,
-            sb_dblocks,
-            sb_rblocks,
-            sb_uuid,
-            sb_rootino,
-            sb_agblocks,
-            sb_agcount,
-            sb_logblocks,
-            sb_versionnum,
-            sb_inodesize,
-            sb_blocklog,
-            sb_inodelog,
-            sb_inopblog,
-            sb_agblklog,
-            sb_icount,
-            sb_ifree,
-            sb_fdblocks,
-            sb_dirblklog,
-            sb_features2,
-            sb_features_incompat,
+    pub fn feature_flags(&self) -> u16 {
+        self.sb_versionnum & !15
+    }
+    pub fn incompat_flags(&self) -> u32 {
+        self.sb_features_incompat.bits()
+    }
+    pub fn has_dirv2(&self) -> bool {
+        self.version() == 5 || self.sb_versionnum & constants::XFS_SB_VERSION_DIRV2BIT != 0
+    }
+    pub(crate) fn inode_offset(&self, inode: u64) -> Result<u64, i32> {
+        let ag = inode >> (self.sb_agblklog + self.sb_inopblog);
+        let block = (inode >> self.sb_inopblog) & ((1u64 << self.sb_agblklog) - 1);
+        let slot = inode & ((1u64 << self.sb_inopblog) - 1);
+        Ok(self.extent_offset((ag << self.sb_agblklog) | block, 1)? + (slot << self.sb_inodelog))
+    }
+    pub(crate) fn extent_offset(&self, start: u64, count: u64) -> Result<u64, i32> {
+        let ag = start >> self.sb_agblklog;
+        let block = start & ((1u64 << self.sb_agblklog) - 1);
+        let physical = ag
+            .checked_mul(u64::from(self.sb_agblocks))
+            .and_then(|v| v.checked_add(block))
+            .ok_or(EIO)?;
+        if count == 0
+            || ag >= u64::from(self.sb_agcount)
+            || block.checked_add(count).ok_or(EIO)? > u64::from(self.sb_agblocks)
+            || physical.checked_add(count).ok_or(EIO)? > self.sb_dblocks
+        {
+            return Err(EIO);
         }
+        physical
+            .checked_mul(u64::from(self.sb_blocksize))
+            .ok_or(EIO)
     }
 
     #[inline]

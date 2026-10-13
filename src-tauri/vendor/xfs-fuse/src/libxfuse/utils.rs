@@ -49,6 +49,9 @@ use super::dir3::{
 pub struct Uuid(uuid::Uuid);
 
 impl Uuid {
+    pub fn as_bytes(&self) -> &[u8; 16] {
+        self.0.as_bytes()
+    }
     pub const fn from_u128(x: u128) -> Self {
         Self(uuid::Uuid::from_u128(x))
     }

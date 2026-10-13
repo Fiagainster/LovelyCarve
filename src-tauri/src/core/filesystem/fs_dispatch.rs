@@ -227,6 +227,9 @@ pub(crate) fn volume_root_key(id: &str) -> Option<String> {
 
 macro_rules! path_volume {
     ($adapter:ident, $vol:ident, $name:literal, $ty:ty, $parse:path, $open:path) => {
+        path_volume!($adapter, $vol, $name, $ty, $parse, $open, String);
+    };
+    ($adapter:ident, $vol:ident, $name:literal, $ty:ty, $parse:path, $open:path, $path_type:ty) => {
         struct $adapter;
         struct $vol {
             volume: $ty,
@@ -249,7 +252,7 @@ macro_rules! path_volume {
             }
         }
         impl $vol {
-            fn path_of(&self, id: &str) -> Result<String> {
+            fn path_of(&self, id: &str) -> Result<$path_type> {
                 $parse(id)
                     .map(|(_, path)| path)
                     .ok_or_else(|| anyhow::anyhow!(concat!($name, " id reparse failed: {}"), id))
@@ -259,6 +262,17 @@ macro_rules! path_volume {
 }
 
 macro_rules! path_volume_impl {
+    ($vol:ident, plain_range) => {
+        impl Volume for $vol {
+            fn children(&self, _image: &Arc<EvidenceSession>, id: &str, _opts: ChildrenOptions) -> Result<Vec<FsNode>> {
+                self.volume.children(&self.path_of(id)?)
+            }
+            fn read_range(&self, id: &str, offset: u64, length: usize) -> Result<Option<Vec<u8>>> {
+                self.volume.read_file_range(&self.path_of(id)?, offset, length).map(Some)
+            }
+            path_volume_impl!(@common $vol);
+        }
+    };
     ($vol:ident, deleted_range) => {
         impl Volume for $vol {
             fn children(&self, _image: &Arc<EvidenceSession>, id: &str, opts: ChildrenOptions) -> Result<Vec<FsNode>> {
@@ -362,9 +376,10 @@ path_volume!(
     "xfs",
     crate::core::filesystem::volumes::xfs::XfsVolume,
     parse_xfs_id,
-    open_xfs_source
+    open_xfs_source,
+    Vec<u8>
 );
-path_volume_impl!(XfsVol, plain);
+path_volume_impl!(XfsVol, plain_range);
 path_volume!(
     FatAdapter,
     FatVol,

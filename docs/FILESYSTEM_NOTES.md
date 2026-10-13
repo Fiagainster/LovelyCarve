@@ -71,3 +71,11 @@ NTFS 的普通 `$DATA` 和命名流通过同一逻辑读者处理 LZNT1：按压
 ## LVM2 与 libvslvm 对照
 
 LVM2 使用共享纯 Rust grammar、CRC 校验与完整线性 LV map，支持单 PV 碎片段和原始 LV 范围读取。活动副本按已提交 pointer 解析，ring 回绕拼接后校验，备份 MDA 可位于首段探测范围外；PV 以标签 UUID 匹配，LVM sector 字段固定为 512 字节。跨镜像 RAID 候选不会在缺员时产生缩短 LV。非线性 stripes、snapshot、thin、mirror 等仅保留元数据并拒绝读取；无法完整判定分配时不声称 PE 空闲。全部 69 个公开 API、源码差异、验证边界见 [LVM2](LVM.md)。
+
+
+## XFS 与 libfsxfs 对照
+
+XFS 1–5 使用纯 Rust fallible reader，正文 extent/B-tree、完整/流式/范围读取和 provenance 共用校验计划。
+目录 v1 与 v2/v3 数据枚举、raw 文件名字节、二进制扩展属性、signed/ns/BIGTIME、V5 CRC/owner/address/meta UUID
+及碎片 LVM 映射均有最小结构回归。旧 inode 没有 birth，不显示 1970 年；短读和目录资源上限不能伪装成功。
+82 个公开 API 的逐项对照、核心 API/IPC 区分、格式限制与真实镜像验证边界见 [XFS](XFS.md)。

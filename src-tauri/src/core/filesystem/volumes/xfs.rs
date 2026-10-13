@@ -9,7 +9,7 @@
 //! Live IPC calls still open their own `XfsVolume`, so the mutex is
 //! uncontended outside the single-threaded walker.
 //!
-//! Node IDs encode the absolute UTF-8 path inside the volume as hex bytes:
+//! Node IDs encode the absolute raw POSIX path inside the volume as hex bytes:
 //! `xfs:part:{N}:{hex(/path/to/entry)}`. The empty-hex form denotes the
 //! volume root and is never emitted directly — the partition node itself
 //! stands in for the root.
@@ -33,7 +33,7 @@ use crate::core::evidence::partitions::lvm2::layout::LinearLayout;
 use crate::core::filesystem::tree::fs_tree::{
     detect_mime_bytes, shannon_entropy, FsDataRun, FsNode, FsStat, Mactb, NodeKind,
 };
-use crate::core::filesystem::volumes::lvm::{read_backing_range, LvmVolume};
+use crate::core::filesystem::volumes::lvm::{physical_runs, read_backing_range, LvmVolume};
 
 const SAMPLE_BYTES: usize = 4096;
 const STREAM_FLOOR: usize = 64 * 1024;
@@ -50,9 +50,9 @@ pub enum XfsSource {
 }
 
 /// Parse a `xfs:part:{N}:{hex(path)}` or `xfs:lvm:{N}:{M}:{hex(path)}` ID.
-/// Returns the source plus the decoded UTF-8 path (with a leading `/`, or
+/// Returns the source plus the decoded raw POSIX path (with a leading `/`, or
 /// empty for the volume root).
-pub fn parse_xfs_id(id: &str) -> Option<(XfsSource, String)> {
+pub fn parse_xfs_id(id: &str) -> Option<(XfsSource, Vec<u8>)> {
     let mut parts = id.split(':');
     match parts.next()? {
         "xfs" => {}
@@ -82,12 +82,12 @@ pub fn parse_xfs_id(id: &str) -> Option<(XfsSource, String)> {
     }
 }
 
-fn decode_hex_path(hex_path: &str) -> Option<String> {
+fn decode_hex_path(hex_path: &str) -> Option<Vec<u8>> {
     if hex_path.is_empty() {
-        Some(String::new())
+        Some(Vec::new())
     } else {
         let bytes = hex::decode(hex_path).ok()?;
-        String::from_utf8(bytes).ok()
+        Some(bytes)
     }
 }
 
@@ -99,8 +99,14 @@ pub fn open_xfs_source(image: &Arc<DiskImage>, source: XfsSource) -> Result<XfsV
             XfsVolume::open(
                 Arc::clone(image),
                 source,
-                partition.start_lba * sector_size,
-                partition.length_lba * sector_size,
+                partition
+                    .start_lba
+                    .checked_mul(sector_size)
+                    .ok_or_else(|| anyhow!("XFS partition offset overflow"))?,
+                partition
+                    .length_lba
+                    .checked_mul(sector_size)
+                    .ok_or_else(|| anyhow!("XFS partition length overflow"))?,
                 format!("part:{part_id}"),
             )
         }
@@ -128,6 +134,8 @@ pub struct XfsVolume {
     /// Parsed `xfs_fuse::Volume`, built once in [`XfsVolume::open`] and reused
     /// behind a mutex (the crate's reads take `&mut`). See the module header.
     volume: Mutex<Volume<PartitionCursor>>,
+    base_offset: u64,
+    layout: Option<LinearLayout>,
 }
 
 impl XfsVolume {
@@ -152,18 +160,28 @@ impl XfsVolume {
         };
         let cursor = PartitionCursor {
             image,
-            layout,
+            layout: layout.clone(),
             base_offset,
             length_bytes,
             position: 0,
         };
-        // `Volume::from` is infallible (xfs_fuse parses lazily on first
-        // access); errors surface on the first listing, same as before.
-        let volume = Volume::from(cursor);
+        let volume = Volume::open(cursor).map_err(|errno| {
+            anyhow!("XFS open: invalid or unsupported metadata (errno {errno})")
+        })?;
+        let declared_size = volume
+            .sb
+            .sb_dblocks
+            .checked_mul(u64::from(volume.sb.sb_blocksize))
+            .ok_or_else(|| anyhow!("XFS volume size overflow"))?;
+        if declared_size > length_bytes {
+            anyhow::bail!("XFS declared volume exceeds evidence slice");
+        }
         Ok(Self {
             source,
             root_parent_id,
             volume: Mutex::new(volume),
+            base_offset,
+            layout,
         })
     }
 
@@ -172,8 +190,14 @@ impl XfsVolume {
         Self::open(
             image,
             XfsSource::Partition(partition.id),
-            partition.start_lba * sector_size,
-            partition.length_lba * sector_size,
+            partition
+                .start_lba
+                .checked_mul(sector_size)
+                .ok_or_else(|| anyhow!("XFS partition offset overflow"))?,
+            partition
+                .length_lba
+                .checked_mul(sector_size)
+                .ok_or_else(|| anyhow!("XFS partition length overflow"))?,
             format!("part:{}", partition.id),
         )
     }
@@ -185,18 +209,22 @@ impl XfsVolume {
     /// Lists the direct children of `path` inside the volume. `path` uses
     /// Unix-style separators with a leading `/`, or is empty for the volume
     /// root.
-    pub fn children(&self, path: &str) -> Result<Vec<FsNode>> {
+    pub fn children(&self, path: impl AsRef<[u8]>) -> Result<Vec<FsNode>> {
+        let path = path.as_ref();
         let parent_id = self.node_id(path);
-        let parent_path = path.to_string();
+        let parent_path = path.to_vec();
         self.with_volume(|vol| {
             let parent_ino = lookup_path_resilient(vol, path)
-                .map_err(|err| anyhow!("XFS lookup_path {path}: errno {err}"))?;
+                .map_err(|err| anyhow!("XFS lookup_path {path:?}: errno {err}"))?;
             let entries = vol
                 .readdir(parent_ino)
-                .map_err(|err| anyhow!("XFS readdir {path}: errno {err}"))?;
+                .map_err(|err| anyhow!("XFS readdir {path:?}: errno {err}"))?;
 
+            if entries.len() > MAX_CHILDREN_PER_DIR {
+                anyhow::bail!("XFS directory exceeds listing limit");
+            }
             let mut out = Vec::with_capacity(entries.len());
-            for entry in entries.into_iter().take(MAX_CHILDREN_PER_DIR) {
+            for entry in entries.into_iter() {
                 if entry.name == b"." || entry.name == b".." {
                     continue;
                 }
@@ -206,17 +234,20 @@ impl XfsVolume {
                     Err(err) => {
                         tracing::debug!(
                             "skip unreadable XFS entry {}/{} ino={} errno={err}",
-                            parent_path,
+                            String::from_utf8_lossy(&parent_path),
                             name,
                             entry.ino
                         );
                         continue;
                     }
                 };
-                let kind = node_kind_from_filetype(entry.kind.unwrap_or(attr.kind));
+                if entry.kind.is_some_and(|kind| kind != attr.kind) {
+                    tracing::warn!("XFS directory type differs from inode {} mode", entry.ino);
+                }
+                let kind = node_kind_from_filetype(attr.kind);
                 let size = attr.size;
                 let timestamps = attr_timestamps(&attr);
-                let child_path = join_unix(&parent_path, &name);
+                let child_path = join_unix(&parent_path, &entry.name);
                 out.push(FsNode {
                     id: self.node_id(&child_path),
                     name,
@@ -226,7 +257,20 @@ impl XfsVolume {
                     deleted: false,
                     inode: Some(entry.ino),
                     timestamps,
-                    link_target: None,
+                    link_target: if kind == NodeKind::Symlink {
+                        match vol.readlink(entry.ino) {
+                            Ok(target) => Some(String::from_utf8_lossy(&target).into_owned()),
+                            Err(errno) => {
+                                tracing::warn!(
+                                    "XFS inode {} target unavailable: errno {errno}",
+                                    entry.ino
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    },
                     has_snapshot: false,
                 });
             }
@@ -240,55 +284,73 @@ impl XfsVolume {
         })
     }
 
-    pub fn read_file(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>> {
+    pub fn read_file(&self, path: impl AsRef<[u8]>, max_bytes: usize) -> Result<Vec<u8>> {
+        let path = path.as_ref();
         if path.is_empty() {
             anyhow::bail!("cannot read XFS volume root as a file");
         }
-        let owned = path.to_string();
+        let owned = path.to_vec();
         self.with_volume(|vol| {
             let ino = lookup_path_resilient(vol, &owned)
-                .map_err(|err| anyhow!("XFS lookup_path {owned}: errno {err}"))?;
+                .map_err(|err| anyhow!("XFS lookup_path {owned:?}: errno {err}"))?;
             let attr = vol
                 .getattr(ino)
-                .map_err(|err| anyhow!("XFS getattr {owned}: errno {err}"))?;
+                .map_err(|err| anyhow!("XFS getattr {owned:?}: errno {err}"))?;
             match attr.kind {
                 FileType::RegularFile => read_file_chunks(vol, ino, attr.size, max_bytes),
-                FileType::Symlink => vol
-                    .readlink(ino)
-                    .map_err(|err| anyhow!("XFS readlink {owned}: errno {err}")),
-                _ => anyhow::bail!("XFS entry {owned} is not a regular file"),
+                FileType::Symlink => {
+                    let mut target = vol
+                        .readlink(ino)
+                        .map_err(|err| anyhow!("XFS readlink {owned:?}: errno {err}"))?;
+                    target.truncate(max_bytes);
+                    Ok(target)
+                }
+                _ => anyhow::bail!("XFS entry {owned:?} is not a regular file"),
             }
         })
     }
 
-    pub fn stream_file<F>(&self, path: &str, chunk_size: usize, mut visitor: F) -> Result<u64>
+    pub fn stream_file<F>(
+        &self,
+        path: impl AsRef<[u8]>,
+        chunk_size: usize,
+        mut visitor: F,
+    ) -> Result<u64>
     where
         F: FnMut(&[u8]) -> Result<()>,
     {
+        let path = path.as_ref();
         if path.is_empty() {
             anyhow::bail!("cannot stream XFS volume root as a file");
         }
-        let owned = path.to_string();
+        let owned = path.to_vec();
         self.with_volume(|vol| {
             let ino = lookup_path_resilient(vol, &owned)
-                .map_err(|err| anyhow!("XFS lookup_path {owned}: errno {err}"))?;
+                .map_err(|err| anyhow!("XFS lookup_path {owned:?}: errno {err}"))?;
             let attr = vol
                 .getattr(ino)
-                .map_err(|err| anyhow!("XFS getattr {owned}: errno {err}"))?;
+                .map_err(|err| anyhow!("XFS getattr {owned:?}: errno {err}"))?;
+            if attr.kind == FileType::Symlink {
+                let bytes = vol
+                    .readlink(ino)
+                    .map_err(|err| anyhow!("XFS readlink: errno {err}"))?;
+                visitor(&bytes)?;
+                return Ok(bytes.len() as u64);
+            }
             if attr.kind != FileType::RegularFile {
-                anyhow::bail!("XFS entry {owned} is not a regular file");
+                anyhow::bail!("XFS entry {owned:?} is not a regular file");
             }
             let chunk = chunk_size.max(STREAM_FLOOR);
             let mut offset: u64 = 0;
             while offset < attr.size {
-                let want = ((attr.size - offset) as usize)
-                    .min(chunk)
-                    .min(u32::MAX as usize) as u32;
+                let want = (attr.size - offset)
+                    .min(chunk as u64)
+                    .min(u64::from(u32::MAX)) as u32;
                 let bytes = vol
                     .read(ino, offset as i64, want)
-                    .map_err(|err| anyhow!("XFS read {owned}@{offset}: errno {err}"))?;
-                if bytes.is_empty() {
-                    break;
+                    .map_err(|err| anyhow!("XFS read {owned:?}@{offset}: errno {err}"))?;
+                if bytes.len() != want as usize {
+                    anyhow::bail!("XFS short read at {offset}");
                 }
                 visitor(&bytes)?;
                 offset += bytes.len() as u64;
@@ -297,29 +359,32 @@ impl XfsVolume {
         })
     }
 
-    pub fn file_stat(&self, path: &str, node_id: &str) -> Result<FsStat> {
+    pub fn file_stat(&self, path: impl AsRef<[u8]>, node_id: &str) -> Result<FsStat> {
+        let path = path.as_ref();
         if path.is_empty() {
             anyhow::bail!("cannot stat XFS volume root as a file");
         }
-        let owned = path.to_string();
+        let owned = path.to_vec();
         self.with_volume(|vol| {
             let ino = lookup_path_resilient(vol, &owned)
-                .map_err(|err| anyhow!("XFS lookup_path {owned}: errno {err}"))?;
+                .map_err(|err| anyhow!("XFS lookup_path {owned:?}: errno {err}"))?;
             let attr = vol
                 .getattr(ino)
-                .map_err(|err| anyhow!("XFS getattr {owned}: errno {err}"))?;
+                .map_err(|err| anyhow!("XFS getattr {owned:?}: errno {err}"))?;
             let mut sample = Vec::new();
             match attr.kind {
                 FileType::RegularFile => {
                     let want = (SAMPLE_BYTES as u64).min(attr.size) as u32;
                     if want > 0 {
-                        sample = vol.read(ino, 0, want).unwrap_or_default();
+                        sample = vol
+                            .read(ino, 0, want)
+                            .map_err(|err| anyhow!("XFS sample read: errno {err}"))?;
                     }
                 }
                 FileType::Symlink => {
-                    if let Ok(link) = vol.readlink(ino) {
-                        sample = link;
-                    }
+                    sample = vol
+                        .readlink(ino)
+                        .map_err(|err| anyhow!("XFS link sample: errno {err}"))?;
                 }
                 _ => {}
             }
@@ -327,7 +392,7 @@ impl XfsVolume {
                 node_id: node_id.to_string(),
                 size: attr.size,
                 inode: Some(ino),
-                mode: Some(attr.perm),
+                mode: Some(attr.mode),
                 mime: detect_mime_bytes(&sample).to_string(),
                 magic_hex: if sample.is_empty() {
                     None
@@ -346,19 +411,141 @@ impl XfsVolume {
                 } else {
                     Some(shannon_entropy(&sample))
                 },
-                // XFS extents could be surfaced via the bmap walker, but the
-                // vendored library doesn't expose a public extent iterator.
-                // Leaving empty until a future patch adds one.
-                data_runs: Vec::<FsDataRun>::new(),
+                data_runs: if attr.kind == FileType::RegularFile {
+                    let mut runs = Vec::new();
+                    for extent in vol
+                        .extents(ino)
+                        .map_err(|err| anyhow!("XFS extent map: errno {err}"))?
+                    {
+                        if extent.unwritten || extent.logical_offset >= attr.size {
+                            continue;
+                        }
+                        runs.push(FsDataRun {
+                            logical_offset: extent.logical_offset,
+                            physical_offset: self
+                                .base_offset
+                                .checked_add(extent.physical_offset)
+                                .ok_or_else(|| {
+                                anyhow!("XFS physical offset overflow")
+                            })?,
+                            length: extent.length.min(attr.size - extent.logical_offset),
+                        });
+                    }
+                    physical_runs(self.layout.as_ref(), runs)?
+                } else {
+                    Vec::new()
+                },
             })
         })
     }
 
-    fn node_id(&self, path: &str) -> String {
+    /// Seekable reads use the same validated extent plan as full/streamed reads.
+    pub fn read_file_range(
+        &self,
+        path: impl AsRef<[u8]>,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>> {
+        let path = path.as_ref();
+        self.with_volume(|volume| {
+            let inode = lookup_path_resilient(volume, path)
+                .map_err(|err| anyhow!("XFS lookup: errno {err}"))?;
+            let attributes = volume
+                .getattr(inode)
+                .map_err(|err| anyhow!("XFS getattr: errno {err}"))?;
+            if attributes.kind == FileType::Symlink {
+                let bytes = volume
+                    .readlink(inode)
+                    .map_err(|err| anyhow!("XFS readlink: errno {err}"))?;
+                let start = offset.min(bytes.len() as u64) as usize;
+                return Ok(bytes[start..start.saturating_add(length).min(bytes.len())].to_vec());
+            }
+            if attributes.kind != FileType::RegularFile {
+                anyhow::bail!("XFS entry is not a regular file");
+            }
+            let total = attributes.size.saturating_sub(offset).min(length as u64) as usize;
+            let mut output = Vec::with_capacity(total);
+            while output.len() < total {
+                let current = offset
+                    .checked_add(output.len() as u64)
+                    .ok_or_else(|| anyhow!("XFS read offset overflow"))?;
+                let current = i64::try_from(current)
+                    .map_err(|_| anyhow!("XFS read offset exceeds format limit"))?;
+                let want = (total - output.len()).min(1 << 20) as u32;
+                let bytes = volume
+                    .read(inode, current, want)
+                    .map_err(|err| anyhow!("XFS range read: errno {err}"))?;
+                if bytes.len() != want as usize {
+                    anyhow::bail!("XFS short range read");
+                }
+                output.extend_from_slice(&bytes);
+            }
+            Ok(output)
+        })
+    }
+
+    pub fn extended_attributes(
+        &self,
+        path: impl AsRef<[u8]>,
+    ) -> Result<Vec<xfs_fuse::ExtendedAttribute>> {
+        self.with_volume(|volume| {
+            let inode = lookup_path_resilient(volume, path.as_ref())
+                .map_err(|err| anyhow!("XFS lookup: errno {err}"))?;
+            let mut attributes = volume
+                .extended_attributes(inode)
+                .map_err(|err| anyhow!("XFS attributes: errno {err}"))?;
+            for attribute in &mut attributes {
+                let runs = attribute
+                    .extents
+                    .iter()
+                    .filter(|extent| extent.length > 0)
+                    .map(|extent| {
+                        Ok(FsDataRun {
+                            logical_offset: extent.logical_offset,
+                            physical_offset: self
+                                .base_offset
+                                .checked_add(extent.physical_offset)
+                                .ok_or_else(|| {
+                                anyhow!("XFS attribute physical offset overflow")
+                            })?,
+                            length: extent.length,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                attribute.extents = physical_runs(self.layout.as_ref(), runs)?
+                    .into_iter()
+                    .map(|run| xfs_fuse::Extent {
+                        logical_offset: run.logical_offset,
+                        physical_offset: run.physical_offset,
+                        length: run.length,
+                        unwritten: false,
+                    })
+                    .collect();
+            }
+            Ok(attributes)
+        })
+    }
+
+    /// Retains ownership, link count, device number, inode version and full POSIX mode.
+    pub fn inode_metadata(&self, path: impl AsRef<[u8]>) -> Result<xfs_fuse::FileAttr> {
+        self.with_volume(|volume| {
+            let inode = lookup_path_resilient(volume, path.as_ref())
+                .map_err(|err| anyhow!("XFS lookup: errno {err}"))?;
+            volume
+                .getattr(inode)
+                .map_err(|err| anyhow!("XFS inode metadata: errno {err}"))
+        })
+    }
+
+    pub fn volume_metadata(&self) -> Result<xfs_fuse::Sb> {
+        self.with_volume(|volume| Ok(*volume.superblock()))
+    }
+
+    fn node_id(&self, path: &[u8]) -> String {
         if path.is_empty() {
             return self.root_parent_id.clone();
         }
-        let hex = hex::encode(path.as_bytes());
+        let hex = hex::encode(path);
         match self.source {
             XfsSource::Partition(part_id) => format!("xfs:part:{part_id}:{hex}"),
             XfsSource::Lvm { part_id, lv_index } => {
@@ -385,15 +572,15 @@ impl XfsVolume {
 
 fn lookup_path_resilient(
     vol: &mut Volume<PartitionCursor>,
-    path: &str,
+    path: &[u8],
 ) -> std::result::Result<XfsIno, i32> {
-    match vol.lookup_path(path) {
+    match vol.lookup_path_bytes(path) {
         Ok(ino) => Ok(ino),
         Err(fast_error) => {
             let fallback = lookup_path_by_readdir(vol, path);
             if fallback.is_ok() {
                 tracing::debug!(
-                    "XFS lookup_path {path} failed with errno {fast_error}; resolved via readdir"
+                    "XFS lookup_path {path:?} failed with errno {fast_error}; resolved via readdir"
                 );
             }
             fallback.map_err(|_| fast_error)
@@ -403,14 +590,17 @@ fn lookup_path_resilient(
 
 fn lookup_path_by_readdir(
     vol: &mut Volume<PartitionCursor>,
-    path: &str,
+    path: &[u8],
 ) -> std::result::Result<XfsIno, i32> {
     let mut current = vol.lookup_path("")?;
-    for component in path.split('/').filter(|component| !component.is_empty()) {
-        let target = component.as_bytes();
+    for component in path
+        .split(|byte| *byte == b'/')
+        .filter(|component| !component.is_empty())
+    {
+        let target = component;
         let entries = vol.readdir(current)?;
         let Some(entry) = entries.into_iter().find(|entry| entry.name == target) else {
-            return vol.lookup_path(path);
+            return vol.lookup_path_bytes(path);
         };
         current = entry.ino;
     }
@@ -423,7 +613,7 @@ fn read_file_chunks(
     size: u64,
     max_bytes: usize,
 ) -> Result<Vec<u8>> {
-    let total = (size as usize).min(max_bytes);
+    let total = size.min(max_bytes as u64) as usize;
     let mut out = Vec::with_capacity(total);
     let chunk: usize = 1 << 20; // 1 MiB
     while out.len() < total {
@@ -431,8 +621,8 @@ fn read_file_chunks(
         let bytes = vol
             .read(ino, out.len() as i64, want)
             .map_err(|err| anyhow!("XFS read errno {err}"))?;
-        if bytes.is_empty() {
-            break;
+        if bytes.len() != want as usize {
+            anyhow::bail!("XFS short read at {}", out.len());
         }
         out.extend_from_slice(&bytes);
     }
@@ -450,24 +640,25 @@ fn node_kind_from_filetype(kind: FileType) -> NodeKind {
 
 fn attr_timestamps(attr: &xfs_fuse::FileAttr) -> Mactb {
     Mactb {
-        modified: system_time_to_rfc3339(attr.mtime),
-        accessed: system_time_to_rfc3339(attr.atime),
-        created: system_time_to_rfc3339(attr.crtime),
-        mft_changed: system_time_to_rfc3339(attr.ctime),
-        birth: system_time_to_rfc3339(attr.crtime),
+        modified: raw_time_to_rfc3339(attr.raw_mtime),
+        accessed: raw_time_to_rfc3339(attr.raw_atime),
+        created: attr.raw_crtime.and_then(raw_time_to_rfc3339),
+        mft_changed: raw_time_to_rfc3339(attr.raw_ctime),
+        birth: attr.raw_crtime.and_then(raw_time_to_rfc3339),
     }
 }
 
-fn system_time_to_rfc3339(t: std::time::SystemTime) -> Option<String> {
-    DateTime::<Utc>::from(t).to_rfc3339().into()
+fn raw_time_to_rfc3339((seconds, nanoseconds): (i64, u32)) -> Option<String> {
+    DateTime::<Utc>::from_timestamp(seconds, nanoseconds).map(|time| time.to_rfc3339())
 }
 
-fn join_unix(parent: &str, name: &str) -> String {
-    if parent.is_empty() || parent == "/" {
-        format!("/{name}")
-    } else {
-        format!("{parent}/{name}")
+fn join_unix(parent: &[u8], name: &[u8]) -> Vec<u8> {
+    let mut path = parent.to_vec();
+    if !path.ends_with(b"/") {
+        path.push(b'/');
     }
+    path.extend_from_slice(name);
+    path
 }
 
 /// Cursor that exposes a partition slice of `DiskImage` as `std::io::Read +
@@ -491,7 +682,9 @@ impl Read for PartitionCursor {
         let bytes = read_backing_range(
             &self.image,
             self.layout.as_ref(),
-            self.base_offset + self.position,
+            self.base_offset
+                .checked_add(self.position)
+                .ok_or_else(|| io::Error::other("XFS backing offset overflow"))?,
             want,
         )
         .map_err(|err| io::Error::other(err.to_string()))?;
@@ -509,7 +702,7 @@ impl Seek for PartitionCursor {
             SeekFrom::Current(delta) => self.position as i128 + delta as i128,
             SeekFrom::End(delta) => self.length_bytes as i128 + delta as i128,
         };
-        if target < 0 {
+        if target < 0 || target > u64::MAX as i128 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "XFS cursor seek before start",
@@ -521,188 +714,4 @@ impl Seek for PartitionCursor {
 }
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn lvm_fragmented_xfs_cursor_crosses_segments_and_seeks_from_end() {
-        use super::*;
-        use crate::core::evidence::partitions::lvm2::test_support;
-        use std::io::Write;
-        let mut file = tempfile::NamedTempFile::new().unwrap();
-        file.write_all(&test_support::image(&test_support::text(), 1, false))
-            .unwrap();
-        let image = Arc::new(DiskImage::open(file.path()).unwrap());
-        let volume = LvmVolume::open(&image, &image.partitions[0]).unwrap();
-        let (base_offset, layout) = volume.logical_volumes[0].reader_geometry().unwrap();
-        let mut cursor = PartitionCursor {
-            image,
-            base_offset,
-            layout,
-            length_bytes: 16384,
-            position: 0,
-        };
-        cursor.seek(SeekFrom::Start(8190)).unwrap();
-        let mut bytes = [0; 4];
-        cursor.read_exact(&mut bytes).unwrap();
-        assert_eq!(bytes, [0x11, 0x11, 0x22, 0x22]);
-        cursor.seek(SeekFrom::End(-2)).unwrap();
-        assert_eq!(cursor.read(&mut bytes).unwrap(), 2);
-        assert_eq!(&bytes[..2], &[0x22, 0x22]);
-    }
-    use super::*;
-    use crate::core::evidence::image::PartitionKind;
-
-    /// Drive the adapter against a real XFS image when the path is supplied
-    /// via `LOVELYCARVE_XFS_TEST`. Walks the root, samples the first regular
-    /// file, and confirms `read_file` returns bytes.
-    #[test]
-    fn lists_real_xfs_root_when_env_path_is_set() {
-        let Some(path) = std::env::var_os("LOVELYCARVE_XFS_TEST") else {
-            return;
-        };
-        let image = Arc::new(
-            crate::core::filesystem::evidence_session::EvidenceSession::open(path)
-                .expect("XFS image should open"),
-        );
-        let xfs_partition = image
-            .partitions
-            .iter()
-            .find(|p| p.kind == PartitionKind::Xfs)
-            .cloned()
-            .expect("expected at least one XFS partition");
-        let volume =
-            XfsVolume::open_partition(Arc::clone(&image), &xfs_partition).expect("open XFS");
-        let children = volume.root_children().expect("list XFS root");
-        assert!(!children.is_empty(), "XFS root should expose entries");
-        if let Some(first_file) = children.iter().find(|node| node.kind == NodeKind::File) {
-            let path = format!("/{}", first_file.name);
-            let bytes = volume.read_file(&path, 8192).expect("XFS file read");
-            assert!(!bytes.is_empty(), "XFS file should yield bytes");
-        }
-    }
-
-    /// Regression guard for the xfs-fuse panic on freed/unsupported inodes.
-    /// A directory entry that points at a zeroed inode (e.g. a runtime
-    /// `/var/tmp/systemd-private-*` dir on a real CentOS image) used to abort
-    /// the whole walk with `panic!("Inode type (0o0) not yet supported.")`
-    /// inside `getattr`; it must now degrade to an `Err`-and-skip so a
-    /// volume-snapshot / tree browse completes. Drives the live dispatcher
-    /// (the exact path the GUI takes), bounded so a large volume still
-    /// finishes the check quickly. Env-gated on `LOVELYCARVE_XFS_TEST`.
-    #[test]
-    fn walks_real_xfs_tree_without_panicking_when_env_path_is_set() {
-        let Some(path) = std::env::var_os("LOVELYCARVE_XFS_TEST") else {
-            return;
-        };
-        let image = Arc::new(
-            crate::core::filesystem::evidence_session::EvidenceSession::open(path)
-                .expect("XFS image should open"),
-        );
-        let xfs_partition = image
-            .partitions
-            .iter()
-            .find(|p| p.kind == PartitionKind::Xfs)
-            .cloned()
-            .expect("expected at least one XFS partition");
-
-        let mut stack = vec![format!("part:{}", xfs_partition.id)];
-        let mut visited = std::collections::HashSet::new();
-        let mut count = 0usize;
-        let mut skipped_dirs = 0usize;
-        while let Some(id) = stack.pop() {
-            if count >= 200_000 {
-                break;
-            }
-            // A dir whose own inode can't be parsed returns Err here (no panic);
-            // skip it and keep walking, exactly as the snapshot builder does.
-            let children =
-                match crate::core::filesystem::tree::fs_tree::children_for_image(&image, &id) {
-                    Ok(children) => children,
-                    Err(_) => {
-                        skipped_dirs += 1;
-                        continue;
-                    }
-                };
-            for child in children {
-                count += 1;
-                if child.kind == NodeKind::Dir && visited.insert(child.id.clone()) {
-                    stack.push(child.id);
-                }
-            }
-        }
-        assert!(
-            count > 100,
-            "should enumerate a non-trivial XFS tree without panicking, saw {count}"
-        );
-        let _ = skipped_dirs;
-    }
-
-    #[test]
-    fn reads_real_lvm_xfs_after_plain_xfs_when_env_path_is_set() {
-        let Some(path) = std::env::var_os("LOVELYCARVE_XFS_LVM_TEST") else {
-            return;
-        };
-        let image = Arc::new(
-            crate::core::filesystem::evidence_session::EvidenceSession::open(path)
-                .expect("XFS image should open"),
-        );
-        let xfs_partition = image
-            .partitions
-            .iter()
-            .find(|partition| partition.kind == PartitionKind::Xfs)
-            .cloned()
-            .expect("expected a plain XFS partition");
-        let boot_volume =
-            XfsVolume::open_partition(Arc::clone(&image), &xfs_partition).expect("open boot XFS");
-        assert!(
-            !boot_volume
-                .root_children()
-                .expect("list boot XFS root")
-                .is_empty(),
-            "boot XFS root should expose entries"
-        );
-
-        let lvm_partition = image
-            .partitions
-            .iter()
-            .find(|partition| partition.kind == PartitionKind::Lvm)
-            .cloned()
-            .expect("expected an LVM partition");
-        let lvm = LvmVolume::open(&image, &lvm_partition).expect("open LVM");
-        let mut root_volume = None;
-        for logical_volume in lvm
-            .logical_volumes
-            .iter()
-            .filter(|volume| volume.kind == PartitionKind::Xfs)
-        {
-            let volume = open_xfs_source(
-                &image,
-                XfsSource::Lvm {
-                    part_id: lvm_partition.id,
-                    lv_index: logical_volume.index,
-                },
-            )
-            .expect("open LVM XFS volume");
-            let root = volume.root_children().expect("list LVM XFS root");
-            if root
-                .iter()
-                .any(|node| node.kind == NodeKind::Dir && node.name == "etc")
-            {
-                root_volume = Some(volume);
-                break;
-            }
-        }
-        let volume = root_volume.expect("expected an LVM XFS root containing /etc");
-        let etc = volume.children("/etc").expect("list LVM XFS /etc");
-        assert!(!etc.is_empty(), "/etc should expose entries");
-        if let Some(first_file) = etc
-            .iter()
-            .find(|node| node.kind == NodeKind::File && node.size > 0 && node.size < 8192)
-        {
-            let path = format!("/etc/{}", first_file.name);
-            let bytes = volume
-                .read_file(&path, 8192)
-                .unwrap_or_else(|err| panic!("read {path} through LVM XFS: {err}"));
-            assert!(!bytes.is_empty(), "{path} should yield bytes");
-        }
-    }
-}
+mod tests;

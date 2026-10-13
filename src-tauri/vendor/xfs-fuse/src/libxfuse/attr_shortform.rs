@@ -58,7 +58,7 @@ impl<Ctx> Decode<Ctx> for AttrSfEntry {
         let namelen: u8 = Decode::decode(decoder)?;
         let valuelen: u8 = Decode::decode(decoder)?;
         let flags: u8 = Decode::decode(decoder)?;
-        let mut nameval = vec![0u8; usize::from(namelen + valuelen)];
+        let mut nameval = vec![0u8; usize::from(namelen) + usize::from(valuelen)];
         decoder.reader().read(&mut nameval[..])?;
 
         Ok(AttrSfEntry {
@@ -82,13 +82,24 @@ impl<Ctx> Decode<Ctx> for AttrShortform {
 
         let mut list = Vec::<AttrSfEntry>::new();
         let mut total_size: u32 = 0;
+        let mut consumed = 4usize;
+        if hdr._totsize < 4 {
+            return Err(DecodeError::Other("invalid shortform attribute size"));
+        }
 
         for _ in 0..hdr.count {
             let entry: AttrSfEntry = Decode::decode(decoder)?;
             total_size += get_namespace_size_from_flags(entry.flags) + u32::from(entry.namelen) + 1;
+            consumed += 3 + entry.nameval.len();
+            if consumed > hdr._totsize as usize {
+                return Err(DecodeError::Other("attribute exceeds shortform size"));
+            }
             list.push(entry);
         }
 
+        if consumed != hdr._totsize as usize {
+            return Err(DecodeError::Other("shortform attribute size mismatch"));
+        }
         Ok(AttrShortform { list, total_size })
     }
 }

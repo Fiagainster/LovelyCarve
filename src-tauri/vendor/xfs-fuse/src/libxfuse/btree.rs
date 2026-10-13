@@ -78,7 +78,7 @@ impl<T: Decode<Ctx> + PrimInt + Unsigned, Ctx> Decode<Ctx> for BtreeBlockHdr<T> 
                 let _bb_lsn: u64 = Decode::decode(decoder)?;
                 let bb_uuid: Uuid = Decode::decode(decoder)?;
                 let super_block = SUPERBLOCK.get().unwrap();
-                assert_eq!(bb_uuid, super_block.sb_uuid);
+                assert_eq!(bb_uuid, super_block.metadata_uuid);
                 let _bb_owner: u64 = Decode::decode(decoder)?;
                 let _bb_crc: u32 = Decode::decode(decoder)?;
                 let _bb_pad: u32 = Decode::decode(decoder)?;

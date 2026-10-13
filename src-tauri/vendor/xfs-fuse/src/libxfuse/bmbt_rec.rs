@@ -176,8 +176,11 @@ impl Bmx {
     pub fn map_dblock(&self, dblock: XfsDablk) -> Option<XfsFsblock> {
         let dblock = XfsFileoff::from(dblock);
         let i = self.0.partition_point(|rec| rec.br_startoff <= dblock);
+        if i == 0 {
+            return None;
+        }
         let rec = &self.0[i - 1];
-        if i == 0 || rec.br_startoff > dblock || rec.br_startoff + rec.br_blockcount <= dblock {
+        if rec.br_startoff > dblock || rec.br_startoff + rec.br_blockcount <= dblock {
             None
         } else {
             Some(rec.br_startblock + dblock - rec.br_startoff)

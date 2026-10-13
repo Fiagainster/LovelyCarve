@@ -38,9 +38,7 @@ use super::{
     attr_shortform::AttrShortform,
     bmbt_rec::{BmbtRec, Bmx},
     btree::{BmbtKey, BmdrBlock, BtreeRoot, XfsBmbtPtr},
-    compat::{
-        EINVAL, EIO, ENOENT, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK,
-    },
+    compat::{EIO, ENOENT, S_IFBLK, S_IFCHR, S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSOCK},
     definitions::*,
     dinode_core::{DinodeCore, XfsDinodeFmt},
     dir3::Directory,
@@ -61,6 +59,7 @@ pub enum DiU {
     Bmx(Vec<BmbtRec>),
     Chr,
     Dir2Sf(Dir2Sf),
+    LegacyLocal(Vec<u8>),
     Fifo,
     Socket,
     Symlink(Vec<u8>),
@@ -90,18 +89,7 @@ impl Dinode {
         superblock: &Sb,
         inode_number: XfsIno,
     ) -> Result<Dinode, i32> {
-        let ag_no: u64 = inode_number >> (superblock.sb_agblklog + superblock.sb_inopblog);
-        if ag_no >= superblock.sb_agcount.into() {
-            return Err(EINVAL);
-        }
-
-        let ag_blk: u64 =
-            (inode_number >> superblock.sb_inopblog) & ((1 << superblock.sb_agblklog) - 1);
-        let blk_ino = inode_number & ((1 << superblock.sb_inopblog) - 1);
-
-        let off: u64 = ((ag_no * u64::from(superblock.sb_agblocks)) << superblock.sb_blocklog)
-            + (ag_blk << superblock.sb_blocklog)
-            + (blk_ino << superblock.sb_inodelog);
+        let off = superblock.inode_offset(inode_number)?;
 
         buf_reader.seek(SeekFrom::Start(off)).map_err(|_| EIO)?;
         let mut raw = vec![0u8; superblock.inode_size()];
@@ -109,11 +97,35 @@ impl Dinode {
         let config = bincode_next::config::standard()
             .with_big_endian()
             .with_fixed_int_encoding();
+        if raw.get(4) == Some(&3) {
+            super::checked::crc(&raw, 100)?;
+            if super::checked::u64be(&raw, 152)? != inode_number
+                || super::checked::bytes(&raw, 160, 16)? != superblock.metadata_uuid.as_bytes()
+            {
+                return Err(EIO);
+            }
+        }
         let reader = bincode_next::de::read::SliceReader::new(&raw[..]);
         let mut decoder = bincode_next::de::DecoderImpl::new(reader, config, ());
 
         let di_core = DinodeCore::decode(&mut decoder).map_err(|_| EIO)?;
 
+        let literal_start = di_core.literal_area_offset();
+        let data_end = if di_core.di_forkoff == 0 {
+            raw.len()
+        } else {
+            literal_start + di_core.di_forkoff as usize * 8
+        };
+        if di_core.di_size < 0 || data_end > raw.len() || data_end < literal_start {
+            return Err(EIO);
+        }
+        let reader = bincode_next::de::read::SliceReader::new(&raw[literal_start..data_end]);
+        let mut decoder = bincode_next::de::DecoderImpl::new(reader, config, ());
+        if matches!(di_core.di_format, XfsDinodeFmt::Extents)
+            && di_core.nextents > ((data_end - literal_start) / 16) as u64
+        {
+            return Err(EIO);
+        }
         let di_u: Option<DiU>;
         match (di_core.di_mode as u32) & S_IFMT {
             S_IFREG => match di_core.di_format {
@@ -125,31 +137,22 @@ impl Dinode {
                     di_u = Some(DiU::Bmx(bmx));
                 }
                 XfsDinodeFmt::Btree => {
-                    let bmbt = BmdrBlock::decode(&mut decoder).map_err(|_| EIO)?;
-
-                    let mut keys = Vec::<BmbtKey>::new();
-                    for _i in 0..bmbt.bb_numrecs {
-                        keys.push(BmbtKey::decode(&mut decoder).map_err(|_| EIO)?)
-                    }
-
-                    let gap = di_core.dfork_btree_ptr_gap(superblock.inode_size(), bmbt.bb_numrecs);
-                    decoder.reader().consume(gap as usize);
-
-                    let mut pointers = Vec::<XfsBmbtPtr>::new();
-                    for _i in 0..bmbt.bb_numrecs {
-                        let pointer = u64::decode(&mut decoder).map_err(|_| EIO)?;
-                        pointers.push(pointer)
-                    }
-
-                    di_u = Some(DiU::Bmbt((bmbt, keys, pointers)));
+                    di_u = Some(DiU::Bmbt(decode_btree_fork(&raw[literal_start..data_end])?));
                 }
                 _ => return Err(EIO),
             },
             S_IFDIR => match di_core.di_format {
                 XfsDinodeFmt::Local => {
-                    let mut dir_sf = Dir2Sf::decode(&mut decoder).map_err(|_| EIO)?;
-                    dir_sf.set_ino(inode_number);
-                    di_u = Some(DiU::Dir2Sf(dir_sf));
+                    if !superblock.has_dirv2() {
+                        let length = usize::try_from(di_core.di_size).map_err(|_| EIO)?;
+                        di_u = Some(DiU::LegacyLocal(
+                            super::checked::bytes(&raw, literal_start, length)?.to_vec(),
+                        ));
+                    } else {
+                        let mut dir_sf = Dir2Sf::decode(&mut decoder).map_err(|_| EIO)?;
+                        dir_sf.set_ino(inode_number);
+                        di_u = Some(DiU::Dir2Sf(dir_sf));
+                    }
                 }
                 XfsDinodeFmt::Extents => {
                     let mut bmx = Vec::<BmbtRec>::new();
@@ -159,28 +162,16 @@ impl Dinode {
                     di_u = Some(DiU::Bmx(bmx));
                 }
                 XfsDinodeFmt::Btree => {
-                    let bmbt = BmdrBlock::decode(&mut decoder).map_err(|_| EIO)?;
-
-                    let mut keys = Vec::<BmbtKey>::new();
-                    for _i in 0..bmbt.bb_numrecs {
-                        keys.push(BmbtKey::decode(&mut decoder).map_err(|_| EIO)?);
-                    }
-
-                    let gap = di_core.dfork_btree_ptr_gap(superblock.inode_size(), bmbt.bb_numrecs);
-                    decoder.reader().consume(gap as usize);
-
-                    let mut pointers = Vec::<XfsBmbtPtr>::new();
-                    for _i in 0..bmbt.bb_numrecs {
-                        let pointer = u64::decode(&mut decoder).map_err(|_| EIO)?;
-                        pointers.push(pointer)
-                    }
-
-                    di_u = Some(DiU::Bmbt((bmbt, keys, pointers)));
+                    di_u = Some(DiU::Bmbt(decode_btree_fork(&raw[literal_start..data_end])?));
                 }
                 _ => return Err(EIO),
             },
             S_IFLNK => match di_core.di_format {
                 XfsDinodeFmt::Local => {
+                    if di_core.di_size > 1024 || di_core.di_size as usize > data_end - literal_start
+                    {
+                        return Err(EIO);
+                    }
                     let mut data = vec![0u8; di_core.di_size as usize];
                     decoder.reader().read(&mut data[..]).map_err(|_| EIO)?;
                     di_u = Some(DiU::Symlink(data))
@@ -226,21 +217,7 @@ impl Dinode {
                     di_a = Some(DiA::Abmx(bmx));
                 }
                 XfsDinodeFmt::Btree => {
-                    let bmbt = BmdrBlock::decode(&mut decoder).map_err(|_| EIO)?;
-
-                    let mut keys = Vec::<BmbtKey>::new();
-                    for _i in 0..bmbt.bb_numrecs {
-                        keys.push(BmbtKey::decode(&mut decoder).map_err(|_| EIO)?);
-                    }
-
-                    let gap = di_core.afork_btree_ptr_gap(superblock.inode_size(), bmbt.bb_numrecs);
-                    decoder.reader().consume(gap as usize);
-                    let mut pointers = Vec::<XfsBmbtPtr>::new();
-                    for _i in 0..bmbt.bb_numrecs {
-                        pointers.push(XfsBmbtPtr::decode(&mut decoder).map_err(|_| EIO)?);
-                    }
-
-                    di_a = Some(DiA::Abmbt((bmbt, keys, pointers)));
+                    di_a = Some(DiA::Abmbt(decode_btree_fork(&raw[attr_fork_ofs..])?));
                 }
                 _ => return Err(EIO),
             }
@@ -363,4 +340,36 @@ impl Dinode {
         }
         &mut self.attributes
     }
+}
+
+/// In-inode bmap arrays use the fork capacity, not the live record count or alignment guesses.
+fn decode_btree_fork(raw: &[u8]) -> Result<(BmdrBlock, Vec<BmbtKey>, Vec<XfsBmbtPtr>), i32> {
+    use super::checked::*;
+    let header = BmdrBlock {
+        bb_level: u16be(raw, 0)?,
+        bb_numrecs: u16be(raw, 2)?,
+    };
+    let capacity = raw.len().checked_sub(4).ok_or(EIO)? / 16;
+    if header.bb_level == 0
+        || header.bb_level > 32
+        || header.bb_numrecs == 0
+        || header.bb_numrecs as usize > capacity
+    {
+        return Err(EIO);
+    }
+    let mut keys = Vec::new();
+    let mut pointers = Vec::new();
+    for index in 0..header.bb_numrecs as usize {
+        keys.push(BmbtKey {
+            br_startoff: u64be(raw, 4 + index * 8)?,
+        });
+        pointers.push(u64be(raw, 4 + capacity * 8 + index * 8)?);
+    }
+    if keys
+        .windows(2)
+        .any(|pair| pair[0].br_startoff >= pair[1].br_startoff)
+    {
+        return Err(EIO);
+    }
+    Ok((header, keys, pointers))
 }

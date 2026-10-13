@@ -101,7 +101,11 @@ impl<Ctx> Decode<Ctx> for XfsDa3Blkinfo {
         let _lsn: u64 = Decode::decode(decoder)?;
         let uuid: Uuid = Decode::decode(decoder)?;
         let _owner: u64 = Decode::decode(decoder)?;
-        assert_eq!(uuid, SUPERBLOCK.get().unwrap().sb_uuid, "UUID mismatch!");
+        assert_eq!(
+            uuid,
+            SUPERBLOCK.get().unwrap().metadata_uuid,
+            "UUID mismatch!"
+        );
 
         Ok(XfsDa3Blkinfo { forw, magic })
     }

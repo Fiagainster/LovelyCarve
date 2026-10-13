@@ -114,6 +114,9 @@ impl<R: Read + Seek> BlockReader<R> {
 
 impl<R: Read + Seek> Read for BlockReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> IoResult<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
         self.refill_if_empty()?;
         let num = buf.len().min(self.buffered());
         let buf = &mut buf[0..num];

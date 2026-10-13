@@ -208,12 +208,26 @@ impl DinodeCore {
         }
         Ok(FileAttr {
             ino,
-            size: self.di_size as u64,
+            size: u64::try_from(self.di_size).map_err(|_| super::compat::EIO)?,
             blocks: self.di_nblocks,
-            atime: self.timestamp(&self.di_atime),
-            mtime: self.timestamp(&self.di_mtime),
-            ctime: self.timestamp(&self.di_ctime),
-            crtime: self.timestamp(&self.di_crtime),
+            atime: self.timestamp(&self.di_atime)?,
+            mtime: self.timestamp(&self.di_mtime)?,
+            ctime: self.timestamp(&self.di_ctime)?,
+            crtime: if self.di_version >= 3 {
+                Some(self.timestamp(&self.di_crtime)?)
+            } else {
+                None
+            },
+            mode: self.di_mode,
+            inode_version: self.di_version,
+            raw_atime: self.raw_timestamp(&self.di_atime)?,
+            raw_mtime: self.raw_timestamp(&self.di_mtime)?,
+            raw_ctime: self.raw_timestamp(&self.di_ctime)?,
+            raw_crtime: if self.di_version >= 3 {
+                Some(self.raw_timestamp(&self.di_crtime)?)
+            } else {
+                None
+            },
             kind,
             perm: self.di_mode & !S_IFMT_U16,
             nlink: self.di_nlink,
@@ -225,18 +239,44 @@ impl DinodeCore {
         })
     }
 
-    fn timestamp(&self, ts: &XfsTimestamp) -> SystemTime {
+    fn raw_timestamp(&self, ts: &XfsTimestamp) -> Result<(i64, u32), i32> {
+        if self.di_version >= 3 && self.di_flags2 & constants::XFS_DIFLAG2_BIGTIME != 0 {
+            let value = (u64::from(ts.t_sec as u32) << 32) | u64::from(ts.t_nsec);
+            Ok((
+                (value / 1_000_000_000) as i64 - 2_147_483_648,
+                (value % 1_000_000_000) as u32,
+            ))
+        } else {
+            if ts.t_nsec >= 1_000_000_000 {
+                return Err(super::compat::EIO);
+            }
+            Ok((i64::from(ts.t_sec), ts.t_nsec))
+        }
+    }
+
+    fn timestamp(&self, ts: &XfsTimestamp) -> Result<SystemTime, i32> {
         if self.di_version >= 3 && (self.di_flags2 & constants::XFS_DIFLAG2_BIGTIME != 0) {
             // XXX this could be made a const if the Rust const_trait_impl
             // feature stabilizes.
             let classic_epoch: SystemTime = UNIX_EPOCH - Duration::from_secs(i32::MAX as u64 + 1);
 
             classic_epoch
-                + Duration::from_nanos(
+                .checked_add(Duration::from_nanos(
                     u64::from(ts.t_sec as u32) * (1u64 << 32) + u64::from(ts.t_nsec),
-                )
+                ))
+                .ok_or(super::compat::EIO)
         } else {
-            UNIX_EPOCH + Duration::new(ts.t_sec as u64, ts.t_nsec)
+            if ts.t_nsec >= 1_000_000_000 {
+                return Err(super::compat::EIO);
+            }
+            let seconds = i64::from(ts.t_sec);
+            let base = if seconds < 0 {
+                UNIX_EPOCH.checked_sub(Duration::from_secs(seconds.unsigned_abs()))
+            } else {
+                UNIX_EPOCH.checked_add(Duration::from_secs(seconds as u64))
+            };
+            base.and_then(|v| v.checked_add(Duration::from_nanos(u64::from(ts.t_nsec))))
+                .ok_or(super::compat::EIO)
         }
     }
 }

@@ -10,7 +10,7 @@
 | 修改界面与前端状态 | [前端规范](FRONTEND.md)、[前端模块与生命周期](FRONTEND_STRUCTURE.md) |
 | 增加命令或事件 | [IPC 对照](IPC.md)、[架构扩展流程](ARCHITECTURE.md#扩展流程) |
 | 开发插件 | [LPP 协议与 SDK](PLUGIN_PROTOCOL.md)、[Linux 基本信息插件](LINUXINFO.md) |
-| 修改读取器、核验字节与来源 | [文件系统维护](FILESYSTEM_NOTES.md)、[ext2/3/4](EXT.md)、[FAT/exFAT](FAT.md)、[NTFS](NTFS.md)、[LVM2](LVM.md)、[ReFS](REFS.md)、[vendor 来源](../src-tauri/vendor/UPSTREAM.md) |
+| 修改读取器、核验字节与来源 | [文件系统维护](FILESYSTEM_NOTES.md)、[ext2/3/4](EXT.md)、[FAT/exFAT](FAT.md)、[NTFS](NTFS.md)、[LVM2](LVM.md)、[XFS](XFS.md)、[ReFS](REFS.md)、[vendor 来源](../src-tauri/vendor/UPSTREAM.md) |
 | 验证性能与读取行为 | [性能验证](PERFORMANCE.md)、[后端探针](../src-tauri/examples/README.md) |
 | 发布版本 | [发布指南](RELEASING.md)、[第三方声明](../THIRD_PARTY_NOTICES.md) |
 | 报告安全问题 | [安全报告](../SECURITY.md) |

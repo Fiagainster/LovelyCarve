@@ -1125,3 +1125,14 @@ necessary.  Here is a sample; alter the names:
   Moe Ghoul, President of Vice
 
 That's all there is to it!
+
+
+## XFS comparison references and local fixtures
+
+The XFS capability audit references libyal/libfsxfs commit
+`cf474697de8a32f7eba4122e469b2ecd818054c6` (LGPL-3.0-or-later), without copying,
+linking or distributing its C implementation or test corpus. The production reader
+remains the BSD-2-Clause xfuse fork under `src-tauri/vendor/xfs-fuse`.
+The new Rust format code and the synthetic `minimal-v4.bin` fixture are local
+project work. Fixture generator, source statement and hash are recorded in
+`src-tauri/vendor/xfs-fuse/test_data/README.md`; full comparison is in `docs/XFS.md`.

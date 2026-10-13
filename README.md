@@ -11,7 +11,7 @@ LovelyCarve 是基于 Rust、Tauri v2 和 Vue 3 的桌面磁盘取证工具，�
 | 案件与证据 | 多证据案件、标签、卷快照、索引与分析结果持久化 |
 | 镜像与逻辑证据 | RAW、E01/EWF、VMDK、VHD/VHDX、QCOW2、VDI、DMG、AD1；文件夹、归档、Docker、iOS 本地备份与物理磁盘 |
 | 分区与卷 | GPT、MBR/EBR、APM、BSD，LVM2 线性/碎片卷读取、mdadm RAID 检测、RAID0/RAID5 重组 |
-| 文件系统 | NTFS、Ext4、FAT16/32、exFAT、APFS、HFS+/HFSX、Btrfs、ZFS、XFS、UFS/UFS2、SquashFS、ReFS 等 Rust 读取器 |
+| 文件系统 | NTFS、Ext4、FAT16/32、exFAT、APFS、HFS+/HFSX、Btrfs、ZFS、[XFS 1–5](docs/XFS.md)、UFS/UFS2、SquashFS、ReFS 等 Rust 读取器 |
 | 加密与历史视图 | BitLocker、LUKS、VeraCrypt、iOS 本地备份解锁与 NTFS 卷影副本 |
 | 浏览、预览与导出 | 目录树、分页、筛选、删除项、命名流；文本、Hex、媒体、文档、数据库与可执行文件预览；文件、目录与镜像导出 |
 | 分析 | 多编码关键词与正则搜索、文件与插件时间线、NTFS USN / Ext4 日志、结构化雕刻 |

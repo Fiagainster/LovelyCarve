@@ -65,7 +65,13 @@ pub struct FileAttr {
     pub atime: SystemTime,
     pub mtime: SystemTime,
     pub ctime: SystemTime,
-    pub crtime: SystemTime,
+    pub crtime: Option<SystemTime>,
+    pub mode: u16,
+    pub inode_version: i8,
+    pub raw_atime: (i64, u32),
+    pub raw_mtime: (i64, u32),
+    pub raw_ctime: (i64, u32),
+    pub raw_crtime: Option<(i64, u32)>,
     pub kind: FileType,
     pub perm: u16,
     pub nlink: u32,
@@ -74,6 +80,17 @@ pub struct FileAttr {
     pub rdev: u32,
     pub blksize: u32,
     pub flags: u32,
+}
+
+impl FileAttr {
+    /// Decode XFS's on-disk SysV device identifier (14-bit major, 18-bit minor).
+    pub fn device_numbers(&self) -> Option<(u32, u32)> {
+        if matches!(self.kind, FileType::CharDevice | FileType::BlockDevice) {
+            Some((self.rdev >> 18, self.rdev & 0x3ffff))
+        } else {
+            None
+        }
+    }
 }
 
 /// Map a POSIX file-mode word to a `FileType`. Returns `ENOENT` for unknown

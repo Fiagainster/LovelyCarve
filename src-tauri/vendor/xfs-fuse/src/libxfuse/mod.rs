@@ -49,3 +49,12 @@ pub mod sb;
 pub(crate) mod symlink_extent;
 pub(crate) mod utils;
 pub mod volume;
+
+pub(crate) mod attributes;
+pub(crate) mod checked;
+pub(crate) mod legacy_dir;
+pub(crate) mod logical;
+
+pub(crate) mod directory;
+#[cfg(test)]
+mod regression;
