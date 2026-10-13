@@ -4,7 +4,7 @@ import { IpcCommandError } from '../../../lib/ipc/client';
 import type { EncryptedUnlockResult } from '../../../lib/ipc/encrypted';
 import type { ImageInfo } from '../../../lib/ipc/image';
 import { registerEvidenceContext } from './evidenceContext';
-import { disposeEncryptedVolumeUnlockJobs, registerEncryptedVolumeImageUpdater, startEncryptedVolumeUnlock } from './useEncryptedVolumeUnlocks';
+import { disposeEncryptedVolumeUnlockJobs, registerEncryptedVolumeImageUpdater, registerEncryptedVolumeImageOpener, startEncryptedVolumeUnlock } from './useEncryptedVolumeUnlocks';
 import { latestUnlockedImageInfo } from './unlockedImageInfo';
 
 const ipc = vi.hoisted(() => ({ unlock: vi.fn(), unload: vi.fn(), success: vi.fn(), error: vi.fn(), info: vi.fn() }));
@@ -16,6 +16,8 @@ const result = { image: { id: 'source', path: 'server.E01', unlocked_partitions:
 let context = 0;
 let stopContext: () => void;
 let stopUpdater: () => void;
+let stopOpener: () => void;
+const openDerived = vi.fn();
 const updateImage = vi.fn();
 function deferred() {
   let resolve!: (value: EncryptedUnlockResult) => void;
@@ -29,12 +31,44 @@ beforeEach(() => {
   context = 0;
   stopContext = registerEvidenceContext(() => context);
   stopUpdater = registerEncryptedVolumeImageUpdater(updateImage);
+  stopOpener = registerEncryptedVolumeImageOpener(openDerived);
+  openDerived.mockResolvedValue(true);
   updateImage.mockResolvedValue(undefined);
   ipc.unload.mockResolvedValue(undefined);
 });
-afterEach(() => { disposeEncryptedVolumeUnlockJobs(); stopUpdater(); stopContext(); });
+afterEach(() => { disposeEncryptedVolumeUnlockJobs(); stopOpener(); stopUpdater(); stopContext(); });
 
 describe('background encrypted volume unlock ownership', () => {
+  it('releases a plaintext session when workspace navigation reports a failure', async () => {
+    ipc.unlock.mockResolvedValue({ ...result, image: { id: 'unopened-lv', path: 'decrypted://unopened-lv' } });
+    openDerived.mockResolvedValue(false);
+    startEncryptedVolumeUnlock(source, { scheme: 'filevault', target: 'newImage', password: 'secret' });
+    await settle();
+    expect(ipc.unload).toHaveBeenCalledWith({ imageId: 'unopened-lv' });
+    expect(ipc.success).not.toHaveBeenCalled();
+  });
+  it('opens a selected FileVault volume as an independent session without changing the source view', async () => {
+    const derived = { ...result, image: { id: 'lv-two', path: 'decrypted://lv-two' } } as EncryptedUnlockResult;
+    ipc.unlock.mockResolvedValue(derived);
+    const options = { scheme: 'filevault' as const, target: 'newImage' as const, password: 'secret', partitionId: 2, logicalVolumeIndex: 1 };
+    expect(startEncryptedVolumeUnlock(source, options)).toBe(true);
+    await settle();
+    expect(ipc.unlock.mock.calls[0][0].options.target).toBe('newImage');
+    expect(openDerived).toHaveBeenCalledWith('decrypted://lv-two');
+    expect(updateImage).not.toHaveBeenCalled();
+    expect(options.password).toBe('');
+  });
+  it('releases an independent volume produced after a case switch', async () => {
+    const operation = deferred(); ipc.unlock.mockReturnValue(operation.promise);
+    startEncryptedVolumeUnlock(source, { scheme: 'filevault', target: 'newImage', password: 'secret', logicalVolumeIndex: 1 });
+    context += 1;
+    operation.resolve({ ...result, image: { id: 'late-lv', path: 'decrypted://late-lv' } } as EncryptedUnlockResult);
+    await settle();
+    expect(ipc.unload).toHaveBeenCalledWith({ imageId: 'late-lv' });
+    expect(openDerived).not.toHaveBeenCalled();
+    expect(updateImage).not.toHaveBeenCalled();
+  });
+
   it('clears master keys after completion and duplicate submission', async () => {
     const operation = deferred();
     ipc.unlock.mockReturnValue(operation.promise);

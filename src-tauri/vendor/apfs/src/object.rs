@@ -14,9 +14,9 @@ pub const OBJECT_TYPE_CHECKPOINT_MAP: u32 = 0x0C;
 pub const OBJECT_TYPE_FS: u32 = 0x0D;
 
 // Object flag masks (upper 16 bits of type_and_flags)
-pub const OBJ_PHYSICAL: u32 = 0x00000000;
-pub const OBJ_VIRTUAL: u32 = 0x80000000;
-pub const OBJ_EPHEMERAL: u32 = 0x40000000;
+pub const OBJ_PHYSICAL: u32 = 0x40000000;
+pub const OBJ_VIRTUAL: u32 = 0x00000000;
+pub const OBJ_EPHEMERAL: u32 = 0x80000000;
 pub const OBJ_STORAGE_TYPE_MASK: u32 = 0xC0000000;
 pub const OBJECT_TYPE_MASK: u32 = 0x0000FFFF;
 
@@ -75,7 +75,12 @@ pub fn read_object<R: Read + Seek>(
     block_number: u64,
     block_size: u32,
 ) -> Result<(ObjectHeader, Vec<u8>)> {
-    let offset = block_number * block_size as u64;
+    let offset = block_number
+        .checked_mul(u64::from(block_size))
+        .ok_or_else(|| ApfsError::CorruptedData("object offset overflow".into()))?;
+    if !(4096..=65536).contains(&block_size) || !block_size.is_power_of_two() {
+        return Err(ApfsError::CorruptedData("invalid object block size".into()));
+    }
     reader.seek(SeekFrom::Start(offset))?;
 
     let mut block = vec![0u8; block_size as usize];
@@ -95,7 +100,12 @@ pub fn read_block<R: Read + Seek>(
     block_number: u64,
     block_size: u32,
 ) -> Result<Vec<u8>> {
-    let offset = block_number * block_size as u64;
+    let offset = block_number
+        .checked_mul(u64::from(block_size))
+        .ok_or_else(|| ApfsError::CorruptedData("block offset overflow".into()))?;
+    if !(4096..=65536).contains(&block_size) || !block_size.is_power_of_two() {
+        return Err(ApfsError::CorruptedData("invalid block size".into()));
+    }
     reader.seek(SeekFrom::Start(offset))?;
 
     let mut block = vec![0u8; block_size as usize];

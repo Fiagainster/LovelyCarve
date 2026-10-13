@@ -1,0 +1,28 @@
+[package]
+name         = "filevault-forensic"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+description  = "Anomaly auditor over filevault-core — CoreStorage/FileVault protector, encryption-state and weak-KDF findings via forensicnomicon::report"
+keywords     = ["forensics", "filevault", "corestorage", "macos", "dfir"]
+categories   = ["parser-implementations"]
+readme       = "../README.md"
+
+[dependencies]
+filevault = { workspace = true }
+forensicnomicon = { workspace = true }
+
+[dev-dependencies]
+filevault = { workspace = true, features = ["testutil"] }
+# Build a synthetic CoreStorage image (XTS-encrypted metadata) to exercise the
+# reader-based analyzer entry points WITHOUT the env-gated oracle, so the
+# --workspace coverage gate is met in CI. Mirrors filevault-core's metadata XTS.
+base64 = "0.22"
+aes = "0.8"
+xts-mode = "0.5"
+
+[lints]
+workspace = true

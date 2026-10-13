@@ -9,6 +9,7 @@ export type BackendTaskKind =
   | 'bitlockerScan'
   | 'bitlockerUnlock'
   | 'encryptedVolumeUnlock'
+  | 'filevaultInspect'
   | 'carveRecovery'
   | 'carveScan'
   | 'directoryExport'

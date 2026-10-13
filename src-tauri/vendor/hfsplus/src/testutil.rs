@@ -175,7 +175,7 @@ impl HfsPlusImageBuilder {
             1,
             num_catalog_records as u32,
             516,
-            1,
+            0xbc,
         );
 
         // Block 3: Catalog B-tree leaf node
@@ -561,7 +561,7 @@ fn push_fork_data(
     push_u64(buf, logical_size);
     push_u32(buf, 0); // clump_size
     push_u32(buf, total_blocks);
-    push_u32(buf, start_block);
+    push_u32(buf, if block_count == 0 { 0 } else { start_block });
     push_u32(buf, block_count);
     // Extents 1-7 (empty)
     for _ in 1..8 {
@@ -596,5 +596,7 @@ fn write_u16_at(buf: &mut [u8], offset: usize, val: u16) {
 // Tests
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod regressions;
 #[cfg(test)]
 mod tests;

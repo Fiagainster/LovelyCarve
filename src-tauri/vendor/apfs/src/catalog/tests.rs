@@ -35,12 +35,8 @@ fn parses_xattr_value_header() {
         parse_xattr_value(&value).unwrap(),
         XattrValue::Embedded(b"../README.txt\0".to_vec())
     );
-    // data_len larger than the record: clamp to the value length
     let short = [0x06, 0x00, 0xff, 0x00, b'a', b'b'];
-    assert_eq!(
-        parse_xattr_value(&short).unwrap(),
-        XattrValue::Embedded(b"ab".to_vec())
-    );
+    assert!(parse_xattr_value(&short).is_err());
     // value shorter than the header: rejected rather than passed through
     assert!(parse_xattr_value(b"abc").is_err());
     // data-stream reference shorter than a j_xattr_dstream_t

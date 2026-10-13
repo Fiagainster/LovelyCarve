@@ -13,6 +13,9 @@ LovelyCarve 用纯 Rust 读取镜像容器、分区表、文件系统和加密�
 | FAT / exFAT | [FAT.md](FAT.md) | libfsfat 对照；按簇数判定 FAT 类型、大逻辑扇区、范围读取、ValidDataLength、时区与删除项 |
 | XFS | [XFS.md](XFS.md) | libfsxfs 对照；格式 1–5、目录与属性全部布局、BIGTIME、metadata UUID、范围读取与来源映射 |
 | ReFS | [REFS.md](REFS.md) | 纯 Rust `refs-reader`；文件流快照、CoW 共享块、公开镜像来源与独立解析器验证 |
+| APFS | [APFS.md](APFS.md) | libfsapfs 110 API 对照；事务 OMAP、多卷、两类目录键、克隆/空洞、范围读、xattr 与快照元数据；明确加密/历史浏览边界 |
+| HFS+ / HFSX | [HFS.md](HFS.md) | libfshfs 95 API；完整 fork / overflow、resource fork、attr continuation、Unicode 3.2、硬链接与逻辑范围读取 |
+| FileVault 2 | [FILEVAULT.md](FILEVAULT.md) | filevault-forensic 接入与 libfvde 88 API；多 LV、密码/恢复/VMK、主备元数据、segment map 与 HFS 明文视图 |
 | GPT | [GPT.md](GPT.md) | libvsgpt 对照；主备头与数组 CRC、扇区大小推断、备份恢复、原始槽位与属性 |
 | MBR / EBR | [MBR.md](MBR.md) | libvsmbr 对照；原始槽位与 CHS、多扩展入口、循环与分叉检测、大扇区几何 |
 | LVM2 | [LVM.md](LVM.md) | libvslvm 对照；标签与元数据 CRC、活动副本、环形缓冲回绕、碎片线性卷映射 |
@@ -21,7 +24,7 @@ LovelyCarve 用纯 Rust 读取镜像容器、分区表、文件系统和加密�
 | 卷影副本 | [VSS.md](VSS.md) | libvshadow 对照；存储区链重建、原始块枚举、catalog 校验与尺寸恢复 |
 | iOS 备份 | [IOS_BACKUPS.md](../IOS_BACKUPS.md) | 本地备份浏览、加密备份解锁与异常检查 |
 
-其余格式（APFS、HFS+、Btrfs、ZFS、UFS、SquashFS、ISO 9660，以及 EWF、VMDK、VHD / VHDX、QCOW2、VDI、DMG、AD1 等镜像容器）的实现位置见 [架构说明的镜像与证据源](../ARCHITECTURE.md#镜像与证据源)，上游版本、本地补丁与测试样本记录在各 vendor 目录的 `LOVELYCARVE.md` / `ORIGIN.md` 中。命令行下的镜像打开、解锁和导出示例见 [CLI 手册](../CLI.md)。
+其余格式（Btrfs、ZFS、UFS、SquashFS、ISO 9660，以及 EWF、VMDK、VHD / VHDX、QCOW2、VDI、DMG、AD1 等镜像容器）的实现位置见 [架构说明的镜像与证据源](../ARCHITECTURE.md#镜像与证据源)，上游版本、本地补丁与测试样本记录在各 vendor 目录的 `LOVELYCARVE.md` / `ORIGIN.md` 中。命令行下的镜像打开、解锁和导出示例见 [CLI 手册](../CLI.md)。
 
 ## 维护要求
 
@@ -45,7 +48,7 @@ APFS 容器内卷、Btrfs 子卷、LVM 逻辑卷和 Docker 合并卷各自保留
 
 ### 读取与压缩
 
-支持的压缩结构解码为文件逻辑字节，不支持的编码明确报错。`Volume::read_range`、完整读取和流式读取必须返回相同的字节；不能随机寻址的适配器可以回退到流式读取，但代价是 O(offset)。NTFS、ext2/3/4、FAT / exFAT、XFS、ReFS 和连续镜像区间支持直接范围读取，Dokan 挂载的缓存未命中复用这条路径。
+支持的压缩结构解码为文件逻辑字节，不支持的编码明确报错。`Volume::read_range`、完整读取和流式读取必须返回相同的字节；不能随机寻址的适配器可以回退到流式读取，但代价是 O(offset)。NTFS、ext2/3/4、FAT / exFAT、XFS、ReFS、APFS、HFS+ / HFSX 和连续镜像区间支持直接范围读取，Dokan 挂载的缓存未命中复用这条路径。
 
 文件大小、extent / run / cluster 范围及乘加运算都需要校验。短读不能冒充完整文件；整盘哈希、RAW 导出和解密导出必须检查 `offset == total`。格式定义的空洞、未写入区间和未初始化尾部读零；已分配数据越过卷边界或来源被截断时报错。
 

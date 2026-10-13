@@ -19,7 +19,7 @@ import { registerTaskContext } from '../../features/tasks/api';
 import { registerAnalysisContext } from '../../features/analysis/api';
 
 import { registerBitlockerSnapshotWorkflow, disposeBitlockerJobs, disposeImageHashJobs, registerEvidenceContext, disposeImageExportJobs } from '../../features/evidence/api';
-import { registerEncryptedVolumeImageUpdater, disposeEncryptedVolumeUnlockJobs } from '../../features/evidence/api';
+import { registerEncryptedVolumeImageUpdater, registerEncryptedVolumeImageOpener, disposeEncryptedVolumeUnlockJobs } from '../../features/evidence/api';
 
 type FileSession = ReturnType<typeof useFileSession>;
 
@@ -35,7 +35,7 @@ export function bindWorkspaceServices(options: {
   showToolSettings: Ref<boolean>;
   closeAllTabs: () => void;
   handleSidebarSelect: (panel: string) => void;
-  onOpenImageFromInfo: (path: string) => Promise<void>;
+  onOpenImageFromInfo: (path: string) => Promise<boolean>;
 }) {
   const { resetFileSession, captureFileSession, restoreFileSession, loadFileForTab,
     loading, activePanel, showToolSettings, closeAllTabs, handleSidebarSelect, onOpenImageFromInfo } = options;
@@ -69,6 +69,7 @@ export function bindWorkspaceServices(options: {
   });
   const stopRaid = registerRaidImageOpener(path => void onOpenImageFromInfo(path));
   const stopEncryptedUnlock = registerEncryptedVolumeImageUpdater(options.updateImageInfo);
+  const stopEncryptedOpener = registerEncryptedVolumeImageOpener(onOpenImageFromInfo);
   const stopUnlock = registerBitlockerUnlockNavigator(() => handleSidebarSelect('dashboard'));
   /** Bundle every per-composable snapshot into one opaque object. The
    *  tab manager treats this as a black box; only this file knows how
@@ -130,7 +131,7 @@ export function bindWorkspaceServices(options: {
     }
   });
   onScopeDispose(() => {
-    stopEncryptedUnlock(); disposeEncryptedVolumeUnlockJobs();
+    stopEncryptedUnlock(); stopEncryptedOpener(); disposeEncryptedVolumeUnlockJobs();
     stopEvidenceContext(); stopSnapshot(); disposeBitlockerJobs(); disposeImageHashJobs(); disposeImageExportJobs(); stopTaskContext(); stopAnalysisContext(); stopCase(); stopOpened(); stopReport(); stopRaid(); stopUnlock(); stopTabs();
     disposeAnalysisResults(); disposeBuiltinTasks(); disposeTaskCenter(); disposeAutoDetect(); disposeCaseSession();
     disposeRaidStack();

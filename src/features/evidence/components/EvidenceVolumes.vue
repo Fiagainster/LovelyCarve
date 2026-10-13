@@ -106,10 +106,10 @@
                     @unlocked="onBitlockerUnlocked"
                   />
                   <button
-                    v-if="row.partition.kind === 'luks' && canUnlockContainer"
+                    v-if="['luks', 'filevault'].includes(row.partition.kind) && canUnlockContainer"
                     class="ui-btn sm"
                     type="button"
-                    title="以只读镜像打开该 LUKS 分区的解密内容"
+                    title="解锁该加密分区并以只读方式浏览文件"
                     @click="emit('unlock', row.partition.id)"
                   >
                     <KeyRound :size="13" />解锁

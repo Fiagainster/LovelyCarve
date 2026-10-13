@@ -110,6 +110,7 @@ fmt:
     cd src-tauri/vendor/ios-backup && cargo fmt
     cd src-tauri/vendor/apfs && cargo fmt
     cd src-tauri/vendor/hfsplus && cargo fmt
+    cd src-tauri/vendor/filevault && cargo fmt
     cd src-tauri/vendor/cmpfs && cargo fmt
     cd src-tauri/vendor/udif && cargo fmt
     cd src-tauri/vendor/ext4-view && cargo fmt
@@ -341,6 +342,34 @@ clippy-refs:
 [group("readers")]
 test-vendor name *args:
     cargo test --manifest-path src-tauri/vendor/{{ name }}/Cargo.toml --lib {{ args }}
+
+# Test the FileVault core and forensic auditor, including optional libfvde oracle.
+[group("readers")]
+[working-directory("src-tauri/vendor/filevault")]
+test-filevault *args:
+    cargo test --workspace {{ args }}
+
+[group("readers")]
+[working-directory("src-tauri/vendor/filevault")]
+clippy-filevault:
+    cargo clippy --workspace --all-targets
+
+[group("readers")]
+[working-directory("src-tauri/vendor/hfsplus")]
+clippy-hfsplus:
+    cargo clippy --all-targets
+
+# Test the APFS reader and deterministic transaction/stream fixtures.
+[group("readers")]
+[working-directory("src-tauri/vendor/apfs")]
+test-apfs *args:
+    cargo test --lib {{ args }}
+
+# Lint the standalone APFS reader without desktop dependencies.
+[group("readers")]
+[working-directory("src-tauri/vendor/apfs")]
+clippy-apfs:
+    cargo clippy --all-targets
 
 # Test the EWF reader and corpus regressions.
 [group("readers")]

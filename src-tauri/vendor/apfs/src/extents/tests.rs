@@ -86,7 +86,7 @@ fn test_read_file_data_is_independent_of_record_order() {
 #[test]
 fn test_fork_reader_reads_holes_as_zeros() {
     let (mut cursor, extents, logical_size) = sparse_fork();
-    let mut fork = ApfsForkReader::new(&mut cursor, 4096, extents, logical_size);
+    let mut fork = ApfsForkReader::new(&mut cursor, 4096, extents, logical_size).unwrap();
 
     let mut out = Vec::new();
     fork.read_to_end(&mut out).unwrap();
@@ -98,7 +98,7 @@ fn test_fork_reader_seeks_past_a_hole() {
     // Previously this returned UnexpectedEof: the map placed the second
     // extent at 4096, so nothing covered offset 9000.
     let (mut cursor, extents, logical_size) = sparse_fork();
-    let mut fork = ApfsForkReader::new(&mut cursor, 4096, extents, logical_size);
+    let mut fork = ApfsForkReader::new(&mut cursor, 4096, extents, logical_size).unwrap();
 
     fork.seek(SeekFrom::Start(9000)).unwrap();
     let mut out = vec![0u8; 8];
@@ -110,4 +110,42 @@ fn test_fork_reader_seeks_past_a_hole() {
     let mut out = vec![0xFFu8; 8];
     fork.read_exact(&mut out).unwrap();
     assert_eq!(out, [0u8; 8]);
+}
+
+#[test]
+fn missing_tail_overlap_and_allocated_source_overrun_fail_in_all_read_modes() {
+    for damage in 0..4 {
+        let (mut source, mut records, size) = sparse_fork();
+        match damage {
+            0 => {
+                records.pop();
+            }
+            1 => {
+                records[1].logical_addr = 2000;
+            }
+            2 => {
+                records[1].value.phys_block_num = 4;
+            }
+            3 => {
+                records[1].logical_addr = u64::MAX;
+            }
+            _ => unreachable!(),
+        }
+        assert!(read_file_data(&mut source, 4096, &records, size, &mut Vec::new()).is_err());
+        assert!(ApfsForkReader::new(&mut source, 4096, records, size).is_err());
+    }
+}
+
+#[test]
+fn explicit_trailing_hole_and_all_hole_forks_do_not_read_block_zero() {
+    let (mut source, mut records, size) = sparse_fork();
+    records[1].value.phys_block_num = 0;
+    let mut data = Vec::new();
+    read_file_data(&mut source, 4096, &records, size, &mut data).unwrap();
+    assert_eq!(&data[4096..], vec![0; 8192]);
+    let mut fork = ApfsForkReader::new(&mut source, 4096, records, size).unwrap();
+    assert_eq!(fork.seek(SeekFrom::Start(u64::MAX)).unwrap(), u64::MAX);
+    assert!(fork.seek(SeekFrom::Current(1)).is_err());
+    assert_eq!(fork.seek(SeekFrom::Start(0)).unwrap(), 0);
+    assert!(fork.seek(SeekFrom::Current(-1)).is_err());
 }

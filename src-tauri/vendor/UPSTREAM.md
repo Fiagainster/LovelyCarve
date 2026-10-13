@@ -11,18 +11,18 @@
 | 目录 | 当前版本 | 上游提交 / 来源 | 本次处理 |
 | --- | --- | --- | --- |
 | `ad1` | `0.1.2` | [afc3963659a1](https://github.com/SecurityRonin/ad1-forensic/commit/afc3963659a13acf10082e7d76194d3ab789583e) | 来源记录与上游最新提交一致，保留现有本地补丁。 |
-| `apfs` | `0.4.1` | [3a73ee28fdab](https://github.com/Dil4rd/dpp/commit/3a73ee28fdab192fcdfbe8edcad7b520867f2417) | 升级 0.2.4 → 0.4.1；保留多卷、MACB 时间、可取消的批量目录遍历与压缩流接口。 |
+| `apfs` | `0.4.1` | [3a73ee28fdab](https://github.com/Dil4rd/dpp/commit/3a73ee28fdab192fcdfbe8edcad7b520867f2417) | 保留多卷、MACB 和目录遍历；2026-10-13 对照 libfsapfs 补事务 OMAP、目录键、seek/range、inode/xattr/快照元数据及严格来源边界。完整范围与限制见 [APFS](../../docs/formats/APFS.md)。 |
 | `backhand` | `0.25.5` | [bf678c7f9237](https://github.com/wcampbell0x2a/backhand/commit/bf678c7f923799a57d972cf695daf69d8c6ddafb) | 升级 0.25.1 → 0.25.5；保留精简特性、std I/O 别名及可读错误信息，修复 Windows 根路径判断。 |
 | `bitlocker` | `0.3.5` | [e6674dcda241](https://github.com/SecurityRonin/bitlocker-forensic/commit/e6674dcda2413b1a02a915f2255af8fda787a154) | 2026-10-13 对照 libbde 补六种 AES、变长扇区、Vista/EOW、BEK/clear/VMK/FVEK 和 metadata 查询；验证边界见 [BITLOCKER](../../docs/formats/BITLOCKER.md)。 |
 | `btrfs-diskformat` | `0.5.1` | [bb84745422ed](https://github.com/GodTamIt/btrfs-diskformat/commit/bb84745422ed2c2aa99b3b151f6247a3b51638f4) | 已最新；保留 zerocopy Immutable 兼容补丁。 |
 | `cdfs` | `0.2.3` | [8cc434a31983](https://git.sr.ht/~az1/iso9660-rs/commit/8cc434a319832ae43d1c7685477809d75f313990) | 发布版本及核心解析器已最新；保留现有独立 crate 布局。 |
-| `cmpfs` | `0.1.0` | [3a73ee28fdab](https://github.com/Dil4rd/dpp/commit/3a73ee28fdab192fcdfbe8edcad7b520867f2417) | 新增上游共享 Apple decmpfs 解码器，供 APFS/HFS+ 使用。 |
+| `cmpfs` | `0.1.0` | [3a73ee28fdab](https://github.com/Dil4rd/dpp/commit/3a73ee28fdab192fcdfbe8edcad7b520867f2417) | 共享 Apple decmpfs 解码器；libfsapfs 对照补 LZFSE stored marker、RAW 标记与资源偏移表边界，供 APFS/HFS+ 使用。 |
 | `ewf` | `0.4.10` | [c456f993f683](https://github.com/SecurityRonin/ewf-forensic/commit/c456f993f68385f3438b3ff16ba5ab6fd0850fb4) | 来源记录与上游最新提交一致，保留现有本地补丁。 |
 | `exfat` | `0.1.0` | [b930023e0636](https://github.com/obhq/exfat/commit/b930023e06363371b1f26df1f45e17eaa0c7a290) | 保留删除项修复；本地 VDL 尾部、严格簇链、原始属性/extent、UTF-16 与时间补丁见 [FAT](../../docs/formats/FAT.md)。 |
 | `ext4-view` | `1.0.0` | [8facbf4c2986](https://github.com/nicholasbishop/ext4-view-rs/commit/8facbf4c2986b7e2dbdef92514d696f1559a2b90) | 升级 0.9.3 → 1.0.0；保留 inode 索引 API、128 字节 inode 校验和、兼容旧 journal；本地内联数据、EA-inode、meta_bg 等能力补丁见 [EXT](../../docs/formats/EXT.md)。 |
 | `fatfs` | `0.4.0` | [2aefc2a027ce](https://github.com/rafalh/rust-fatfs/commit/2aefc2a027ce94ed0671752814dac203f0450e11) | 保留显式 root_dir 生命周期；本地目录项偏移、簇链防环、有限 extent 与大扇区补丁见 [FAT](../../docs/formats/FAT.md)。 |
 | `gpt` | `4.1.0` | [73086deff58c](https://github.com/Quyzi/gpt/commit/73086deff58cb3c741b2ba51a53a2a7c6231a3f1) | 同步上游整数边界测试修正；保留精简测试依赖。 |
-| `hfsplus` | `0.4.0` | [3a73ee28fdab](https://github.com/Dil4rd/dpp/commit/3a73ee28fdab192fcdfbe8edcad7b520867f2417) | 升级 0.2.4 → 0.4.0；保留 attribute/access 时间和权限标志。 |
+| `hfsplus` | `0.4.0` | [3a73ee28fdab](https://github.com/Dil4rd/dpp/commit/3a73ee28fdab192fcdfbe8edcad7b520867f2417) | 2026-10-13 对照 libfshfs 95 API：完整 fork 与属性续接、固定名称规则、硬链接、逻辑压缩读取及严格 B-tree / 来源校验；Apple 表 APSL 归属见 LOVELYCARVE.md。 |
 | `ios-backup` | `0.1.0` | [8d8cef447ae2](https://github.com/SecurityRonin/ios-backup-forensic/commit/8d8cef447ae212e7dd22dc0425156bf4ddfcfa05) | 来源记录与上游最新提交一致，保留现有本地补丁。 |
 | `luks` | `0.1.8` | [284f06487d7a](https://github.com/SecurityRonin/luks-forensic/commit/284f06487d7a66f13ed27c61be5e26f0863c0e4f) | 来源记录与上游最新提交一致，保留现有本地补丁。 |
 | `magika` | `1.1.1-dev` | [26b6a9ba7e92](https://github.com/google/magika/commit/26b6a9ba7e92f2b0a3745970a9190ec0dde9bf83) | 同步最后的 ORT 兼容源码（RAR MIME 修正）；上游 2.0.0-dev 已迁至 tract 且未发布，本次不迁移推理运行时，也不降级至 1.1.0。 |
@@ -52,3 +52,7 @@
 - 独立库：`just test-vendor <目录名>`；已有专用 reader 配方仍优先使用。
 - ext4 原始夹具来自上游并校验 SHA-256，详见 `ext4-view/test_data/README.md`；测试通过 Rust zstd 在内存解码，不依赖系统 zstd 程序。
 - 可选外部镜像/oracle 未提供时，忽略的测试不代表真实镜像已验证。
+
+| 新增 vendor | 来源 | 本地范围 |
+| --- | --- | --- |
+| `filevault` (`core` / `forensic`) | [857e04033e09](https://github.com/SecurityRonin/filevault-forensic/commit/857e04033e09c84324948b2cbfdd9e043b24d62b)，0.1.5 / Apache-2.0 | libfvde 对照补受检 metadata copies、多 LV、碎片映射、CF plist、恢复 key、取消与读完整性；实际调用 audit_info。见 [FILEVAULT](../../docs/formats/FILEVAULT.md) 和目录内 LOVELYCARVE.md。 |

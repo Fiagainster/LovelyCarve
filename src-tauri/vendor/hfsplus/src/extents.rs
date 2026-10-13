@@ -16,29 +16,37 @@ pub struct ForkReader<'a, R: Read + Seek> {
 }
 
 impl<'a, R: Read + Seek> ForkReader<'a, R> {
-    /// Create a ForkReader from a fork's inline extents.
-    /// For files with overflow extents, call `with_overflow_extents` instead.
-    pub fn new(reader: &'a mut R, fork: &ForkData, block_size: u32) -> Self {
-        let block_size = block_size as u64;
+    /// Construct a reader over an already validated, complete allocation map.
+    pub fn from_extents(
+        reader: &'a mut R,
+        fork: &ForkData,
+        block_size: u32,
+        extents: &[ExtentDescriptor],
+    ) -> Result<Self> {
+        if block_size == 0 {
+            return Err(HfsPlusError::CorruptedData(
+                "zero allocation block size".into(),
+            ));
+        }
         let mut extent_map = Vec::new();
         let mut logical_offset = 0u64;
-
-        for extent in &fork.extents {
+        for extent in extents {
             if extent.block_count == 0 {
-                break;
+                continue;
             }
-            let physical_start = extent.start_block as u64 * block_size;
-            let length = extent.block_count as u64 * block_size;
+            let physical_start = u64::from(extent.start_block) * u64::from(block_size);
+            let length = u64::from(extent.block_count) * u64::from(block_size);
             extent_map.push((logical_offset, physical_start, length));
-            logical_offset += length;
+            logical_offset = logical_offset
+                .checked_add(length)
+                .ok_or_else(|| HfsPlusError::CorruptedData("extent capacity overflow".into()))?;
         }
-
-        ForkReader {
+        Ok(Self {
             reader,
             logical_size: fork.logical_size,
             extent_map,
             position: 0,
-        }
+        })
     }
 
     /// Translate a logical offset to a physical offset
@@ -58,7 +66,7 @@ impl<R: Read + Seek> Read for ForkReader<'_, R> {
             return Ok(0);
         }
 
-        let remaining = (self.logical_size - self.position) as usize;
+        let remaining = usize::try_from(self.logical_size - self.position).unwrap_or(usize::MAX);
         let to_read = buf.len().min(remaining);
         if to_read == 0 {
             return Ok(0);
@@ -102,19 +110,17 @@ impl<R: Read + Seek> Read for ForkReader<'_, R> {
 impl<R: Read + Seek> Seek for ForkReader<'_, R> {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         let new_pos = match pos {
-            SeekFrom::Start(offset) => offset as i64,
-            SeekFrom::Current(offset) => self.position as i64 + offset,
-            SeekFrom::End(offset) => self.logical_size as i64 + offset,
-        };
-
-        if new_pos < 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "seek before start of file",
-            ));
+            SeekFrom::Start(offset) => Some(offset),
+            SeekFrom::Current(delta) => self.position.checked_add_signed(delta),
+            SeekFrom::End(delta) => self.logical_size.checked_add_signed(delta),
         }
-
-        self.position = new_pos as u64;
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "seek outside addressable range",
+            )
+        })?;
+        self.position = new_pos;
         Ok(self.position)
     }
 }
@@ -123,8 +129,79 @@ impl<R: Read + Seek> Seek for ForkReader<'_, R> {
 pub const FORK_TYPE_DATA: u8 = 0x00;
 pub const FORK_TYPE_RESOURCE: u8 = 0xFF;
 
-/// Read file data from a fork, streaming to a writer.
-/// Returns the number of bytes written.
+/// Validate and collect a complete fork allocation map, including overflow records.
+pub fn collect_extents<R: Read + Seek>(
+    reader: &mut R,
+    vol: &VolumeHeader,
+    extents_btree: &BTreeHeaderRecord,
+    fork: &ForkData,
+    file_id: u32,
+    fork_type: u8,
+) -> Result<Vec<ExtentDescriptor>> {
+    let mut result = Vec::new();
+    let mut allocated = 0u32;
+    append_extents(&mut result, &mut allocated, &fork.extents, vol, fork)?;
+    while allocated < fork.total_blocks {
+        let mut tree = extents_btree.clone();
+        if file_id == 3 {
+            tree.extents = result.clone();
+        }
+        let next = lookup_overflow_extents(reader, &tree, file_id, fork_type, allocated)?;
+        let previous = allocated;
+        append_extents(&mut result, &mut allocated, &next, vol, fork)?;
+        if allocated == previous {
+            return Err(HfsPlusError::CorruptedData(format!(
+                "file {file_id} fork {fork_type:#x}: missing overflow extent at {allocated}"
+            )));
+        }
+    }
+    if fork.logical_size > u64::from(allocated) * u64::from(vol.block_size) {
+        return Err(HfsPlusError::CorruptedData(format!(
+            "file {file_id} declares {} bytes beyond its allocation",
+            fork.logical_size
+        )));
+    }
+    Ok(result)
+}
+
+/// Validate a record before extending a fork map. Attribute overflow uses this too.
+pub(crate) fn append_extents(
+    result: &mut Vec<ExtentDescriptor>,
+    allocated: &mut u32,
+    record: &[ExtentDescriptor],
+    vol: &VolumeHeader,
+    fork: &ForkData,
+) -> Result<()> {
+    let mut terminated = false;
+    for extent in record {
+        if extent.block_count == 0 {
+            if extent.start_block != 0 {
+                return Err(HfsPlusError::CorruptedData("nonzero empty extent".into()));
+            }
+            terminated = true;
+            continue;
+        }
+        let end = extent
+            .start_block
+            .checked_add(extent.block_count)
+            .ok_or_else(|| HfsPlusError::CorruptedData("extent block overflow".into()))?;
+        if terminated || end > vol.total_blocks {
+            return Err(HfsPlusError::CorruptedData(
+                "extent outside volume or after terminator".into(),
+            ));
+        }
+        *allocated = allocated
+            .checked_add(extent.block_count)
+            .filter(|count| *count <= fork.total_blocks)
+            .ok_or_else(|| {
+                HfsPlusError::CorruptedData("extent allocation exceeds total_blocks".into())
+            })?;
+        result.push(*extent);
+    }
+    Ok(())
+}
+
+/// Stream a complete data fork. Missing mappings and short source reads are errors.
 pub fn read_fork_data<R: Read + Seek, W: Write>(
     reader: &mut R,
     vol: &VolumeHeader,
@@ -133,99 +210,30 @@ pub fn read_fork_data<R: Read + Seek, W: Write>(
     file_id: u32,
     writer: &mut W,
 ) -> Result<u64> {
-    let block_size = vol.block_size as u64;
-    let total_bytes = fork.logical_size;
-
-    if total_bytes == 0 {
-        return Ok(0);
-    }
-
-    let mut bytes_written: u64 = 0;
-    let mut buf = vec![0u8; vol.block_size as usize];
-
-    // First, read from the inline extents (up to 8)
-    for extent in &fork.extents {
-        if extent.block_count == 0 || bytes_written >= total_bytes {
-            break;
-        }
-        bytes_written += read_extent(
-            reader,
-            extent,
-            block_size,
-            total_bytes - bytes_written,
-            &mut buf,
-            writer,
-        )?;
-    }
-
-    // If we've read all the data, we're done
-    if bytes_written >= total_bytes {
-        return Ok(bytes_written);
-    }
-
-    // Otherwise, look up overflow extents from the Extents B-tree
-    let mut start_block = fork.extents.iter().map(|e| e.block_count).sum::<u32>();
-
-    loop {
-        if bytes_written >= total_bytes {
-            break;
-        }
-
-        // Look up the next extent record in the overflow B-tree
-        let overflow_extents =
-            lookup_overflow_extents(reader, extents_btree, file_id, FORK_TYPE_DATA, start_block)?;
-
-        if overflow_extents.is_empty() {
-            break;
-        }
-
-        for extent in &overflow_extents {
-            if extent.block_count == 0 || bytes_written >= total_bytes {
-                break;
-            }
-            bytes_written += read_extent(
-                reader,
-                extent,
-                block_size,
-                total_bytes - bytes_written,
-                &mut buf,
-                writer,
-            )?;
-            start_block += extent.block_count;
-        }
-    }
-
-    Ok(bytes_written)
+    read_fork_data_typed(
+        reader,
+        vol,
+        extents_btree,
+        fork,
+        file_id,
+        FORK_TYPE_DATA,
+        writer,
+    )
 }
 
-/// Read data from a single extent, writing to the output.
-/// Returns bytes written.
-fn read_extent<R: Read + Seek, W: Write>(
+/// Stream a complete data or resource fork using its distinct overflow key.
+pub fn read_fork_data_typed<R: Read + Seek, W: Write>(
     reader: &mut R,
-    extent: &ExtentDescriptor,
-    block_size: u64,
-    remaining: u64,
-    buf: &mut [u8],
+    vol: &VolumeHeader,
+    extents_btree: &BTreeHeaderRecord,
+    fork: &ForkData,
+    file_id: u32,
+    fork_type: u8,
     writer: &mut W,
 ) -> Result<u64> {
-    let mut written = 0u64;
-    let start_offset = extent.start_block as u64 * block_size;
-
-    for block_idx in 0..extent.block_count as u64 {
-        if written >= remaining {
-            break;
-        }
-
-        let offset = start_offset + block_idx * block_size;
-        reader.seek(SeekFrom::Start(offset))?;
-
-        let to_read = std::cmp::min(block_size, remaining - written) as usize;
-        reader.read_exact(&mut buf[..to_read])?;
-        writer.write_all(&buf[..to_read])?;
-        written += to_read as u64;
-    }
-
-    Ok(written)
+    let extents = collect_extents(reader, vol, extents_btree, fork, file_id, fork_type)?;
+    let mut fork_reader = ForkReader::from_extents(reader, fork, vol.block_size, &extents)?;
+    Ok(std::io::copy(&mut fork_reader, writer)?)
 }
 
 /// Look up overflow extent records from the Extents B-tree.

@@ -123,6 +123,7 @@ pub(crate) fn fs_unalloc_nodes(image: &Arc<EvidenceSession>, partition: &Partiti
         | PartitionKind::Apm
         | PartitionKind::Bsd
         | PartitionKind::Mdadm
+        | PartitionKind::Filevault
         | PartitionKind::Luks
         | PartitionKind::Swap
         | PartitionKind::BiosBoot

@@ -20,6 +20,16 @@ integration notes remain in each crate directory. ext4-view 1.0.0 and backhand
 license. Original data sources and hashes for the ext4 unit-test fixtures are
 recorded in `src-tauri/vendor/ext4-view/test_data/README.md`.
 
+The APFS name lookup uses the unmodified crates.io packages
+[`unicode-casefold` 0.2.0](https://crates.io/crates/unicode-casefold/0.2.0)
+by Chris Wong and [`unicode-normalization` 0.1.25](https://crates.io/crates/unicode-normalization/0.1.25)
+by the Rust Project Developers. Both declare MIT OR Apache-2.0;
+versions and dependency sources are pinned in the Rust lockfiles.
+The libfsapfs APFS comparison uses its documented structures and public API;
+no libfsapfs C sources or binaries are incorporated. The new APFS fixtures
+are invented, reproducible project test structures (AGPL-3.0-only), documented
+in `src-tauri/vendor/apfs/tests/data/README.md`.
+
 ## Flyfish File Viewer
 
 The Vue preview component `@file-viewer/vue3-full` and the asset-copy plugin
@@ -1143,3 +1153,28 @@ remains the BSD-2-Clause xfuse fork under `src-tauri/vendor/xfs-fuse`.
 The new Rust format code and the synthetic `minimal-v4.bin` fixture are local
 project work. Fixture generator, source statement and hash are recorded in
 `src-tauri/vendor/xfs-fuse/test_data/README.md`; full comparison is in `docs/formats/XFS.md`.
+
+
+## FileVault reader and auditor
+
+`src-tauri/vendor/filevault` contains filevault-core and filevault-forensic 0.1.5,
+by Albert Hui / SecurityRonin, pinned at 857e04033e09c84324948b2cbfdd9e043b24d62b.
+Source: https://github.com/SecurityRonin/filevault-forensic . License: Apache-2.0,
+retained in `src-tauri/vendor/filevault/LICENSE`. Local patches are described in
+`src-tauri/vendor/filevault/LOVELYCARVE.md`. libfvde was consulted, not copied or linked.
+
+## HFS Unicode data
+
+`src-tauri/vendor/hfsplus/src/unicode/folding.rs` transforms the fixed case tables
+from Apple `hfs/core/UCStringCompareData.h`, commit
+d1bac2f062e6e9c0dfcce302d9aacb10173d0eea. Copyright (c) 2000-2002, 2005 Apple Inc.
+All rights reserved. This file is covered by APSL-2.0, retained as
+`src-tauri/vendor/hfsplus/APPLE_LICENSE`; its original copyright/license header
+is retained and LovelyCarve's Rust transformation is marked. The remainder of
+hfsplus retains its MIT license.
+
+`unicode/decomposition.rs` is generated from Python's Unicode 3.2 database,
+with HFS exclusions and algorithmic Hangul handled separately. Unicode data
+license is retained as `src-tauri/vendor/hfsplus/UNICODE_LICENSE`. Source data
+version and regeneration steps are described in `hfsplus/LOVELYCARVE.md`.
+libfshfs was consulted, not copied or linked.

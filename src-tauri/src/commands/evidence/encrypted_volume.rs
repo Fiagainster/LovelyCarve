@@ -15,6 +15,56 @@ use {
     crate::app::error::AppError,
 };
 
+/// Inspect locked CoreStorage metadata and run the upstream forensic auditor.
+#[tauri::command]
+pub async fn filevault_inspect(
+    state: State<'_, AppState>,
+    image_id: String,
+    options: crate::core::evidence::crypto::filevault::InspectOptions,
+    task_id: Option<String>,
+) -> Result<crate::core::evidence::crypto::filevault::Inventory, AppError> {
+    let source = loaded_image_app_error(&state, &image_id).await?;
+    reject_if_folder(&source)?;
+    let task = state
+        .tasks
+        .register_if_absent(
+            task_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            TaskKind::FilevaultInspect,
+            Some(image_id.clone()),
+        )
+        .ok_or_else(|| AppError::invalid_input("task id is already in use"))?;
+    let permit = state.tasks.acquire_resources(&task).await?;
+    let token = task.token();
+    let source_for_inspection = Arc::clone(&source);
+    let token_for_inspection = token.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let _task = task;
+        crate::core::evidence::crypto::filevault::inspect(
+            &source_for_inspection,
+            options,
+            token_for_inspection,
+        )
+    })
+    .await
+    .map_err(|error| AppError::task_panicked("FileVault inspection", error))?;
+    if token.is_cancelled() {
+        return Err(AppError::cancelled("FileVault 元数据读取已取消"));
+    }
+    if !state
+        .images
+        .lock()
+        .await
+        .get(&image_id)
+        .is_some_and(|current| Arc::ptr_eq(current, &source))
+    {
+        return Err(AppError::source_changed(
+            "FileVault evidence unloaded during inspection",
+        ));
+    }
+    result.map_err(AppError::from_anyhow)
+}
+
 #[tauri::command]
 pub async fn encrypted_volume_unlock(
     app: AppHandle,

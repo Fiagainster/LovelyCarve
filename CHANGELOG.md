@@ -1,11 +1,24 @@
 # Changelog
 
+
 本文件记录 LovelyCarve 的重要变更。
 
 格式遵循 [Keep a Changelog 0.3.0](https://keepachangelog.com/zh-CN/0.3.0/)，
 版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。条目以用户可感知的变化为主，按版本倒序排列。
 
 ## [Unreleased]
+
+### Added
+
+- 接入 filevault-core / filevault-forensic：CoreStorage 识别、逻辑卷库存与审计、密码/恢复/VMK 解锁、受检多 extent / 主备元数据，复用原分区解密视图；完整 libfvde 对照见 docs/formats/FILEVAULT.md。
+- HFS+ / HFSX 对照 libfshfs：完整 data/resource/attribute 映射、固定 Unicode 规则、硬链接、压缩/随机读取和元数据边界；完整 95 API 对照见 docs/formats/HFS.md。
+- APFS 提供直接范围读取与原检材数据区间，补齐容器/卷身份、OID 文件访问、可寻址扩展属性与原生快照元数据 API，并记录 libfsapfs 全部 110 个公开 API 的能力对照；APFS 原生加密解锁和历史快照浏览仍未实现。
+
+### Fixed
+
+- APFS 对象映射遵守检查点/卷事务上限与删除记录；完整、流式与范围读取统一校验，正确处理显式空洞，并拒绝缺失尾部、重叠、溢出、截断与越过容器的数据。
+- APFS / HFS+ 共享压缩解码器支持 LZFSE 的原样存储块，并校验 RAW resource block 标记与偏移表边界，避免将损坏数据当作文件正文。
+- APFS 支持两类目录键及卷内大小写/Unicode 规范化查找；独立 APFS 分区镜像可识别，更大 superblock 按完整块校验，目录索引保留压缩文件逻辑长度和符号链接目标。
 
 ## [1.1.0] - 2026-10-13
 

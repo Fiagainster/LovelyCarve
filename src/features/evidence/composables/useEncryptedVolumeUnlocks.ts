@@ -1,6 +1,6 @@
 import { notifyError, notifyInfo, notifySuccess } from '../../../composables/useToast';
 import type { EncryptedUnlockOptions } from '../../../lib/ipc/encrypted';
-import type { ImageInfo } from '../../../lib/ipc/image';
+import { imageUnload, type ImageInfo } from '../../../lib/ipc/image';
 import { IpcCommandError } from '../../../lib/ipc/client';
 import { trackedEncryptedVolumeUnlock } from '../../tasks/api';
 import { evidenceContext } from './evidenceContext';
@@ -10,10 +10,16 @@ import { clearUnlockedImageInfo, rememberUnlockedImageInfo } from './unlockedIma
 const jobs = new Map<string, string>();
 let generation = 0;
 let updateImage: ((info: ImageInfo) => void) | null = null;
+let openDerivedImage: ((path: string) => Promise<boolean>) | null = null;
 
 export function registerEncryptedVolumeImageUpdater(updater: (info: ImageInfo) => void) {
   updateImage = updater;
   return () => { if (updateImage === updater) updateImage = null; };
+}
+
+export function registerEncryptedVolumeImageOpener(opener: (path: string) => Promise<boolean>) {
+  openDerivedImage = opener;
+  return () => { if (openDerivedImage === opener) openDerivedImage = null; };
 }
 
 export function disposeEncryptedVolumeUnlockJobs() {
@@ -24,7 +30,7 @@ export function disposeEncryptedVolumeUnlockJobs() {
 
 /** Submit immediately; task tracking and metadata updates outlive the page. */
 export function startEncryptedVolumeUnlock(info: ImageInfo, options: EncryptedUnlockOptions): boolean {
-  const key = `${info.id}:${options.partitionId ?? 'whole'}`;
+  const key = `${info.id}:${options.partitionId ?? 'whole'}${options.target === 'newImage' ? `:lv:${options.logicalVolumeIndex ?? 0}` : ''}`;
   if (jobs.has(key)) {
     options.password = '';
     options.masterKeyHex = undefined;
@@ -35,17 +41,34 @@ export function startEncryptedVolumeUnlock(info: ImageInfo, options: EncryptedUn
   const epoch = generation;
   const context = evidenceContext();
   const updater = updateImage;
+  const opener = openDerivedImage;
   const current = () => epoch === generation && context === evidenceContext();
   const partition = info.partitions.find(partition => partition.id === options.partitionId);
-  const subject = `${options.scheme === 'luks' ? 'LUKS' : 'VeraCrypt'} · ${partition ? `分区 ${partition.id}${partition.label ? ` · ${partition.label}` : ''}` : '整个镜像 / 容器'}`;
+  const subject = `${({ luks: 'LUKS', veracrypt: 'VeraCrypt', filevault: 'FileVault 2' }[options.scheme])} · ${partition ? `分区 ${partition.id}${partition.label ? ` · ${partition.label}` : ''}` : '整个镜像 / 容器'}`;
   jobs.set(key, taskId);
   void (async () => {
     try {
-      options.target = 'sourcePartition';
+      options.target ??= 'sourcePartition';
       const result = await trackedEncryptedVolumeUnlock({ imageId: info.id, options, taskId }, subject);
-      if (!current()) return;
-      rememberUnlockedImageInfo(result.image);
-      updater?.(result.image);
+      if (!current()) {
+        if (result.image.id !== info.id) await imageUnload({ imageId: result.image.id });
+        return;
+      }
+      if (result.image.id === info.id) {
+        rememberUnlockedImageInfo(result.image);
+        updater?.(result.image);
+      } else {
+        try {
+          if (!opener) throw new Error('明文会话导航服务不可用');
+          if (!await opener(result.image.path)) {
+            await imageUnload({ imageId: result.image.id });
+            return;
+          }
+        } catch (error) {
+          await imageUnload({ imageId: result.image.id });
+          throw error;
+        }
+      }
       notifySuccess('加密卷解锁成功', result.cipher);
     } catch (error) {
       if (current() && !(error instanceof IpcCommandError && error.code === 'cancelled')) {

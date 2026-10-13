@@ -1,7 +1,12 @@
 // Not public: its comparator contract fails silently when broken, so callers
 // are served by the readers below instead. See the module docs.
+mod access;
+mod backing;
 pub(crate) mod btree;
 pub mod catalog;
+pub use access::{ContainerInfo, XattrInfo};
+mod snapshots;
+pub use snapshots::SnapshotInfo;
 pub mod error;
 pub mod extents;
 pub mod fletcher;
@@ -22,6 +27,11 @@ pub use cmpfs::XattrKind;
 
 use std::io::{Read, Seek, Write};
 
+/// A seekable logical file stream. Implementers return the same logical bytes
+/// through Read and Seek, preserving EOF and errors rather than shortening files.
+pub trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
+
 /// Entry kind in the filesystem
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -33,6 +43,8 @@ pub enum EntryKind {
 /// A directory entry returned by list_directory
 #[derive(Debug, Clone)]
 pub struct DirEntry {
+    pub date_added: i64,
+    pub link_target: Option<String>,
     pub name: String,
     pub oid: u64,
     pub kind: EntryKind,
@@ -46,6 +58,10 @@ pub struct DirEntry {
 /// Detailed file/directory metadata
 #[derive(Debug, Clone)]
 pub struct FileStat {
+    pub parent_oid: u64,
+    pub private_id: u64,
+    pub bsd_flags: u32,
+    pub device_number: Option<u32>,
     pub oid: u64,
     pub kind: EntryKind,
     pub size: u64,
@@ -86,6 +102,18 @@ pub struct WalkEntry {
 /// Volume information
 #[derive(Debug, Clone)]
 pub struct VolumeInfo {
+    pub uuid: [u8; 16],
+    pub volume_group_id: [u8; 16],
+    pub transaction_id: u64,
+    pub features: u64,
+    pub readonly_compatible_features: u64,
+    pub incompatible_features: u64,
+    pub flags: u64,
+    pub role: u16,
+    pub allocated_size: u64,
+    pub num_snapshots: u64,
+    pub next_object_id: u64,
+    pub encrypted: bool,
     pub index: usize,
     pub oid: u64,
     pub name: String,
@@ -132,10 +160,12 @@ fn classify(names: Vec<String>) -> Vec<XattrEntry> {
 
 /// High-level read-only APFS volume reader
 pub struct ApfsVolume<R: Read + Seek> {
-    reader: R,
+    reader: backing::ContainerReader<R>,
     block_size: u32,
-    vol_omap_root_block: u64,
+    vol_omap_root_block: catalog::CatalogContext,
     catalog_root_block: u64,
+    snapshot_tree_oid: u64,
+    snapshot_tree_type: u32,
     info: VolumeInfo,
 }
 
@@ -180,6 +210,10 @@ impl<R: Read + Seek> ApfsVolume<R> {
     /// List every APFS volume advertised by the container `fs_oids` array.
     pub fn list_volumes(mut reader: R) -> Result<Vec<VolumeInfo>> {
         let container = read_container(&mut reader)?;
+        let mut reader = backing::ContainerReader::new(
+            reader,
+            container.nxsb.block_count * u64::from(container.nxsb.block_size),
+        );
         let mut volumes = Vec::new();
         for (volume_index, vol_oid) in container
             .nxsb
@@ -206,12 +240,16 @@ impl<R: Read + Seek> ApfsVolume<R> {
     }
 
     fn open_volume(
-        mut reader: R,
+        reader: R,
         container: ContainerState,
         volume_index: usize,
         vol_oid: u64,
     ) -> Result<Self> {
         let block_size = container.nxsb.block_size;
+        let mut reader = backing::ContainerReader::new(
+            reader,
+            container.nxsb.block_count * u64::from(block_size),
+        );
         let vol_sb = read_volume_superblock(
             &mut reader,
             container.container_omap_root,
@@ -219,8 +257,22 @@ impl<R: Read + Seek> ApfsVolume<R> {
             vol_oid,
         )?;
 
-        let vol_omap_root_block =
-            omap::read_omap_tree_root(&mut reader, vol_sb.omap_oid, block_size)?;
+        if vol_sb.fs_flags & 1 == 0 {
+            return Err(ApfsError::Unsupported(
+                "encrypted APFS volume requires FileVault keybag unlock".into(),
+            ));
+        }
+        if vol_sb.incompatible_features & !0x0b != 0 {
+            return Err(ApfsError::Unsupported(format!(
+                "volume incompatible features {:#x} (sealed, encryption rolling or incomplete restore)",
+                vol_sb.incompatible_features
+            )));
+        }
+
+        let vol_omap_root_block = omap::OmapTree {
+            root: omap::read_omap_tree_root(&mut reader, vol_sb.omap_oid, block_size)?,
+            xid: vol_sb.header.xid,
+        };
 
         let catalog_root_block = omap::omap_lookup(
             &mut reader,
@@ -232,8 +284,13 @@ impl<R: Read + Seek> ApfsVolume<R> {
         Ok(ApfsVolume {
             reader,
             block_size,
-            vol_omap_root_block,
+            vol_omap_root_block: catalog::CatalogContext {
+                omap: vol_omap_root_block,
+                incompatible_features: vol_sb.incompatible_features,
+            },
             catalog_root_block,
+            snapshot_tree_oid: vol_sb.snap_meta_tree_oid,
+            snapshot_tree_type: vol_sb.snap_meta_tree_type,
             info: volume_info_from_superblock(volume_index, vol_oid, block_size, &vol_sb),
         })
     }
@@ -256,8 +313,11 @@ impl<R: Read + Seek> ApfsVolume<R> {
     /// `catalog::list_directory`. The visitor returns `false` to stop early
     /// (e.g. cancellation); the walk then returns `Ok(false)`.
     pub fn walk_catalog(&mut self, visit: &mut dyn FnMut(CatalogRecord) -> bool) -> Result<bool> {
-        let omap_cache =
-            omap::load_omap(&mut self.reader, self.vol_omap_root_block, self.block_size)?;
+        let omap_cache = omap::load_omap(
+            &mut self.reader,
+            self.vol_omap_root_block.omap,
+            self.block_size,
+        )?;
         btree::btree_walk_leaves(
             &mut self.reader,
             self.catalog_root_block,
@@ -273,7 +333,13 @@ impl<R: Read + Seek> ApfsVolume<R> {
                         Err(_) => true,
                     },
                     catalog::J_TYPE_DIR_REC => {
-                        match (catalog::decode_drec_name(key), catalog::DrecVal::parse(val)) {
+                        match (
+                            catalog::decode_drec_name(
+                                key,
+                                self.vol_omap_root_block.incompatible_features & 9 != 0,
+                            ),
+                            catalog::DrecVal::parse(val),
+                        ) {
                             (Ok(name), Ok(drec)) => visit(CatalogRecord::DirEntry {
                                 parent_oid: oid,
                                 name,
@@ -338,6 +404,9 @@ impl<R: Read + Seek> ApfsVolume<R> {
                 EntryKind::Symlink => {
                     if let Some(target) = self.symlink_target(entry.oid)? {
                         entry.size = target.len() as u64;
+                        entry.link_target = Some(String::from_utf8(target).map_err(|error| {
+                            ApfsError::CorruptedData(format!("invalid symlink UTF-8: {error}"))
+                        })?);
                     }
                 }
                 EntryKind::Directory => {}
@@ -357,15 +426,7 @@ impl<R: Read + Seek> ApfsVolume<R> {
     /// extended attribute (NUL-terminated), not as file data. Returns the
     /// target bytes for symlink inodes, or None when no xattr is present.
     fn symlink_target(&mut self, oid: u64) -> Result<Option<Vec<u8>>> {
-        let Some(xattr) = catalog::lookup_xattr(
-            &mut self.reader,
-            self.catalog_root_block,
-            self.vol_omap_root_block,
-            self.block_size,
-            oid,
-            catalog::SYMLINK_XATTR_NAME,
-        )?
-        else {
+        let Some(xattr) = self.read_xattr(oid, catalog::SYMLINK_XATTR_NAME)? else {
             return Ok(None);
         };
         let end = xattr.iter().rposition(|&b| b != 0).map_or(0, |i| i + 1);
@@ -433,7 +494,7 @@ impl<R: Read + Seek> ApfsVolume<R> {
                     self.block_size,
                     obj_id,
                 )?;
-                let mut data = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
+                let mut data = Vec::new();
                 extents::read_file_data(
                     &mut self.reader,
                     self.block_size,
@@ -493,49 +554,14 @@ impl<R: Read + Seek> ApfsVolume<R> {
             path,
         )?;
 
-        if inode.kind() != catalog::INODE_SYMLINK_TYPE
-            && let Some(header) = self.compression(oid)?
-        {
-            let data = self.read_compressed(oid, &header)?;
-            writer.write_all(&data)?;
-            return Ok(data.len() as u64);
-        }
-
-        // Symlink inodes carry no extents; read the target from the xattr.
-        // Falls through to the extent read for images that store the target
-        // as file data.
-        if inode.kind() == catalog::INODE_SYMLINK_TYPE
-            && let Some(target) = self.symlink_target(oid)?
-        {
-            writer.write_all(&target)?;
-            return Ok(target.len() as u64);
-        }
-
-        // File extents are keyed by private_id, not the inode OID
-        let file_extents = catalog::lookup_extents(
-            &mut self.reader,
-            self.catalog_root_block,
-            self.vol_omap_root_block,
-            self.block_size,
-            inode.private_id,
-        )?;
-
-        extents::read_file_data(
-            &mut self.reader,
-            self.block_size,
-            &file_extents,
-            inode.size(),
-            writer,
-        )
+        let mut file = self.open_inode(oid, inode)?;
+        Ok(std::io::copy(&mut file, writer)?)
     }
 
-    /// Open a file for streaming `Read` access. Compressed (decmpfs)
-    /// files are decompressed in full into an in-memory buffer because
-    /// the resource-fork chunk table is global — there's no random
-    /// access without paying the cost of decompressing every preceding
-    /// chunk anyway. Uncompressed files keep the existing zero-copy
-    /// extent walk via [`extents::ApfsForkReader`].
-    pub fn open_file(&mut self, path: &str) -> Result<Box<dyn Read + '_>> {
+    /// Open a seekable logical stream. Compressed files currently decode in full
+    /// into memory; block-wise resource-fork seeking is not implemented here.
+    /// Uncompressed streams seek directly through the validated extent map.
+    pub fn open_file(&mut self, path: &str) -> Result<Box<dyn ReadSeek + '_>> {
         let (oid, inode) = catalog::resolve_path(
             &mut self.reader,
             self.catalog_root_block,
@@ -544,32 +570,7 @@ impl<R: Read + Seek> ApfsVolume<R> {
             path,
         )?;
 
-        if let Some(header) = self.compression(oid)? {
-            return Ok(Box::new(std::io::Cursor::new(
-                self.read_compressed(oid, &header)?,
-            )));
-        }
-        if inode.kind() == catalog::INODE_SYMLINK_TYPE
-            && let Some(target) = self.symlink_target(oid)?
-        {
-            return Ok(Box::new(std::io::Cursor::new(target)));
-        }
-
-        // File extents are keyed by private_id, not the inode OID
-        let file_extents = catalog::lookup_extents(
-            &mut self.reader,
-            self.catalog_root_block,
-            self.vol_omap_root_block,
-            self.block_size,
-            inode.private_id,
-        )?;
-
-        Ok(Box::new(extents::ApfsForkReader::new(
-            &mut self.reader,
-            self.block_size,
-            file_extents,
-            inode.size(),
-        )))
+        self.open_inode(oid, inode)
     }
 
     /// Get metadata for a file or directory
@@ -582,36 +583,7 @@ impl<R: Read + Seek> ApfsVolume<R> {
             path,
         )?;
 
-        // Symlink inodes report size 0; use the xattr target length instead.
-        let mut compression = None;
-        let size = if inode.kind() == catalog::INODE_SYMLINK_TYPE {
-            self.symlink_target(oid)?
-                .map_or(inode.size(), |t| t.len() as u64)
-        } else {
-            // A compressed inode records no size of its own — the data fork is
-            // empty and the real length is in the decmpfs header.
-            compression = self.compression(oid)?;
-            compression.map_or_else(|| inode.size(), |h| h.uncompressed_size)
-        };
-
-        Ok(FileStat {
-            oid,
-            kind: match inode.kind() {
-                catalog::INODE_DIR_TYPE => EntryKind::Directory,
-                catalog::INODE_SYMLINK_TYPE => EntryKind::Symlink,
-                _ => EntryKind::File,
-            },
-            size,
-            create_time: inode.create_time,
-            modify_time: inode.modify_time,
-            change_time: inode.change_time,
-            access_time: inode.access_time,
-            uid: inode.uid,
-            gid: inode.gid,
-            mode: inode.mode,
-            nlink: inode.nlink(),
-            compression,
-        })
+        self.stat_inode(oid, inode)
     }
 
     /// Recursive walk of all entries
@@ -677,13 +649,23 @@ impl<R: Read + Seek> ApfsVolume<R> {
 
 struct ContainerState {
     nxsb: superblock::NxSuperblock,
-    container_omap_root: u64,
+    container_omap_root: omap::OmapTree,
 }
 
 fn read_container<R: Read + Seek>(reader: &mut R) -> Result<ContainerState> {
     let nxsb = superblock::read_nxsb(reader)?;
     let nxsb = superblock::find_latest_nxsb(reader, &nxsb)?;
-    let container_omap_root = omap::read_omap_tree_root(reader, nxsb.omap_oid, nxsb.block_size)?;
+    let container_omap_root = omap::OmapTree {
+        root: omap::read_omap_tree_root(
+            &mut backing::ContainerReader::new(
+                reader,
+                nxsb.block_count * u64::from(nxsb.block_size),
+            ),
+            nxsb.omap_oid,
+            nxsb.block_size,
+        )?,
+        xid: nxsb.header.xid,
+    };
     Ok(ContainerState {
         nxsb,
         container_omap_root,
@@ -692,13 +674,31 @@ fn read_container<R: Read + Seek>(reader: &mut R) -> Result<ContainerState> {
 
 fn read_volume_superblock<R: Read + Seek>(
     reader: &mut R,
-    container_omap_root: u64,
+    container_omap_root: omap::OmapTree,
     block_size: u32,
     vol_oid: u64,
 ) -> Result<superblock::ApfsSuperblock> {
     let vol_block = omap::omap_lookup(reader, container_omap_root, block_size, vol_oid)?;
     let (_, vol_data) = object::read_object(reader, vol_block, block_size)?;
-    superblock::ApfsSuperblock::parse(&vol_data)
+    let block = superblock::ApfsSuperblock::parse(&vol_data)?;
+    if block.header.object_type() != object::OBJECT_TYPE_FS
+        || block.header.oid != vol_oid
+        || block.header.xid > container_omap_root.xid
+    {
+        return Err(ApfsError::CorruptedData(
+            "APSB identity or transaction does not match the container".into(),
+        ));
+    }
+    if block
+        .fs_alloc_count
+        .checked_mul(u64::from(block_size))
+        .is_none()
+    {
+        return Err(ApfsError::CorruptedData(
+            "volume allocated size overflow".into(),
+        ));
+    }
+    Ok(block)
 }
 
 fn volume_info_from_superblock(
@@ -708,6 +708,18 @@ fn volume_info_from_superblock(
     vol_sb: &superblock::ApfsSuperblock,
 ) -> VolumeInfo {
     VolumeInfo {
+        uuid: vol_sb.uuid,
+        volume_group_id: vol_sb.volume_group_id,
+        transaction_id: vol_sb.header.xid,
+        features: vol_sb.features,
+        readonly_compatible_features: vol_sb.readonly_compatible_features,
+        incompatible_features: vol_sb.incompatible_features,
+        flags: vol_sb.fs_flags,
+        role: vol_sb.role,
+        allocated_size: vol_sb.fs_alloc_count * u64::from(block_size),
+        num_snapshots: vol_sb.num_snapshots,
+        next_object_id: vol_sb.next_obj_id,
+        encrypted: vol_sb.fs_flags & 1 == 0,
         index,
         oid,
         name: vol_sb.volume_name.clone(),
@@ -719,4 +731,4 @@ fn volume_info_from_superblock(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests;

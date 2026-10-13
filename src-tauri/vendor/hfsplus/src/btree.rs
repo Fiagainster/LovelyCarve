@@ -27,6 +27,8 @@ pub struct BTreeHeaderRecord {
     pub fork: ForkData,
     /// Block size of the volume
     pub block_size: u32,
+    /// Complete allocation map; populated through the extents overflow tree.
+    pub extents: Vec<crate::volume::ExtentDescriptor>,
 }
 
 /// A B-tree node descriptor (14 bytes at the start of each node)
@@ -89,6 +91,17 @@ pub fn read_btree_header<R: Read + Seek>(
     let _attributes = cursor.read_u32::<BigEndian>()?;
     // Skip reserved bytes (16 * 4 = 64 bytes)
 
+    if !node_size.is_power_of_two()
+        || node_size < 512
+        || total_nodes == 0
+        || u64::from(total_nodes) * u64::from(node_size) > fork.logical_size
+        || free_nodes > total_nodes
+        || root_node >= total_nodes
+        || first_leaf_node >= total_nodes
+        || last_leaf_node >= total_nodes
+    {
+        return Err(HfsPlusError::InvalidBTree("invalid header geometry".into()));
+    }
     Ok(BTreeHeaderRecord {
         tree_depth,
         root_node,
@@ -102,6 +115,7 @@ pub fn read_btree_header<R: Read + Seek>(
         key_compare_type,
         fork: fork.clone(),
         block_size,
+        extents: fork.extents.to_vec(),
     })
 }
 
@@ -115,11 +129,13 @@ fn read_raw_node<R: Read + Seek>(
     node_number: u32,
     read_size: u16,
 ) -> Result<Vec<u8>> {
-    let byte_offset = compute_fork_offset(fork, block_size, node_number as u64 * read_size as u64)?;
-    reader.seek(SeekFrom::Start(byte_offset))?;
-
+    let mut fork_reader =
+        crate::extents::ForkReader::from_extents(reader, fork, block_size, &fork.extents)?;
+    fork_reader.seek(SeekFrom::Start(
+        u64::from(node_number) * u64::from(read_size),
+    ))?;
     let mut buf = vec![0u8; read_size as usize];
-    reader.read_exact(&mut buf)?;
+    fork_reader.read_exact(&mut buf)?;
     Ok(buf)
 }
 
@@ -129,17 +145,23 @@ pub fn read_node<R: Read + Seek>(
     btree_header: &BTreeHeaderRecord,
     node_number: u32,
 ) -> Result<BTreeNode> {
+    if node_number >= btree_header.total_nodes {
+        return Err(HfsPlusError::InvalidBTree(
+            "node number outside tree".into(),
+        ));
+    }
     let node_size = btree_header.node_size;
-    let byte_offset_in_fork = node_number as u64 * node_size as u64;
-    let byte_offset = compute_fork_offset(
+    let mut fork_reader = crate::extents::ForkReader::from_extents(
+        reader,
         &btree_header.fork,
         btree_header.block_size,
-        byte_offset_in_fork,
+        &btree_header.extents,
     )?;
-
-    reader.seek(SeekFrom::Start(byte_offset))?;
+    fork_reader.seek(SeekFrom::Start(
+        u64::from(node_number) * u64::from(node_size),
+    ))?;
     let mut data = vec![0u8; node_size as usize];
-    reader.read_exact(&mut data)?;
+    fork_reader.read_exact(&mut data)?;
 
     // Parse the node descriptor
     let mut cursor = Cursor::new(&data);
@@ -168,6 +190,18 @@ pub fn read_node<R: Read + Seek>(
         record_offsets.push(offset);
     }
 
+    let table_start = usize::from(node_size)
+        .checked_sub(num_offsets * 2)
+        .ok_or_else(|| HfsPlusError::InvalidBTree("offset table exceeds node".into()))?;
+    if record_offsets
+        .iter()
+        .any(|offset| usize::from(*offset) < 14 || usize::from(*offset) > table_start)
+        || record_offsets.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(HfsPlusError::InvalidBTree(
+            "invalid record offset table".into(),
+        ));
+    }
     Ok(BTreeNode {
         descriptor,
         data,
@@ -223,6 +257,11 @@ fn parse_node_descriptor<R: Read>(reader: &mut R) -> Result<NodeDescriptor> {
 /// Compute the absolute byte offset in the volume for a given byte offset within a fork.
 /// Walks through the fork's extent descriptors to find the right allocation block.
 pub fn compute_fork_offset(fork: &ForkData, block_size: u32, offset_in_fork: u64) -> Result<u64> {
+    if block_size == 0 || offset_in_fork >= fork.logical_size {
+        return Err(HfsPlusError::InvalidBTree(
+            "fork offset outside logical size".into(),
+        ));
+    }
     let block_size = block_size as u64;
     let mut remaining = offset_in_fork;
 
@@ -273,7 +312,15 @@ where
 
     let mut current_node_num = btree_header.root_node;
 
+    let mut visited = std::collections::HashSet::new();
     loop {
+        if !visited.insert(current_node_num)
+            || visited.len() > usize::from(btree_header.tree_depth).max(1)
+        {
+            return Err(HfsPlusError::InvalidBTree(
+                "cyclic index chain or excessive tree depth".into(),
+            ));
+        }
         let node = read_node(reader, btree_header, current_node_num)?;
 
         match node.descriptor.kind {
@@ -340,13 +387,17 @@ pub fn scan_leaves<R, F, T, P>(
 ) -> Result<Vec<T>>
 where
     R: Read + Seek,
-    F: Fn(&[u8]) -> Option<bool>,
+    F: Fn(&[u8]) -> Result<Option<bool>>,
     P: Fn(&[u8]) -> Result<T>,
 {
     let mut results = Vec::new();
     let mut current_node_num = start_node;
 
+    let mut visited = std::collections::HashSet::new();
     while current_node_num != 0 {
+        if !visited.insert(current_node_num) {
+            return Err(HfsPlusError::InvalidBTree("cyclic leaf chain".into()));
+        }
         let node = read_node(reader, btree_header, current_node_num)?;
 
         if node.descriptor.kind != NODE_KIND_LEAF {
@@ -358,7 +409,7 @@ where
 
         for i in 0..node.descriptor.num_records as usize {
             let record_data = node.record_data(i)?;
-            match match_fn(record_data) {
+            match match_fn(record_data)? {
                 Some(true) => {
                     results.push(parse_fn(record_data)?);
                 }

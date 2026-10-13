@@ -313,6 +313,7 @@ pub(super) fn fs_label_for_kind(kind: PartitionKind) -> &'static str {
         PartitionKind::Lvm => "LVM2",
         PartitionKind::Bitlocker => "BITLOCKER",
         PartitionKind::Luks => "LUKS",
+        PartitionKind::Filevault => "FILEVAULT",
         PartitionKind::Mdadm => "MDADM",
         PartitionKind::Apm
         | PartitionKind::Bsd

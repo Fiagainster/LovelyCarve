@@ -157,6 +157,11 @@ pub fn decompress(xattr: &[u8], resource_fork: Option<&[u8]>) -> Result<Vec<u8>>
         ))
     })?;
 
+    if size > 512 * 1024 * 1024 {
+        return Err(CmpfsError::CorruptedData(
+            "decoded file exceeds 512 MiB memory budget".into(),
+        ));
+    }
     let data = match header.storage() {
         Storage::Xattr => {
             let payload = xattr.get(HEADER_SIZE..).ok_or(CmpfsError::Truncated {
@@ -265,11 +270,19 @@ fn zlib_resource_fork(rsrc: &[u8], size: usize) -> Result<Vec<u8>> {
 /// Types 8, 10 and 12: blocks delimited by a table of little-endian offsets at
 /// the start of the fork, each block running to the next offset.
 ///
-/// PROVISIONAL: apfs-fuse is the only reader covering these, and its own
-/// comments mark types 10 and 12 as assumptions. libarchive implements zlib
-/// only, so there is nothing to cross-check against.
+/// This layout is also used by libfsapfs; its compression.c confirms the
+/// RAW/LZFSE stored markers.
 fn offset_table_resource_fork(compression_type: u32, rsrc: &[u8], size: usize) -> Result<Vec<u8>> {
     let count = block_count(size);
+    let table_size = count
+        .checked_add(1)
+        .and_then(|count| count.checked_mul(4))
+        .ok_or_else(table_overflow)?;
+    if rsrc.len() < table_size {
+        return Err(CmpfsError::CorruptedData(
+            "truncated resource-fork offset table".into(),
+        ));
+    }
     let mut out = Vec::with_capacity(size);
 
     for k in 0..count {
@@ -283,15 +296,18 @@ fn offset_table_resource_fork(compression_type: u32, rsrc: &[u8], size: usize) -
         let length = end.checked_sub(start).ok_or_else(|| {
             CmpfsError::CorruptedData(format!("block {k} offsets run backwards: {start} > {end}"))
         })?;
+        if start < table_size {
+            return Err(CmpfsError::CorruptedData(
+                "resource-fork payload overlaps its offset table".into(),
+            ));
+        }
 
         let block = slice_block(rsrc, start, length)?;
         let expected = block_len(size, k);
         let decoded = match compression_type {
             8 => decode_lzvn(block, expected)?,
-            // PROVISIONAL: uncompressed, marker byte unverified in any
-            // reference. Stripped without checking its value, as apfs-fuse
-            // does, because there is nothing to check it against.
-            10 => block.get(1..).unwrap_or_default().to_vec(),
+            // libfsapfs_compression.c uses 0xcc for RAW blocks, like type 9.
+            10 => strip_marker(block, 0xcc)?,
             _ => decode_lzfse(block, expected)?,
         };
         if decoded.len() != expected {
@@ -323,6 +339,7 @@ fn decode_zlib(data: &[u8], expected: usize) -> Result<Vec<u8>> {
     }
     let mut out = Vec::with_capacity(expected);
     flate2::read::ZlibDecoder::new(data)
+        .take(expected as u64 + 1)
         .read_to_end(&mut out)
         .map_err(|e| CmpfsError::Decompression(format!("zlib: {e}")))?;
     Ok(out)
@@ -346,8 +363,15 @@ fn decode_lzvn(data: &[u8], expected: usize) -> Result<Vec<u8>> {
 }
 
 fn decode_lzfse(data: &[u8], expected: usize) -> Result<Vec<u8>> {
+    if let Some(payload) = data.strip_prefix(&[0xff]) {
+        return Ok(payload.to_vec());
+    }
     let mut out = Vec::with_capacity(expected);
-    lzfse_rust::decode_bytes(data, &mut out)
+    let mut decoder = lzfse_rust::LzfseRingDecoder::default();
+    decoder
+        .reader_bytes(data)
+        .take(expected as u64 + 1)
+        .read_to_end(&mut out)
         .map_err(|e| CmpfsError::Decompression(format!("lzfse: {e:?}")))?;
     Ok(out)
 }

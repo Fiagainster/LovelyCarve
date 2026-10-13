@@ -351,7 +351,7 @@ path_volume!(
     parse_apfs_id,
     open_apfs_source
 );
-path_volume_impl!(ApfsVol, plain);
+path_volume_impl!(ApfsVol, plain_range);
 path_volume!(
     HfsPlusAdapter,
     HfsPlusVol,
@@ -360,7 +360,7 @@ path_volume!(
     parse_hfsplus_id,
     open_hfsplus_source
 );
-path_volume_impl!(HfsPlusVol, plain);
+path_volume_impl!(HfsPlusVol, plain_range);
 path_volume!(
     UfsAdapter,
     UfsVol,

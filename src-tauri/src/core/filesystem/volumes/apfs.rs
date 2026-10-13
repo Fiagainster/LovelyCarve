@@ -127,6 +127,7 @@ pub fn apfs_volume_nodes(image: Arc<DiskImage>, partition: &Partition) -> Result
 pub struct ApfsVolume {
     partition_id: u8,
     volume_index: usize,
+    base_offset: u64,
     /// Parsed selected APFS volume, built once in [`ApfsVolume::open`] and
     /// reused behind a mutex (the `apfs` crate's reads take `&mut`). See the
     /// module header for why it is held rather than rebuilt per call.
@@ -151,15 +152,8 @@ impl ApfsVolume {
         partition: &Partition,
         volume_index: Option<usize>,
     ) -> Result<Self> {
-        let sector_size = image.sector_size as u64;
-        let base_offset = partition.start_lba * sector_size;
-        let length_bytes = partition.length_lba * sector_size;
-        let cursor = PartitionCursor {
-            image,
-            base_offset,
-            length_bytes,
-            position: 0,
-        };
+        let cursor = PartitionCursor::new(image, partition)?;
+        let base_offset = cursor.base_offset;
         let volume = match volume_index {
             Some(index) => ContainerVolume::open_index(cursor, index).map_err(|err| {
                 anyhow!("APFS open partition {} volume {index}: {err}", partition.id)
@@ -171,6 +165,7 @@ impl ApfsVolume {
         Ok(Self {
             partition_id: partition.id,
             volume_index,
+            base_offset,
             volume: Mutex::new(volume),
         })
     }
@@ -191,6 +186,24 @@ impl ApfsVolume {
         self.with_volume(move |vol| {
             vol.walk_catalog(visit)
                 .map_err(|err| anyhow!("APFS walk_catalog partition {partition_id}: {err}"))
+        })
+    }
+
+    /// Resolve the logical metadata that a compressed/symlink inode alone omits.
+    pub(crate) fn catalog_logical_metadata(&self, oid: u64) -> Result<(u64, Option<String>)> {
+        self.with_volume(|volume| {
+            let stat = volume.stat_by_id(oid)?;
+            let target = if stat.kind == EntryKind::Symlink {
+                let mut bytes = Vec::new();
+                volume.open_file_by_id(oid)?.read_to_end(&mut bytes)?;
+                Some(
+                    String::from_utf8(bytes)
+                        .map_err(|error| anyhow!("APFS symlink {oid}: {error}"))?,
+                )
+            } else {
+                None
+            };
+            Ok((stat.size, target))
         })
     }
 
@@ -230,7 +243,7 @@ impl ApfsVolume {
                     deleted: false,
                     inode: Some(entry.oid),
                     timestamps,
-                    link_target: None,
+                    link_target: entry.link_target,
                     has_snapshot: false,
                 });
             }
@@ -295,6 +308,17 @@ impl ApfsVolume {
         })
     }
 
+    pub fn read_file_range(&self, path: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
+        if path.is_empty() {
+            anyhow::bail!("cannot read APFS volume root as a file");
+        }
+        self.with_volume(|volume| {
+            volume
+                .read_file_range(path, offset, length)
+                .map_err(|error| anyhow!("APFS range {path} at {offset}: {error}"))
+        })
+    }
+
     pub fn file_stat(&self, path: &str, node_id: &str) -> Result<FsStat> {
         if path.is_empty() {
             anyhow::bail!("cannot stat APFS volume root as a file");
@@ -327,6 +351,26 @@ impl ApfsVolume {
                 Vec::new()
             };
 
+            let block_size = u64::from(vol.volume_info().block_size);
+            let mut data_runs = Vec::new();
+            if let Some(extents) = vol.file_extents(&owned)? {
+                for record in extents {
+                    if record.value.phys_block_num == 0 || record.logical_addr >= stat.size {
+                        continue;
+                    }
+                    let physical_offset = record
+                        .value
+                        .phys_block_num
+                        .checked_mul(block_size)
+                        .and_then(|offset| self.base_offset.checked_add(offset))
+                        .ok_or_else(|| anyhow!("APFS source extent offset overflow"))?;
+                    data_runs.push(FsDataRun {
+                        logical_offset: record.logical_addr,
+                        physical_offset,
+                        length: record.value.length().min(stat.size - record.logical_addr),
+                    });
+                }
+            }
             Ok(FsStat {
                 node_id,
                 size: stat.size,
@@ -350,10 +394,7 @@ impl ApfsVolume {
                 } else {
                     Some(shannon_entropy(&sample))
                 },
-                // Extent layout is internal to the apfs crate's catalog +
-                // extents modules; surface an empty run list here so the
-                // FsStat panel still renders a clean MIME / entropy block.
-                data_runs: Vec::<FsDataRun>::new(),
+                data_runs,
             })
         })
     }
@@ -379,13 +420,7 @@ impl ApfsVolume {
 }
 
 fn list_apfs_volumes(image: Arc<DiskImage>, partition: &Partition) -> Result<Vec<VolumeInfo>> {
-    let sector_size = image.sector_size as u64;
-    let cursor = PartitionCursor {
-        image,
-        base_offset: partition.start_lba * sector_size,
-        length_bytes: partition.length_lba * sector_size,
-        position: 0,
-    };
+    let cursor = PartitionCursor::new(image, partition)?;
     ContainerVolume::list_volumes(cursor)
         .map_err(|err| anyhow!("APFS list volumes partition {}: {err}", partition.id))
 }
@@ -481,6 +516,32 @@ struct PartitionCursor {
     position: u64,
 }
 
+impl PartitionCursor {
+    fn new(image: Arc<DiskImage>, partition: &Partition) -> Result<Self> {
+        let sector_size = image.sector_size as u64;
+        let base_offset = partition
+            .start_lba
+            .checked_mul(sector_size)
+            .ok_or_else(|| anyhow!("APFS partition offset overflow"))?;
+        let length_bytes = partition
+            .length_lba
+            .checked_mul(sector_size)
+            .ok_or_else(|| anyhow!("APFS partition length overflow"))?;
+        if base_offset
+            .checked_add(length_bytes)
+            .is_none_or(|end| end > image.len())
+        {
+            anyhow::bail!("APFS partition exceeds source");
+        }
+        Ok(Self {
+            image,
+            base_offset,
+            length_bytes,
+            position: 0,
+        })
+    }
+}
+
 impl Read for PartitionCursor {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         if self.position >= self.length_bytes || buf.is_empty() {
@@ -512,7 +573,8 @@ impl Seek for PartitionCursor {
                 "APFS cursor seek before start",
             ));
         }
-        self.position = target as u64;
+        self.position = u64::try_from(target)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "APFS seek out of range"))?;
         Ok(self.position)
     }
 }
@@ -520,6 +582,61 @@ impl Seek for PartitionCursor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apfs_synthetic_partition_supports_source_runs_symlinks_and_direct_ranges() {
+        use crate::core::evidence::partitions::PartitionKind;
+        use crate::core::filesystem::evidence_session::EvidenceSession;
+        use crate::core::filesystem::fs_dispatch::dispatch;
+        let fixture = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/vendor/apfs/tests/data/basic.apfs"
+        ));
+        let mut disk = vec![0u8; 4096];
+        disk[446 + 4] = 0xaf;
+        disk[446 + 8..446 + 12].copy_from_slice(&8u32.to_le_bytes());
+        disk[446 + 12..446 + 16].copy_from_slice(&128u32.to_le_bytes());
+        disk[510..512].copy_from_slice(&[0x55, 0xaa]);
+        disk.extend_from_slice(fixture);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("synthetic.raw");
+        std::fs::write(&path, disk).unwrap();
+        let session = Arc::new(EvidenceSession::open(&path).unwrap());
+        let partition = session
+            .partitions
+            .iter()
+            .find(|partition| partition.kind == PartitionKind::ApfsContainer)
+            .unwrap();
+        assert_eq!(partition.start_lba, 8);
+        let id = apfs_node_id(partition.id, 0, "/plain.bin");
+        let volume = dispatch(&session, &id).unwrap().unwrap();
+        let range = volume.read_range(&id, 4090, 20).unwrap().unwrap();
+        assert_eq!(range, [vec![b'A'; 6], vec![b'B'; 14]].concat());
+        let stat = volume.file_stat(&id, &id).unwrap();
+        assert_eq!(stat.data_runs.len(), 2);
+        assert_eq!(stat.data_runs[0].physical_offset, 4096 + 12 * 4096);
+        assert_eq!(stat.data_runs[1].length, 904);
+        let root = apfs_node_id(partition.id, 0, "");
+        let children = volume
+            .children(
+                &session,
+                &root,
+                crate::core::filesystem::tree::fs_tree::ChildrenOptions {
+                    include_deleted_ntfs: false,
+                    include_unallocated_nodes: false,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            children
+                .iter()
+                .find(|node| node.name == "link")
+                .unwrap()
+                .link_target
+                .as_deref(),
+            Some("../plain.bin")
+        );
+    }
     use crate::core::evidence::image::{DiskImage, PartitionKind};
 
     #[test]

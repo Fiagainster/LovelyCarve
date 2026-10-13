@@ -16,6 +16,7 @@ use crate::core::evidence::partitions::{detect_partitions_with_meta, SectorSourc
 pub enum EncryptionScheme {
     Luks,
     Veracrypt,
+    Filevault,
 }
 
 #[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
@@ -43,6 +44,8 @@ pub struct UnlockOptions {
     pub hidden: bool,
     #[serde(default)]
     pub pim: u32,
+    pub logical_volume_index: Option<usize>,
+    pub encrypted_root_plist_path: Option<String>,
 }
 
 impl Drop for UnlockOptions {
@@ -67,14 +70,73 @@ pub struct UnlockResult {
     pub hidden: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub volume_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_volume_identifier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_volume_index: Option<usize>,
 }
 
-struct EvidenceReader {
+pub(crate) struct EvidenceReader {
     source: Weak<DiskImage>,
     offset: u64,
     length: u64,
     position: u64,
     cancellation: Arc<Mutex<CancellationToken>>,
+}
+
+impl EvidenceReader {
+    pub(crate) fn bounds(&self) -> (u64, u64) {
+        (self.offset, self.length)
+    }
+    pub(crate) fn new(
+        source: &Arc<DiskImage>,
+        partition_id: Option<u8>,
+        offset: Option<u64>,
+        length: Option<u64>,
+        cancellation: Arc<Mutex<CancellationToken>>,
+    ) -> anyhow::Result<Self> {
+        let (offset, length) = if let Some(id) = partition_id {
+            ensure!(
+                offset.is_none() && length.is_none(),
+                "partitionId cannot be combined with offset/length"
+            );
+            let partition = source
+                .partitions
+                .iter()
+                .find(|partition| partition.id == id)
+                .context("partition not found")?;
+            (
+                partition
+                    .start_lba
+                    .checked_mul(source.sector_size as u64)
+                    .context("partition offset overflow")?,
+                partition
+                    .length_lba
+                    .checked_mul(source.sector_size as u64)
+                    .context("partition size overflow")?,
+            )
+        } else {
+            let offset = offset.unwrap_or(0);
+            (
+                offset,
+                length.unwrap_or_else(|| source.len().saturating_sub(offset)),
+            )
+        };
+        ensure!(
+            length >= 512
+                && offset
+                    .checked_add(length)
+                    .is_some_and(|end| end <= source.len()),
+            "encrypted region is outside the image"
+        );
+        Ok(Self {
+            source: Arc::downgrade(source),
+            offset,
+            length,
+            position: 0,
+            cancellation,
+        })
+    }
 }
 
 impl Read for EvidenceReader {
@@ -145,6 +207,7 @@ impl Seek for EvidenceReader {
 enum PlaintextReader {
     Luks(Box<luks::DecryptedPayload<EvidenceReader>>),
     Veracrypt(veracrypt::DecryptedVolume<EvidenceReader>),
+    Filevault(filevault::FileVaultVolume<EvidenceReader>),
 }
 
 struct PlaintextSource {
@@ -169,6 +232,10 @@ impl SectorSource for PlaintextSource {
             PlaintextReader::Veracrypt(reader) => {
                 reader.read_at(offset.min(self.length), &mut bytes)?
             }
+            PlaintextReader::Filevault(reader) => {
+                let count = reader.read_at(offset.min(self.length), &mut bytes)?;
+                ensure!(count == length, "short FileVault plaintext read");
+            }
         }
         Ok(bytes)
     }
@@ -185,11 +252,15 @@ pub fn unlock(
     );
     ensure!(
         options.master_key_hex.is_some() != !options.password.is_empty(),
-        "provide exactly one password or LUKS master key"
+        "provide exactly one password or master key"
     );
     ensure!(
-        options.master_key_hex.is_none() || options.scheme == EncryptionScheme::Luks,
-        "master keys apply only to LUKS"
+        options.master_key_hex.is_none()
+            || matches!(
+                options.scheme,
+                EncryptionScheme::Luks | EncryptionScheme::Filevault
+            ),
+        "master keys apply only to LUKS or FileVault"
     );
     ensure!(
         options.password.len() <= 4096,
@@ -199,51 +270,26 @@ pub fn unlock(
         options.pim <= 1000,
         "PIM above 1000 exceeds the supported derivation budget"
     );
-    let (offset, length) = if let Some(id) = options.partition_id {
-        ensure!(
-            options.offset.is_none() && options.length.is_none(),
-            "partitionId cannot be combined with offset/length"
-        );
-        let partition = source
-            .partitions
-            .iter()
-            .find(|partition| partition.id == id)
-            .context("partition not found")?;
-        (
-            partition
-                .start_lba
-                .checked_mul(source.sector_size as u64)
-                .context("partition offset overflow")?,
-            partition
-                .length_lba
-                .checked_mul(source.sector_size as u64)
-                .context("partition size overflow")?,
-        )
-    } else {
-        let offset = options.offset.unwrap_or(0);
-        (
-            offset,
-            options
-                .length
-                .unwrap_or_else(|| source.len().saturating_sub(offset)),
-        )
-    };
     ensure!(
-        length >= 512
-            && offset
-                .checked_add(length)
-                .is_some_and(|end| end <= source.len()),
-        "encrypted region is outside the image"
+        options.scheme == EncryptionScheme::Filevault
+            || (options.logical_volume_index.is_none()
+                && options.encrypted_root_plist_path.is_none()),
+        "logical volume / encryption context options apply only to FileVault"
     );
     let read_cancellation = Arc::new(Mutex::new(cancellation.clone()));
-    let mut reader = EvidenceReader {
-        source: Arc::downgrade(source),
-        offset,
-        length,
-        position: 0,
-        cancellation: Arc::clone(&read_cancellation),
-    };
+    let mut reader = EvidenceReader::new(
+        source,
+        options.partition_id,
+        options.offset,
+        options.length,
+        Arc::clone(&read_cancellation),
+    )?;
+    let offset = reader.offset;
+    let length = reader.length;
     let source_length = length;
+    let mut logical_volume_identifier = None;
+    let mut logical_volume_index = None;
+    let mut logical_volume_name = None;
     let (reader, length, cipher, encryption_sector_size) = match options.scheme {
         EncryptionScheme::Luks => {
             ensure!(
@@ -285,6 +331,52 @@ pub fn unlock(
                 sector,
             )
         }
+        EncryptionScheme::Filevault => {
+            ensure!(
+                !options.hidden && options.pim == 0,
+                "hidden/PIM apply only to VeraCrypt"
+            );
+            let external = super::filevault::read_external_context(
+                options.encrypted_root_plist_path.as_deref(),
+            )?;
+            let container = filevault::storage::Container::open(reader, external.as_deref())?;
+            ensure!(
+                container.volumes().count() == 1 || options.target == UnlockTarget::NewImage,
+                "multiple FileVault logical volumes require independent newImage sessions"
+            );
+            let index = match options.logical_volume_index {
+                Some(index) => index,
+                None if container.volumes().count() == 1 => 0,
+                None => {
+                    bail!("FileVault contains multiple logical volumes; choose logicalVolumeIndex")
+                }
+            };
+            let mut volume = if let Some(key) = &options.master_key_hex {
+                ensure!(
+                    matches!(key.len(), 32 | 64)
+                        && key.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                    "FileVault recovered key must contain 16 or 32 bytes in hex"
+                );
+                let key = zeroize::Zeroizing::new(hex::decode(key)?);
+                container.unlock_with_master_key(index, &key)?
+            } else {
+                container.unlock_with_password_cancellable(index, &options.password, || {
+                    cancellation.is_cancelled()
+                })?
+            };
+            hfsplus::VolumeHeader::parse(&mut volume)
+                .context("FileVault plaintext HFS+ header validation")?;
+            logical_volume_identifier = volume.info().lv_identifier.clone();
+            logical_volume_index = Some(index);
+            logical_volume_name = volume.info().lv_name.clone();
+            let size = volume.size();
+            (
+                PlaintextReader::Filevault(volume),
+                size,
+                "FileVault 2 AES-XTS-128".to_string(),
+                512,
+            )
+        }
         EncryptionScheme::Veracrypt => {
             let volume = if options.hidden {
                 veracrypt::VeraVolume::unlock_hidden_with_pim(
@@ -316,9 +408,22 @@ pub fn unlock(
         length,
     });
     let detected = detect_partitions_with_meta(plaintext.as_ref(), 512)?;
+    if options.scheme == EncryptionScheme::Filevault {
+        ensure!(
+            detected.partitions.iter().any(|partition| matches!(
+                partition.kind,
+                crate::core::evidence::partitions::PartitionKind::HfsPlus
+                    | crate::core::evidence::partitions::PartitionKind::HfsX
+            )),
+            "FileVault plaintext does not contain a recognized HFS+ volume"
+        );
+    }
     let mut image =
         DiskImage::from_assembled("decrypted".into(), plaintext, detected.partitions, 512)?;
     image.path = format!("decrypted://{}", image.id).into();
+    if let (Some(name), Some(partition)) = (logical_volume_name, image.partitions.first_mut()) {
+        partition.label = Some(name);
+    }
     image.derived = Some(DerivedImage::Decrypted {
         parent: source.id.clone(),
     });
@@ -343,6 +448,8 @@ pub fn unlock(
         source_length,
         hidden: options.hidden,
         volume_key: None,
+        logical_volume_identifier,
+        logical_volume_index,
     };
     Ok((image, result))
 }

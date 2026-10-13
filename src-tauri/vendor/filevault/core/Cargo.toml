@@ -1,0 +1,52 @@
+[package]
+name         = "filevault-core"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+authors.workspace      = true
+repository.workspace   = true
+description  = "Reader/decryptor for Apple CoreStorage / FileVault 2 (FVDE) encrypted volumes — AES-XTS, PBKDF2, RFC 3394 key unwrap"
+keywords     = ["forensics", "filevault", "corestorage", "macos", "dfir"]
+categories   = ["parser-implementations", "cryptography", "filesystem"]
+readme       = "../README.md"
+exclude      = ["/fuzz", "/.github", "/docs"]
+
+[lib]
+name = "filevault"
+
+[features]
+default = []
+testutil = []
+# forensic-vfs EncryptionLayer contract (optional): present a FileVault/CoreStorage
+# volume as a decrypted ImageSource. Behind the `vfs` feature (ADR 0004). The
+# decryption is filevault-core's own audited RustCrypto (AES-XTS); this only
+# wires the contract.
+vfs = ["dep:forensic-vfs"]
+
+[dependencies]
+thiserror = { workspace = true }
+uuid = { workspace = true }
+forensic-vfs = { version = "0.7", optional = true }
+# RustCrypto — never hand-roll a primitive (CLAUDE.core "never hand-roll crypto").
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+hmac = "0.12"
+sha2 = "0.10"
+aes = { version = "0.8", features = ["zeroize"] }
+xts-mode = "0.5"
+aes-kw = { version = "0.2", features = ["alloc"] }
+base64 = "0.22"
+quick-xml = "0.42"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+zeroize = { version = "1", features = ["derive"] }
+crc = "3"
+
+[dev-dependencies]
+hfsplus = { path = "../../hfsplus" }
+# Tier-1 oracle: decrypt the real dfvfs fvdetest CoreStorage volume and check
+# sector sha256 against pyfvde ground truth (see tests/oracle_fvde.rs,
+# env-gated on FVDE_ORACLE_IMAGE).
+sha2 = "0.10"
+
+[lints]
+workspace = true

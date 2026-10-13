@@ -4,6 +4,42 @@ use std::io::{Cursor, Read, Seek};
 use crate::btree;
 use crate::error::{ApfsError, Result};
 use crate::{DirEntry, EntryKind};
+use unicode_casefold::UnicodeCaseFold;
+use unicode_normalization::UnicodeNormalization;
+
+/// Catalog lookup policy belongs to the selected volume, never the host OS.
+#[derive(Debug, Clone, Copy)]
+pub struct CatalogContext {
+    pub omap: crate::omap::OmapTree,
+    pub incompatible_features: u64,
+}
+impl From<crate::omap::OmapTree> for CatalogContext {
+    fn from(omap: crate::omap::OmapTree) -> Self {
+        Self {
+            omap,
+            incompatible_features: 8,
+        }
+    }
+}
+impl From<u64> for CatalogContext {
+    fn from(root: u64) -> Self {
+        crate::omap::OmapTree::from(root).into()
+    }
+}
+impl CatalogContext {
+    pub(crate) fn name_key(self, name: &str) -> String {
+        let name = if self.incompatible_features & 8 != 0 {
+            name.nfd().collect()
+        } else {
+            name.to_owned()
+        };
+        if self.incompatible_features & 1 != 0 {
+            name.case_fold().collect()
+        } else {
+            name
+        }
+    }
+}
 
 // Catalog record types (j_obj_types), stored in top 4 bits of key's obj_id_and_type
 pub const J_TYPE_SNAP_METADATA: u8 = 1;
@@ -41,143 +77,8 @@ const XATTR_DATA_STREAM: u16 = 0x0001;
 /// `j_xattr_dstream_t`: `xattr_obj_id u64` plus a five-field `j_dstream_t`.
 const XATTR_DSTREAM_SIZE: usize = 8 + 40;
 
-// Extended field types (INO_EXT_TYPE_*)
-const INO_EXT_TYPE_DSTREAM: u8 = 8;
-
-/// Parsed inode value from a catalog record.
-#[derive(Debug, Clone)]
-pub struct InodeVal {
-    pub parent_id: u64,
-    pub private_id: u64,
-    pub create_time: i64,
-    pub modify_time: i64,
-    pub change_time: i64,
-    pub access_time: i64,
-    pub internal_flags: u64,
-    pub nchildren_or_nlink: i32,
-    pub default_protection_class: u32,
-    pub write_generation_counter: u32,
-    pub bsd_flags: u32,
-    pub uid: u32,
-    pub gid: u32,
-    pub mode: u16,
-    pub pad1: u16,
-    pub uncompressed_size: u64,
-    /// Logical file size from the dstream xfield (if present).
-    pub dstream_size: Option<u64>,
-}
-
-impl InodeVal {
-    /// Fixed size of j_inode_val_t before xfields
-    const FIXED_SIZE: usize = 92;
-
-    /// Parse from raw catalog value bytes.
-    pub fn parse(data: &[u8]) -> Result<Self> {
-        if data.len() < Self::FIXED_SIZE {
-            return Err(ApfsError::CorruptedData(format!(
-                "inode value too short: {} bytes",
-                data.len()
-            )));
-        }
-        let mut cursor = Cursor::new(data);
-        let parent_id = cursor.read_u64::<LittleEndian>()?;
-        let private_id = cursor.read_u64::<LittleEndian>()?;
-        let create_time = cursor.read_i64::<LittleEndian>()?;
-        let modify_time = cursor.read_i64::<LittleEndian>()?;
-        let change_time = cursor.read_i64::<LittleEndian>()?;
-        let access_time = cursor.read_i64::<LittleEndian>()?;
-        let internal_flags = cursor.read_u64::<LittleEndian>()?;
-        let nchildren_or_nlink = cursor.read_i32::<LittleEndian>()?;
-        let default_protection_class = cursor.read_u32::<LittleEndian>()?;
-        let write_generation_counter = cursor.read_u32::<LittleEndian>()?;
-        let bsd_flags = cursor.read_u32::<LittleEndian>()?;
-        let uid = cursor.read_u32::<LittleEndian>()?;
-        let gid = cursor.read_u32::<LittleEndian>()?;
-        let mode = cursor.read_u16::<LittleEndian>()?;
-        let pad1 = cursor.read_u16::<LittleEndian>()?;
-        let uncompressed_size = cursor.read_u64::<LittleEndian>()?;
-
-        // Parse xfields for dstream size
-        let dstream_size = Self::parse_dstream_size(&data[Self::FIXED_SIZE..]);
-
-        Ok(InodeVal {
-            parent_id,
-            private_id,
-            create_time,
-            modify_time,
-            change_time,
-            access_time,
-            internal_flags,
-            nchildren_or_nlink,
-            default_protection_class,
-            write_generation_counter,
-            bsd_flags,
-            uid,
-            gid,
-            mode,
-            pad1,
-            uncompressed_size,
-            dstream_size,
-        })
-    }
-
-    /// Parse xfields to extract dstream size.
-    /// Layout: xf_blob_t { xf_num_exts: u16, xf_used_data: u16 }
-    /// followed by x_field_t[xf_num_exts] { x_type: u8, x_flags: u8, x_size: u16 }
-    /// followed by the actual field data values (each padded to 8-byte alignment).
-    fn parse_dstream_size(xfield_data: &[u8]) -> Option<u64> {
-        let header = xfield_data.get(0..4)?;
-        let xf_num_exts = u16::from_le_bytes([header[0], header[1]]) as usize;
-        if xf_num_exts == 0 {
-            return None;
-        }
-
-        // x_field_t entries start at offset 4
-        let entries_start = 4;
-        let entries_end = xf_num_exts.checked_mul(4)?.checked_add(entries_start)?;
-        if entries_end > xfield_data.len() {
-            return None;
-        }
-
-        // Data values start immediately after the x_field_t array
-        let mut data_offset = entries_end;
-
-        for i in 0..xf_num_exts {
-            let entry_off = i.checked_mul(4)?.checked_add(entries_start)?;
-            let entry = xfield_data.get(entry_off..entry_off.checked_add(4)?)?;
-            let x_type = entry[0];
-            let x_size = u16::from_le_bytes([entry[2], entry[3]]) as usize;
-
-            if x_type == INO_EXT_TYPE_DSTREAM && x_size >= 8 {
-                let dstream_end = data_offset.checked_add(8)?;
-                let dstream = xfield_data.get(data_offset..dstream_end)?;
-                let size = u64::from_le_bytes(dstream.try_into().ok()?);
-                return Some(size);
-            }
-
-            // Advance past this field's data, padded to 8-byte boundary
-            let padded_size = x_size.checked_add(7)? & !7;
-            data_offset = data_offset.checked_add(padded_size)?;
-        }
-
-        None
-    }
-
-    /// Get the file type from the mode field
-    pub fn kind(&self) -> u16 {
-        self.mode & 0o170000
-    }
-
-    /// Get the logical file size.
-    /// Prefers dstream size from xfields; falls back to uncompressed_size.
-    pub fn size(&self) -> u64 {
-        self.dstream_size.unwrap_or(self.uncompressed_size)
-    }
-
-    pub fn nlink(&self) -> u32 {
-        self.nchildren_or_nlink as u32
-    }
-}
+mod inode;
+pub use inode::InodeVal;
 
 /// Directory record value (j_drec_val_t)
 #[derive(Debug, Clone)]
@@ -311,37 +212,33 @@ pub(crate) fn decode_catalog_key(key_bytes: &[u8]) -> Result<(u64, u8)> {
 /// Extract the name from a directory record key (j_drec_hashed_key_t or j_drec_key_t).
 /// After the 8-byte obj_id_and_type, there's a 4-byte name_len_and_hash (for hashed keys)
 /// followed by the UTF-8 name.
-pub(crate) fn decode_drec_name(key_bytes: &[u8]) -> Result<String> {
-    if key_bytes.len() < 12 {
-        return Err(ApfsError::InvalidBTree(
-            "drec key too short for name".into(),
-        ));
+pub(crate) fn decode_drec_name(key: &[u8], hashed: bool) -> Result<String> {
+    let (offset, length) = if hashed {
+        let bytes: [u8; 4] = key
+            .get(8..12)
+            .ok_or_else(|| ApfsError::InvalidBTree("short hashed drec key".into()))?
+            .try_into()
+            .map_err(|_| ApfsError::InvalidBTree("short hashed drec key".into()))?;
+        (12, (u32::from_le_bytes(bytes) & 0x3ff) as usize)
+    } else {
+        let bytes: [u8; 2] = key
+            .get(8..10)
+            .ok_or_else(|| ApfsError::InvalidBTree("short drec key".into()))?
+            .try_into()
+            .map_err(|_| ApfsError::InvalidBTree("short drec key".into()))?;
+        (10, u16::from_le_bytes(bytes) as usize)
+    };
+    let raw = key
+        .get(offset..offset + length)
+        .ok_or_else(|| ApfsError::InvalidBTree("drec name exceeds key".into()))?;
+    let raw = raw
+        .strip_suffix(&[0])
+        .ok_or_else(|| ApfsError::InvalidBTree("unterminated drec name".into()))?;
+    if raw.is_empty() || raw.contains(&0) || raw.contains(&b'/') {
+        return Err(ApfsError::InvalidBTree("invalid directory name".into()));
     }
-
-    // key[8..12]: name_len_and_hash (u32 LE)
-    // name_len = lower 10 bits
-    let name_len_and_hash =
-        u32::from_le_bytes([key_bytes[8], key_bytes[9], key_bytes[10], key_bytes[11]]);
-    let name_len = (name_len_and_hash & 0x000003FF) as usize;
-
-    let name_start = 12;
-    let name_end = name_start + name_len;
-
-    if name_end > key_bytes.len() {
-        return Err(ApfsError::InvalidBTree(format!(
-            "drec name extends beyond key: name_end={}, key_len={}",
-            name_end,
-            key_bytes.len()
-        )));
-    }
-
-    // Name is null-terminated UTF-8
-    let name_bytes = &key_bytes[name_start..name_end];
-    let nul_pos = name_bytes
-        .iter()
-        .position(|&b| b == 0)
-        .unwrap_or(name_bytes.len());
-    Ok(String::from_utf8_lossy(&name_bytes[..nul_pos]).to_string())
+    String::from_utf8(raw.to_vec())
+        .map_err(|error| ApfsError::CorruptedData(format!("invalid UTF-8 directory name: {error}")))
 }
 
 /// List directory entries for a given parent OID.
@@ -351,10 +248,11 @@ pub(crate) fn decode_drec_name(key_bytes: &[u8]) -> Result<String> {
 pub fn list_directory<R: Read + Seek>(
     reader: &mut R,
     catalog_root: u64,
-    omap_root: u64,
+    omap_root: impl Into<CatalogContext>,
     block_size: u32,
     parent_oid: u64,
 ) -> Result<Vec<DirEntry>> {
+    let omap_root = omap_root.into();
     let compare_fn = catalog_key(parent_oid, J_TYPE_DIR_REC);
 
     let entries = btree::btree_scan(
@@ -364,12 +262,12 @@ pub fn list_directory<R: Read + Seek>(
         0,
         0, // variable-size keys and values
         &compare_fn,
-        Some(omap_root),
+        Some(omap_root.omap),
     )?;
 
     let mut dir_entries = Vec::new();
     for (key, val) in &entries {
-        let name = match decode_drec_name(key) {
+        let name = match decode_drec_name(key, omap_root.incompatible_features & 9 != 0) {
             Ok(n) => n,
             Err(_) => continue,
         };
@@ -400,6 +298,8 @@ pub fn list_directory<R: Read + Seek>(
 
         dir_entries.push(DirEntry {
             name,
+            date_added: drec.date_added,
+            link_target: None,
             oid: drec.file_id,
             kind,
             size,
@@ -417,10 +317,11 @@ pub fn list_directory<R: Read + Seek>(
 pub fn lookup_inode<R: Read + Seek>(
     reader: &mut R,
     catalog_root: u64,
-    omap_root: u64,
+    omap_root: impl Into<CatalogContext>,
     block_size: u32,
     oid: u64,
 ) -> Result<InodeVal> {
+    let omap_root = omap_root.into();
     let compare_fn = catalog_key(oid, J_TYPE_INODE);
 
     let val = btree::btree_lookup(
@@ -430,7 +331,7 @@ pub fn lookup_inode<R: Read + Seek>(
         0,
         0,
         &compare_fn,
-        Some(omap_root),
+        Some(omap_root.omap),
     )?;
 
     match val {
@@ -443,10 +344,11 @@ pub fn lookup_inode<R: Read + Seek>(
 pub fn lookup_extents<R: Read + Seek>(
     reader: &mut R,
     catalog_root: u64,
-    omap_root: u64,
+    omap_root: impl Into<CatalogContext>,
     block_size: u32,
     file_oid: u64,
 ) -> Result<Vec<FileExtentRecord>> {
+    let omap_root = omap_root.into();
     let compare_fn = catalog_key(file_oid, J_TYPE_FILE_EXTENT);
 
     let entries = btree::btree_scan(
@@ -456,7 +358,7 @@ pub fn lookup_extents<R: Read + Seek>(
         0,
         0,
         &compare_fn,
-        Some(omap_root),
+        Some(omap_root.omap),
     )?;
 
     let mut extents = Vec::new();
@@ -476,13 +378,29 @@ pub fn lookup_extents<R: Read + Seek>(
 /// by the NUL-terminated attribute name. The name is preceded in the key by a
 /// `name_len` field, so the tie-break skips it rather than comparing key bytes
 /// straight through.
+fn xattr_name_bytes(key: &[u8]) -> Result<&[u8]> {
+    let length = key
+        .get(8..10)
+        .ok_or_else(|| ApfsError::CorruptedData("short xattr key".into()))?;
+    let length = usize::from(u16::from_le_bytes([length[0], length[1]]));
+    let bytes = key
+        .get(XATTR_KEY_NAME_OFFSET..XATTR_KEY_NAME_OFFSET + length)
+        .ok_or_else(|| ApfsError::CorruptedData("xattr name exceeds key".into()))?;
+    let name = bytes
+        .strip_suffix(&[0])
+        .ok_or_else(|| ApfsError::CorruptedData("unterminated xattr name".into()))?;
+    if name.is_empty() || name.contains(&0) {
+        return Err(ApfsError::CorruptedData("invalid xattr name".into()));
+    }
+    std::str::from_utf8(name)
+        .map_err(|error| ApfsError::CorruptedData(format!("invalid xattr UTF-8: {error}")))?;
+    Ok(bytes)
+}
+
 fn compare_xattr_key(key: &[u8], oid: u64, name_with_nul: &[u8]) -> Result<std::cmp::Ordering> {
     Ok(match compare_key_to(key, oid, J_TYPE_XATTR)? {
-        std::cmp::Ordering::Equal => key
-            .get(XATTR_KEY_NAME_OFFSET..)
-            .unwrap_or(&[])
-            .cmp(name_with_nul),
-        ord => ord,
+        std::cmp::Ordering::Equal => xattr_name_bytes(key)?.cmp(name_with_nul),
+        order => order,
     })
 }
 
@@ -507,11 +425,12 @@ pub enum XattrValue {
 pub fn lookup_xattr<R: Read + Seek>(
     reader: &mut R,
     catalog_root: u64,
-    omap_root: u64,
+    omap_root: impl Into<CatalogContext>,
     block_size: u32,
     oid: u64,
     name: &str,
 ) -> Result<Option<Vec<u8>>> {
+    let omap_root = omap_root.into();
     match lookup_xattr_value(reader, catalog_root, omap_root, block_size, oid, name)? {
         Some(XattrValue::Embedded(data)) => Ok(Some(data)),
         Some(XattrValue::DataStream { .. }) => Err(ApfsError::Unsupported(
@@ -526,11 +445,12 @@ pub fn lookup_xattr<R: Read + Seek>(
 pub fn lookup_xattr_value<R: Read + Seek>(
     reader: &mut R,
     catalog_root: u64,
-    omap_root: u64,
+    omap_root: impl Into<CatalogContext>,
     block_size: u32,
     oid: u64,
     name: &str,
 ) -> Result<Option<XattrValue>> {
+    let omap_root = omap_root.into();
     let mut search_name = Vec::with_capacity(name.len() + 1);
     search_name.extend_from_slice(name.as_bytes());
     search_name.push(0);
@@ -543,7 +463,7 @@ pub fn lookup_xattr_value<R: Read + Seek>(
         0,
         0,
         &compare_fn,
-        Some(omap_root),
+        Some(omap_root.omap),
     )?;
 
     match value {
@@ -556,10 +476,11 @@ pub fn lookup_xattr_value<R: Read + Seek>(
 pub fn list_xattr_names<R: Read + Seek>(
     reader: &mut R,
     catalog_root: u64,
-    omap_root: u64,
+    omap_root: impl Into<CatalogContext>,
     block_size: u32,
     oid: u64,
 ) -> Result<Vec<String>> {
+    let omap_root = omap_root.into();
     let compare_fn = catalog_key(oid, J_TYPE_XATTR);
     let records = btree::btree_scan(
         reader,
@@ -568,15 +489,13 @@ pub fn list_xattr_names<R: Read + Seek>(
         0,
         0,
         &compare_fn,
-        Some(omap_root),
+        Some(omap_root.omap),
     )?;
 
     let mut names = Vec::with_capacity(records.len());
     for (key, _) in records {
-        let raw = key.get(XATTR_KEY_NAME_OFFSET..).ok_or_else(|| {
-            ApfsError::CorruptedData(format!("xattr key for inode {oid} has no name field"))
-        })?;
-        let raw = raw.strip_suffix(&[0]).unwrap_or(raw);
+        let bytes = xattr_name_bytes(&key)?;
+        let raw = &bytes[..bytes.len() - 1];
         names.push(String::from_utf8(raw.to_vec()).map_err(|e| {
             ApfsError::CorruptedData(format!("xattr name for inode {oid} is not UTF-8: {e}"))
         })?);
@@ -600,8 +519,16 @@ fn parse_xattr_value(value: &[u8]) -> Result<XattrValue> {
     }
     let flags = u16::from_le_bytes([value[0], value[1]]);
     let data_len = u16::from_le_bytes([value[2], value[3]]) as usize;
+    if !matches!(flags & 3, 1 | 2) || flags & !7 != 0 {
+        return Err(ApfsError::Unsupported(format!("xattr flags {flags:#x}")));
+    }
 
     if flags & XATTR_DATA_STREAM != 0 {
+        if data_len != XATTR_DSTREAM_SIZE {
+            return Err(ApfsError::CorruptedData(
+                "invalid xattr data-stream reference length".into(),
+            ));
+        }
         let xdata = value.get(4..4 + XATTR_DSTREAM_SIZE).ok_or_else(|| {
             ApfsError::CorruptedData(format!(
                 "xattr data-stream reference truncated: {} bytes after the header",
@@ -619,8 +546,10 @@ fn parse_xattr_value(value: &[u8]) -> Result<XattrValue> {
         });
     }
 
-    let end = value.len().min(4 + data_len);
-    Ok(XattrValue::Embedded(value[4..end].to_vec()))
+    let data = value
+        .get(4..4 + data_len)
+        .ok_or_else(|| ApfsError::CorruptedData("truncated embedded xattr".into()))?;
+    Ok(XattrValue::Embedded(data.to_vec()))
 }
 
 /// Order an on-disk catalog key against the `(oid, type)` being searched for.
@@ -647,10 +576,11 @@ fn catalog_key(oid: u64, j_type: u8) -> impl Fn(&[u8]) -> Result<std::cmp::Order
 pub fn resolve_path<R: Read + Seek>(
     reader: &mut R,
     catalog_root: u64,
-    omap_root: u64,
+    omap_root: impl Into<CatalogContext>,
     block_size: u32,
     path: &str,
 ) -> Result<(u64, InodeVal)> {
+    let omap_root = omap_root.into();
     let path = path.trim_matches('/');
 
     if path.is_empty() {
@@ -693,12 +623,13 @@ pub fn resolve_path<R: Read + Seek>(
 /// Look up a specific directory record by name under a parent OID.
 fn lookup_drec<R: Read + Seek>(
     reader: &mut R,
-    omap_root: u64,
+    omap_root: impl Into<CatalogContext>,
     catalog_root: u64,
     block_size: u32,
     parent_oid: u64,
     name: &str,
 ) -> Result<DrecVal> {
+    let omap_root = omap_root.into();
     // Scan all DRECs for this parent and find the one with matching name
     let compare_fn = catalog_key(parent_oid, J_TYPE_DIR_REC);
 
@@ -709,18 +640,26 @@ fn lookup_drec<R: Read + Seek>(
         0,
         0,
         &compare_fn,
-        Some(omap_root),
+        Some(omap_root.omap),
     )?;
 
+    let wanted = omap_root.name_key(name);
+    let mut found = None;
     for (key, val) in &entries {
-        if let Ok(entry_name) = decode_drec_name(key)
-            && entry_name == name
-        {
+        let entry_name = decode_drec_name(key, omap_root.incompatible_features & 9 != 0)?;
+        if entry_name == name {
             return DrecVal::parse(val);
         }
+        if omap_root.name_key(&entry_name) == wanted {
+            if found.is_some() {
+                return Err(ApfsError::CorruptedData(
+                    "ambiguous normalized directory name".into(),
+                ));
+            }
+            found = Some(DrecVal::parse(val)?);
+        }
     }
-
-    Err(ApfsError::FileNotFound(name.to_string()))
+    found.ok_or_else(|| ApfsError::FileNotFound(name.to_string()))
 }
 
 /// Compare two catalog keys in APFS sort order: OID first, then type.

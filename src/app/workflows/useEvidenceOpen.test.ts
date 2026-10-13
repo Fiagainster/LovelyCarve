@@ -55,7 +55,7 @@ describe('evidence source opening', () => {
   it('keeps a synthetic-volume recovery step with the backend reason', async () => {
     const { options, flow } = setup();
     options.openImagePath.mockResolvedValue({ ok: false, error: '不存在' } as never);
-    await flow.onOpenImageFromInfo('decrypted://old');
+    expect(await flow.onOpenImageFromInfo('decrypted://old')).toBe(false);
     expect(notifications.error).toHaveBeenCalledWith('打开镜像失败', '不存在；解密会话已关闭，请重新解锁源镜像');
   });
 });

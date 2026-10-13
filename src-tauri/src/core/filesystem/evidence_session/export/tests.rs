@@ -48,6 +48,8 @@ fn raw_export_projects_multiple_unlocked_partitions_and_preserves_disk_layout() 
                 scheme: EncryptionScheme::Luks,
                 password: "lovelycarve-test".into(),
                 master_key_hex: None,
+                logical_volume_index: None,
+                encrypted_root_plist_path: None,
                 partition_id: Some(id),
                 offset: None,
                 length: None,

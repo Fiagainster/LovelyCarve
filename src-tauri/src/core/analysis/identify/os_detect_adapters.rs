@@ -314,6 +314,7 @@ pub(crate) fn kind_str(kind: PartitionKind) -> &'static str {
         PartitionKind::HfsPlus => "hfsplus",
         PartitionKind::HfsX => "hfsx",
         PartitionKind::Luks => "luks",
+        PartitionKind::Filevault => "filevault",
         PartitionKind::Apm => "apm",
         PartitionKind::Bsd => "bsd",
         PartitionKind::Swap => "swap",

@@ -74,25 +74,19 @@ fn test_read_file_rejects_a_fork_that_ends_early() {
     );
     let message = err.to_string();
     assert!(message.contains("1048576"), "got {message:?}");
-    assert!(message.contains("short.bin"), "got {message:?}");
+    assert!(message.contains("allocation"), "got {message:?}");
 }
 
 #[test]
-fn test_read_file_to_still_reports_the_partial_count() {
-    // read_file_to keeps the streaming contract: it hands back what it
-    // recovered plus the count, so a caller can compare against the
-    // declared size itself. Only read_file, whose Vec<u8> cannot express
-    // partiality, treats the shortfall as an error.
-    let mut builder = HfsPlusImageBuilder::new();
-    builder.add_file_with_declared_size("short.bin", b"only this much", 0o644, 1024 * 1024);
-    let cursor = Cursor::new(builder.build());
-    let mut vol = HfsVolume::open(cursor).unwrap();
-
-    let mut buf = Vec::new();
-    let bytes_read = vol.read_file_to("/short.bin", &mut buf).unwrap();
-    assert_eq!(bytes_read, buf.len() as u64);
-    assert!(bytes_read < 1024 * 1024);
-    assert!(buf.starts_with(b"only this much"));
+fn streaming_rejects_missing_allocations_before_writing() {
+    let image = HfsPlusImageBuilder::new()
+        .add_file_with_declared_size("short.bin", b"partial", 0o644, 1024 * 1024)
+        .build();
+    let mut volume = HfsVolume::open(Cursor::new(image)).unwrap();
+    let mut output = Vec::new();
+    assert!(volume.read_file_to("/short.bin", &mut output).is_err());
+    assert!(output.is_empty());
+    assert!(volume.open_file("/short.bin").is_err());
 }
 
 #[test]
@@ -383,7 +377,7 @@ fn test_compression_attributes_are_classified_apart() {
 }
 
 #[test]
-fn test_open_file_rejects_a_compressed_file() {
+fn compressed_stream_and_seek_match_full_read() {
     let image = HfsPlusImageBuilder::new()
         .add_file_with_xattrs(
             "c.txt",
@@ -398,8 +392,20 @@ fn test_open_file_rejects_a_compressed_file() {
         .build();
 
     let mut vol = HfsVolume::open(Cursor::new(image)).unwrap();
-    // Streaming the data fork would succeed and yield nothing.
-    assert!(vol.open_file("/c.txt").is_err());
+    use std::io::{Read, Seek, SeekFrom};
+    let mut reader = vol.open_file("/c.txt").unwrap();
+    let mut output = Vec::new();
+    reader.read_to_end(&mut output).unwrap();
+    assert_eq!(output, b"hi");
+    reader.seek(SeekFrom::Start(1)).unwrap();
+    let mut tail = Vec::new();
+    reader.read_to_end(&mut tail).unwrap();
+    assert_eq!(tail, b"i");
+    drop(reader);
+    assert_eq!(vol.read_file("/c.txt").unwrap(), output);
+    let mut streamed = Vec::new();
+    assert_eq!(vol.read_file_to("/c.txt", &mut streamed).unwrap(), 2);
+    assert_eq!(streamed, output);
 }
 
 #[test]

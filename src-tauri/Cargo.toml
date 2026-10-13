@@ -96,6 +96,8 @@ ewf = { path = "vendor/ewf", default-features = false }
 exfat = { path = "vendor/exfat", default-features = false, features = ["std"] }
 ext4-view = { path = "vendor/ext4-view", default-features = false, features = ["std"] }
 fatfs = { path = "vendor/fatfs", default-features = false, features = ["std", "alloc", "lfn", "unicode"] }
+filevault = { package = "filevault-core", path = "vendor/filevault/core" }
+filevault-forensic = { path = "vendor/filevault/forensic" }
 flate2 = "1.1.10"
 
 fs2 = "0.4.3"
@@ -261,6 +263,18 @@ strip = true
 # scans) get full optimisation. The `-sys` crates are C code compiled by `cc`
 # outside rustc's LTO, so their opt-level applies directly; compare against
 # `--profile release-fast` when tuning.
+[profile.release.package.filevault-core]
+opt-level = 3
+
+[profile.release.package.xts-mode]
+opt-level = 3
+
+[profile.release.package.aes-kw]
+opt-level = 3
+
+[profile.release.package.crc]
+opt-level = 3
+
 [profile.release.package.sha1]
 opt-level = 3
 [profile.release.package.sha2]

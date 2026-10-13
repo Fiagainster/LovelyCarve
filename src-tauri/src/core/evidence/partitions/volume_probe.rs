@@ -103,10 +103,12 @@ impl PartParser for WholeVolumeParser {
 }
 
 static VOLUME_PROBES: &[&dyn VolumeProbe] = &[
+    &FilevaultProbe,
     &BitlockerProbe,
     &SquashfsProbe,
     &XfsProbe,
     &ExtProbe,
+    &ApfsProbe,
     &HfsProbe,
     &LvmProbe,
     &LuksProbe,
@@ -156,6 +158,12 @@ pub fn detect_filesystem_bytes(bytes: &[u8], fallback: PartitionKind) -> Partiti
     }
     if has_ext_magic(bytes) {
         return PartitionKind::Ext4;
+    }
+    if has_apfs_header(bytes) {
+        return PartitionKind::ApfsContainer;
+    }
+    if filevault::storage::check_volume_signature(bytes) {
+        return PartitionKind::Filevault;
     }
     if is_hfs_plus_magic(bytes) {
         let magic = &bytes[HFS_VOLUME_HEADER_OFFSET..HFS_VOLUME_HEADER_OFFSET + 2];
@@ -207,7 +215,8 @@ pub fn fallback_after_probe(fallback: PartitionKind) -> PartitionKind {
         | PartitionKind::HfsPlus
         | PartitionKind::HfsX
         | PartitionKind::Xfs => PartitionKind::Unknown,
-        PartitionKind::BiosBoot
+        PartitionKind::Filevault
+        | PartitionKind::BiosBoot
         | PartitionKind::ApfsContainer
         | PartitionKind::Apm
         | PartitionKind::Bsd
@@ -220,11 +229,48 @@ pub fn fallback_after_probe(fallback: PartitionKind) -> PartitionKind {
     }
 }
 
+struct FilevaultProbe;
+impl VolumeProbe for FilevaultProbe {
+    fn name(&self) -> &'static str {
+        "filevault"
+    }
+    fn probe(&self, ctx: &DetectCtx<'_>) -> Result<Option<VolumeProbeHit>> {
+        if filevault::storage::check_volume_signature(ctx.head) {
+            return Ok(Some(VolumeProbeHit::new(
+                "filevault",
+                PartitionKind::Filevault,
+                100,
+                0,
+                "CoreStorage CS header with verified CRC-32C",
+            )));
+        }
+        if let Some(offset) = ctx.size.checked_sub(512) {
+            match ctx.source.read(offset, 512) {
+                Ok(footer) if filevault::storage::check_volume_signature(&footer) => {
+                    return Ok(Some(VolumeProbeHit::new(
+                        "filevault",
+                        PartitionKind::Filevault,
+                        90,
+                        offset,
+                        "CoreStorage backup CS header with verified CRC-32C",
+                    )));
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::debug!(%error,"optional CoreStorage backup probe unavailable")
+                }
+            }
+        }
+        Ok(None)
+    }
+}
+
 struct BitlockerProbe;
 struct SquashfsProbe;
 struct XfsProbe;
 struct ExtProbe;
 struct HfsProbe;
+struct ApfsProbe;
 struct LvmProbe;
 struct LuksProbe;
 struct NtfsProbe;
@@ -253,6 +299,40 @@ impl VolumeProbe for BitlockerProbe {
         } else {
             Ok(None)
         }
+    }
+}
+
+impl VolumeProbe for ApfsProbe {
+    fn name(&self) -> &'static str {
+        "apfs"
+    }
+
+    fn probe(&self, ctx: &DetectCtx<'_>) -> Result<Option<VolumeProbeHit>> {
+        if !has_apfs_header(ctx.head) {
+            return Ok(None);
+        }
+        let size = u32::from_le_bytes(ctx.head[36..40].try_into()?);
+        let block = ctx.source.read(0, size as usize)?;
+        let superblock = match apfs::superblock::NxSuperblock::parse(&block) {
+            Ok(superblock) => superblock,
+            Err(_) => return Ok(None),
+        };
+        if block.len() != size as usize
+            || !apfs::fletcher::verify_object(&block)
+            || superblock
+                .block_count
+                .checked_mul(u64::from(size))
+                .is_none_or(|length| length > ctx.size)
+        {
+            return Ok(None);
+        }
+        Ok(Some(VolumeProbeHit::new(
+            self.name(),
+            PartitionKind::ApfsContainer,
+            98,
+            0,
+            "APFS NXSB identity, geometry and Fletcher checksum",
+        )))
     }
 }
 
@@ -605,6 +685,14 @@ impl VolumeProbe for ZfsProbe {
             "three consecutive ZFS uberblock magic values",
         )))
     }
+}
+
+fn has_apfs_header(bytes: &[u8]) -> bool {
+    let Some(size) = bytes.get(36..40) else {
+        return false;
+    };
+    let size = u32::from_le_bytes([size[0], size[1], size[2], size[3]]);
+    bytes.get(32..36) == Some(b"NXSB") && (4096..=65536).contains(&size) && size.is_power_of_two()
 }
 
 fn has_ext_magic(bytes: &[u8]) -> bool {

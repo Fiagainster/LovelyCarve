@@ -10,4 +10,4 @@ export { disposeImageHashJobs } from './composables/useImageHash';
 
 export { registerEvidenceContext } from './composables/evidenceContext';
 export { disposeImageExportJobs } from './composables/useImageExport';
-export { registerEncryptedVolumeImageUpdater, disposeEncryptedVolumeUnlockJobs } from './composables/useEncryptedVolumeUnlocks';
+export { registerEncryptedVolumeImageUpdater, registerEncryptedVolumeImageOpener, disposeEncryptedVolumeUnlockJobs } from './composables/useEncryptedVolumeUnlocks';

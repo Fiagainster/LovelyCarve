@@ -69,7 +69,7 @@ just --dry-run pack           # 展开依赖与命令，但不执行
 | Windows 桌面 | `dev`、`build`、`build-release`、`pack`、`repack`；含 QR/OCR 的版本使用对应的 `*-full` |
 | CLI | `run-cli`、`build-cli`、`build-cli-full`、`test-cli`、`smoke-cli <exe>`；Windows 另有 `pack-cli`、`pack-cli-full`、`repack-cli` |
 | 插件 | `build-plugins [--release]`、`test-plugins`、`clippy-plugins`；Windows 另有 `pack-plugins` |
-| 读取器 | `test-vendor <目录>`、`test-ewf`、`test-vmdk`、`test-vhd`、`test-vhdx`、`test-qcow2`、`test-vdi`、`test-bitlocker` / `clippy-bitlocker`、`test-luks` / `clippy-luks`、`test-veracrypt`、`test-vsc` / `clippy-vsc`、`test-refs` / `clippy-refs`、`test-ad1`、`test-sqlite-core`、`test-ios-backup` |
+| 读取器 | `test-vendor <目录>`、`test-ewf`、`test-vmdk`、`test-vhd`、`test-vhdx`、`test-qcow2`、`test-vdi`、`test-bitlocker` / `clippy-bitlocker`、`test-luks` / `clippy-luks`、`test-veracrypt`、`test-vsc` / `clippy-vsc`、`test-refs` / `clippy-refs`、`test-ad1`、`test-sqlite-core`、`test-ios-backup`、`test-apfs` / `clippy-apfs` |
 | 探针与性能 | `run-example`、`run-example-fast`、`bench-filedb-store`、`probe-refs`、`probe-vsc`、`compare-vsc` |
 | 依赖更新 | `update-fe`、`update-rust`、`update-plugins`、`update-tauri`、`update-file-viewer <版本>` |
 | 资源维护 | `icons`、`qr-env`、`build-opencv-contrib`、`qr-test <图片>` |
@@ -141,3 +141,7 @@ Vue 类型检查通过 `typescript` 的 npm 别名接入 `typescript-native-brid
 前端生产构建使用 Vite 8 自带的 Oxc 压缩器，不需要额外安装 esbuild，也不要恢复 `build.minify: 'esbuild'`。非 Windows 平台保持 Safari 13 构建目标，但地图渲染器依赖 BigInt，map / shp 预览需要 Safari 14 或更新的 WebKit。
 
 升级后按改动范围执行前端、Rust、插件与读取器验证。不要把本机路径、依赖目录、案件、缓存、导出结果和签名凭据提交到仓库；`.gitignore` 为回归样本保留了例外。
+
+### HFS 与 FileVault 读者
+
+`just test-vendor hfsplus` / `just clippy-hfsplus` 验证 HFS；`just test-filevault` / `just clippy-filevault` 验证 CoreStorage 核心和法证审计器。设置 `FVDE_ORACLE_IMAGE` 为公开测试样本的 raw CoreStorage 区域后运行 `just test-filevault`，执行真实扇区 SHA、HFS 读者与法证审计 oracle；提取范围与哈希见 [FileVault](formats/FILEVAULT.md)。未设置变量不等于通过真实样本验证。

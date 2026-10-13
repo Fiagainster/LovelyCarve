@@ -12,3 +12,5 @@ categories = ["parsing", "filesystem"]
 byteorder = "1.5"
 cmpfs = { version = "0.1.0", path = "../cmpfs" }
 thiserror = "2"
+unicode-casefold = "=0.2.0"
+unicode-normalization = "=0.1.25"

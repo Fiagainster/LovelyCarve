@@ -135,7 +135,7 @@ pub struct ApfsSuperblock {
     pub fs_reserve_block_count: u64,
     pub fs_quota_block_count: u64,
     pub fs_alloc_count: u64,
-    // Wrapped meta crypto state (68 bytes) — skip for read-only
+    // Wrapped metadata crypto state (20 bytes).
     pub root_tree_type: u32,
     pub extentref_tree_type: u32,
     pub snap_meta_tree_type: u32,
@@ -157,6 +157,8 @@ pub struct ApfsSuperblock {
     pub last_mod_time: u64,
     pub fs_flags: u64,
     pub volume_name: String,
+    pub role: u16,
+    pub volume_group_id: [u8; 16],
 }
 
 impl ApfsSuperblock {
@@ -232,6 +234,19 @@ impl ApfsSuperblock {
             String::from_utf8_lossy(&name_buf[..nul_pos]).to_string()
         };
 
+        let role = u16::from_le_bytes(
+            block
+                .get(964..966)
+                .ok_or_else(|| ApfsError::CorruptedData("short APSB role".into()))?
+                .try_into()
+                .map_err(|_| ApfsError::CorruptedData("short APSB role".into()))?,
+        );
+        let mut volume_group_id = [0u8; 16];
+        volume_group_id.copy_from_slice(
+            block
+                .get(1008..1024)
+                .ok_or_else(|| ApfsError::CorruptedData("short APSB volume group".into()))?,
+        );
         Ok(ApfsSuperblock {
             header,
             magic,
@@ -264,6 +279,8 @@ impl ApfsSuperblock {
             last_mod_time,
             fs_flags,
             volume_name,
+            role,
+            volume_group_id,
         })
     }
 }
@@ -280,6 +297,19 @@ pub fn find_latest_nxsb<R: Read + Seek>(
     let block_size = nxsb.block_size;
     let base = nxsb.xp_desc_base;
     let count = nxsb.xp_desc_blocks;
+    if count & 0x8000_0000 != 0 {
+        return Err(ApfsError::Unsupported(
+            "B-tree checkpoint descriptor area".into(),
+        ));
+    }
+    if base
+        .checked_add(u64::from(count))
+        .is_none_or(|end| end > nxsb.block_count)
+    {
+        return Err(ApfsError::CorruptedData(
+            "checkpoint descriptor range outside container".into(),
+        ));
+    }
 
     let mut best: Option<NxSuperblock> = None;
     let mut best_xid: u64 = 0;
@@ -315,7 +345,12 @@ pub fn find_latest_nxsb<R: Read + Seek>(
             Err(_) => continue,
         };
 
-        if candidate.magic != NX_MAGIC {
+        if candidate.magic != NX_MAGIC
+            || candidate.uuid != nxsb.uuid
+            || candidate.block_size != nxsb.block_size
+            || candidate.block_count != nxsb.block_count
+            || candidate.incompatible_features != nxsb.incompatible_features
+        {
             continue;
         }
 
@@ -337,30 +372,57 @@ pub fn find_latest_nxsb<R: Read + Seek>(
 pub fn read_nxsb<R: Read + Seek>(reader: &mut R) -> Result<NxSuperblock> {
     reader.seek(SeekFrom::Start(0))?;
 
-    // First read with a default block size of 4096 to get the actual block size
-    let mut block = vec![0u8; 4096];
+    // Read geometry before verifying the full object. A checksum over the
+    // first 4096 bytes cannot validate a larger APFS object.
+    let mut prefix = [0u8; 40];
+    reader.read_exact(&mut prefix)?;
+    let size = u32::from_le_bytes(
+        prefix[36..40]
+            .try_into()
+            .map_err(|_| ApfsError::CorruptedData("short NX header".into()))?,
+    );
+    if !(4096..=65536).contains(&size) || !size.is_power_of_two() {
+        return Err(ApfsError::CorruptedData(format!(
+            "invalid APFS block size {size}"
+        )));
+    }
+    reader.seek(SeekFrom::Start(0))?;
+    let mut block = vec![0u8; size as usize];
     reader.read_exact(&mut block)?;
-
     if !fletcher::verify_object(&block) {
         return Err(ApfsError::InvalidChecksum);
     }
-
-    let nxsb = NxSuperblock::parse(&block)?;
-
-    // If the actual block size differs, re-read with the correct size
-    if nxsb.block_size != 4096 {
-        reader.seek(SeekFrom::Start(0))?;
-        let mut block = vec![0u8; nxsb.block_size as usize];
-        reader.read_exact(&mut block)?;
-
-        if !fletcher::verify_object(&block) {
-            return Err(ApfsError::InvalidChecksum);
-        }
-
-        return NxSuperblock::parse(&block);
+    let superblock = NxSuperblock::parse(&block)?;
+    if superblock.header.object_type() != OBJECT_TYPE_NX_SUPERBLOCK {
+        return Err(ApfsError::CorruptedData(
+            "block zero is not an NX superblock".into(),
+        ));
     }
-
-    Ok(nxsb)
+    if superblock.incompatible_features & 1 != 0 {
+        return Err(ApfsError::Unsupported("APFS version 1".into()));
+    }
+    if superblock.incompatible_features & 0x100 != 0 {
+        return Err(ApfsError::Unsupported("APFS Fusion drive".into()));
+    }
+    if superblock.incompatible_features & !2 != 0 {
+        return Err(ApfsError::Unsupported(format!(
+            "container incompatible features {:#x}",
+            superblock.incompatible_features
+        )));
+    }
+    let length = reader.seek(SeekFrom::End(0))?;
+    if superblock.block_count == 0
+        || superblock
+            .block_count
+            .checked_mul(u64::from(size))
+            .is_none_or(|bytes| bytes > length)
+        || superblock.max_file_systems as usize > NX_MAX_FILE_SYSTEMS
+    {
+        return Err(ApfsError::CorruptedData(
+            "invalid or truncated APFS container geometry".into(),
+        ));
+    }
+    Ok(superblock)
 }
 
 #[cfg(test)]

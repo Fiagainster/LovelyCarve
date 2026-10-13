@@ -90,12 +90,13 @@ export function useEvidenceOpen(options: {
    *  live for this session, so pair the backend reason with the recovery step. */
   async function onOpenImageFromInfo(path: string) {
     const result = await openImagePath(path, { quiet: true });
-    if (result.ok) return;
+    if (result.ok) return true;
     const hint = path.startsWith('decrypted://')
       ? '解密会话已关闭，请重新解锁源镜像'
       : path.startsWith('vss://') ? '卷影副本会话已关闭，请在源镜像的「卷影副本」中重新打开'
       : path.startsWith('assembled://') ? '请重新运行 RAID 检测后重试' : '';
     notifyError('打开镜像失败', hint ? `${result.error}；${hint}` : result.error);
+    return false;
   }
 
   return {

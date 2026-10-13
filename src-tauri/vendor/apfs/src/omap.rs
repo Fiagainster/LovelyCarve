@@ -35,161 +35,120 @@ pub fn read_omap_tree_root<R: Read + Seek>(
     Ok(om_tree_oid)
 }
 
-/// Look up a virtual OID in an OMAP B-tree and return the physical block address.
-///
-/// The OMAP B-tree uses fixed-size keys (oid: u64, xid: u64) and fixed-size
-/// values (flags: u32, size: u32, paddr: u64). We search for the entry with
-/// the matching OID and the highest xid that is <= the current transaction.
-///
-/// Since we want the most recent mapping, we search for the target_oid and
-/// accept any xid (effectively finding the latest mapping).
+/// A physical OMAP tree viewed at a committed transaction.
+#[derive(Debug, Clone, Copy)]
+pub struct OmapTree {
+    pub root: u64,
+    pub xid: u64,
+}
+impl From<u64> for OmapTree {
+    fn from(root: u64) -> Self {
+        Self {
+            root,
+            xid: u64::MAX,
+        }
+    }
+}
+fn key_fields(key: &[u8]) -> Result<(u64, u64)> {
+    if key.len() != 16 {
+        return Err(ApfsError::InvalidBTree("OMAP key must be 16 bytes".into()));
+    }
+    let mut cursor = Cursor::new(key);
+    Ok((
+        cursor.read_u64::<LittleEndian>()?,
+        cursor.read_u64::<LittleEndian>()?,
+    ))
+}
+fn mapping(value: &[u8], block_size: u32) -> Result<Option<u64>> {
+    if value.len() != 16 {
+        return Err(ApfsError::InvalidBTree(
+            "OMAP value must be 16 bytes".into(),
+        ));
+    }
+    let mut cursor = Cursor::new(value);
+    let flags = cursor.read_u32::<LittleEndian>()?;
+    let size = cursor.read_u32::<LittleEndian>()?;
+    let address = cursor.read_u64::<LittleEndian>()?;
+    if flags & 1 != 0 {
+        return Ok(None);
+    }
+    if flags & 4 != 0 {
+        return Err(ApfsError::Unsupported("encrypted OMAP object".into()));
+    }
+    if flags & !0x1f != 0 || flags & 0x18 != 0 {
+        return Err(ApfsError::Unsupported(format!("OMAP flags {flags:#x}")));
+    }
+    if address == 0 || size != block_size {
+        return Err(ApfsError::CorruptedData(format!(
+            "invalid OMAP address {address} or size {size}"
+        )));
+    }
+    Ok(Some(address))
+}
+/// Resolve the last (OID, XID) mapping at or before the selected transaction.
 pub fn omap_lookup<R: Read + Seek>(
     reader: &mut R,
-    omap_tree_root: u64,
+    tree: impl Into<OmapTree>,
     block_size: u32,
     target_oid: u64,
 ) -> Result<u64> {
-    // For the OMAP lookup, we need to find the entry with matching OID.
-    // OMAP keys are sorted by (oid, xid). We want the highest xid for our oid.
-    //
-    // Strategy: use btree_scan to find all entries for this OID, then pick the
-    // one with the highest xid. This is simpler than trying to do a range query.
-
-    // A short key fails the lookup rather than ordering `Less`, which would
-    // steer the descent past the damage and report a mapping that exists as
-    // absent. PROVISIONAL(anomaly-channel): fail now, degrade to a reported
-    // miss once there is somewhere to report to.
-    let compare_fn = |key: &[u8]| -> Result<std::cmp::Ordering> {
-        if key.len() < 16 {
-            return Err(ApfsError::CorruptedData(format!(
-                "omap key too short: {} bytes",
-                key.len()
-            )));
-        }
-        let key_oid = u64::from_le_bytes([
-            key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
-        ]);
-        // Compare only by OID. For equal OIDs, we consider the key "equal" to let
-        // btree_lookup find the first match, then we'll use scan for the latest xid.
-        Ok(key_oid.cmp(&target_oid))
-    };
-
-    // First try a direct lookup — this finds the first entry with matching OID
-    // OMAP B-trees are physical, so omap_root = None
-    let result = btree::btree_lookup(
+    let tree = tree.into();
+    let entry = btree::btree_predecessor(
         reader,
-        omap_tree_root,
+        tree.root,
         block_size,
         OMAP_KEY_SIZE,
         OMAP_VAL_SIZE,
-        &compare_fn,
-        None,
+        |key| Ok(key_fields(key)?.cmp(&(target_oid, tree.xid))),
     )?;
-
-    if let Some(val) = result {
-        return parse_omap_val(&val);
+    if let Some((key, value)) = entry
+        && key_fields(&key)?.0 == target_oid
+        && let Some(address) = mapping(&value, block_size)?
+    {
+        return Ok(address);
     }
-
-    // If direct lookup fails, scan for the OID with any xid. The scan reads the
-    // same comparator as a range, so it needs no predicate of its own.
-    let entries = btree::btree_scan(
-        reader,
-        omap_tree_root,
-        block_size,
-        OMAP_KEY_SIZE,
-        OMAP_VAL_SIZE,
-        &compare_fn,
-        None,
-    )?;
-
-    if entries.is_empty() {
-        return Err(ApfsError::CorruptedData(format!(
-            "OMAP lookup failed: OID {} not found",
-            target_oid
-        )));
-    }
-
-    // Pick the entry with the highest xid
-    let mut best_xid: u64 = 0;
-    let mut best_paddr: u64 = 0;
-
-    for (key, val) in &entries {
-        if key.len() >= 16 {
-            let xid = u64::from_le_bytes([
-                key[8], key[9], key[10], key[11], key[12], key[13], key[14], key[15],
-            ]);
-            if xid >= best_xid {
-                best_xid = xid;
-                best_paddr = parse_omap_val(val)?;
-            }
-        }
-    }
-
-    if best_paddr == 0 {
-        return Err(ApfsError::CorruptedData(format!(
-            "OMAP lookup: OID {} resolved to paddr 0",
-            target_oid
-        )));
-    }
-
-    Ok(best_paddr)
+    Err(ApfsError::CorruptedData(format!(
+        "OMAP: OID {target_oid} absent at XID {}",
+        tree.xid
+    )))
 }
-
-/// Parse an OMAP value: (flags: u32, size: u32, paddr: u64)
-fn parse_omap_val(val: &[u8]) -> Result<u64> {
-    if val.len() < 16 {
-        return Err(ApfsError::InvalidBTree("omap value too short".into()));
-    }
-    let paddr = u64::from_le_bytes([
-        val[8], val[9], val[10], val[11], val[12], val[13], val[14], val[15],
-    ]);
-    Ok(paddr)
-}
-
-/// Load every mapping of an OMAP B-tree into an oid→paddr map, keeping the
-/// highest xid per OID (the latest committed mapping). One full scan of the
-/// OMAP tree; pass the result to `btree::btree_walk_leaves` so a whole-tree
-/// catalog walk resolves child OIDs by hash lookup instead of one OMAP
-/// B-tree descent per node. OMAP size is proportional to the number of
-/// catalog tree *nodes*, not files, so the map stays small.
+/// Cache the same committed mappings used by random lookups, including deletions.
 pub fn load_omap<R: Read + Seek>(
     reader: &mut R,
-    omap_tree_root: u64,
+    tree: impl Into<OmapTree>,
     block_size: u32,
 ) -> Result<std::collections::HashMap<u64, u64>> {
-    let mut map: std::collections::HashMap<u64, (u64, u64)> = std::collections::HashMap::new();
-    let walked = btree::btree_walk_leaves(
-        reader,
-        omap_tree_root,
-        block_size,
-        None,
-        &mut |key: &[u8], val: &[u8]| {
-            if key.len() < 16 || val.len() < 16 {
-                return true;
+    let tree = tree.into();
+    let mut entries: std::collections::HashMap<u64, (u64, Vec<u8>)> =
+        std::collections::HashMap::new();
+    let mut failure = None;
+    btree::btree_walk_leaves(reader, tree.root, block_size, None, &mut |key, value| {
+        let (oid, xid) = match key_fields(key) {
+            Ok(fields) => fields,
+            Err(error) => {
+                failure = Some(error);
+                return false;
             }
-            let oid = u64::from_le_bytes([
-                key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7],
-            ]);
-            let xid = u64::from_le_bytes([
-                key[8], key[9], key[10], key[11], key[12], key[13], key[14], key[15],
-            ]);
-            let paddr = u64::from_le_bytes([
-                val[8], val[9], val[10], val[11], val[12], val[13], val[14], val[15],
-            ]);
-            match map.get(&oid) {
-                Some(&(best_xid, _)) if best_xid > xid => {}
-                _ => {
-                    map.insert(oid, (xid, paddr));
-                }
-            }
-            true
-        },
-    )?;
-    debug_assert!(walked, "load_omap visitor never stops early");
-    Ok(map
-        .into_iter()
-        .map(|(oid, (_xid, paddr))| (oid, paddr))
-        .collect())
+        };
+        if xid <= tree.xid
+            && entries
+                .get(&oid)
+                .is_none_or(|(previous, _)| xid > *previous)
+        {
+            entries.insert(oid, (xid, value.to_vec()));
+        }
+        true
+    })?;
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    let mut map = std::collections::HashMap::new();
+    for (oid, (_, value)) in entries {
+        if let Some(address) = mapping(&value, block_size)? {
+            map.insert(oid, address);
+        }
+    }
+    Ok(map)
 }
 
 #[cfg(test)]

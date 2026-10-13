@@ -6,6 +6,7 @@ use crate::error::{HfsPlusError, Result};
 use crate::unicode;
 use crate::volume::{ExtentDescriptor, ForkData, VolumeHeader};
 use crate::{DirEntry, EntryKind};
+pub mod access;
 
 /// Well-known Catalog Node IDs
 pub const CNID_ROOT_PARENT: u32 = 1;
@@ -43,6 +44,9 @@ pub struct CatalogFile {
     pub attribute_mod_date: u32,
     pub access_date: u32,
     pub backup_date: u32,
+    pub flags: u16,
+    pub finder_info: [u8; 32],
+    pub added_time: Option<i32>,
     pub permissions: HfsPlusBsdInfo,
     pub data_fork: ForkData,
     pub resource_fork: ForkData,
@@ -58,6 +62,9 @@ pub struct CatalogFolder {
     pub attribute_mod_date: u32,
     pub access_date: u32,
     pub backup_date: u32,
+    pub flags: u16,
+    pub finder_info: [u8; 32],
+    pub added_time: Option<i32>,
     pub permissions: HfsPlusBsdInfo,
     pub valence: u32,
     pub text_encoding: u32,
@@ -124,6 +131,11 @@ fn parse_catalog_key(data: &[u8]) -> Result<(CatalogKey, usize)> {
         record_offset
     };
 
+    if name_length > 255 || name_end > record_offset || record_offset > data.len() {
+        return Err(HfsPlusError::InvalidBTree(
+            "invalid catalog key boundaries".into(),
+        ));
+    }
     Ok((
         CatalogKey {
             parent_id,
@@ -181,7 +193,7 @@ fn parse_catalog_record(data: &[u8]) -> Result<CatalogRecord> {
 
     match record_type {
         RECORD_TYPE_FOLDER => {
-            let _flags = cursor.read_u16::<BigEndian>()?;
+            let flags = cursor.read_u16::<BigEndian>()?;
             let valence = cursor.read_u32::<BigEndian>()?;
             let folder_id = cursor.read_u32::<BigEndian>()?;
             let create_date = cursor.read_u32::<BigEndian>()?;
@@ -191,8 +203,16 @@ fn parse_catalog_record(data: &[u8]) -> Result<CatalogRecord> {
             let backup_date = cursor.read_u32::<BigEndian>()?;
             let permissions = parse_bsd_info(&mut cursor)?;
             // Skip user info (16 bytes) and finder info (16 bytes)
-            let mut _skip = [0u8; 32];
-            cursor.read_exact(&mut _skip)?;
+            let mut finder_info = [0u8; 32];
+            cursor.read_exact(&mut finder_info)?;
+            let added_time = (flags & 0x80 != 0).then(|| {
+                i32::from_be_bytes([
+                    finder_info[20],
+                    finder_info[21],
+                    finder_info[22],
+                    finder_info[23],
+                ])
+            });
             let text_encoding = cursor.read_u32::<BigEndian>()?;
 
             Ok(CatalogRecord::Folder(CatalogFolder {
@@ -202,13 +222,16 @@ fn parse_catalog_record(data: &[u8]) -> Result<CatalogRecord> {
                 attribute_mod_date,
                 access_date,
                 backup_date,
+                flags,
+                finder_info,
+                added_time,
                 permissions,
                 valence,
                 text_encoding,
             }))
         }
         RECORD_TYPE_FILE => {
-            let _flags = cursor.read_u16::<BigEndian>()?;
+            let flags = cursor.read_u16::<BigEndian>()?;
             let _reserved = cursor.read_u32::<BigEndian>()?;
             let file_id = cursor.read_u32::<BigEndian>()?;
             let create_date = cursor.read_u32::<BigEndian>()?;
@@ -218,8 +241,16 @@ fn parse_catalog_record(data: &[u8]) -> Result<CatalogRecord> {
             let backup_date = cursor.read_u32::<BigEndian>()?;
             let permissions = parse_bsd_info(&mut cursor)?;
             // Skip user info (16 bytes) and finder info (16 bytes)
-            let mut _skip = [0u8; 32];
-            cursor.read_exact(&mut _skip)?;
+            let mut finder_info = [0u8; 32];
+            cursor.read_exact(&mut finder_info)?;
+            let added_time = (flags & 0x80 != 0).then(|| {
+                i32::from_be_bytes([
+                    finder_info[20],
+                    finder_info[21],
+                    finder_info[22],
+                    finder_info[23],
+                ])
+            });
             let text_encoding = cursor.read_u32::<BigEndian>()?;
             let _reserved2 = cursor.read_u32::<BigEndian>()?;
             let data_fork = parse_fork_data(&mut cursor)?;
@@ -232,6 +263,9 @@ fn parse_catalog_record(data: &[u8]) -> Result<CatalogRecord> {
                 attribute_mod_date,
                 access_date,
                 backup_date,
+                flags,
+                finder_info,
+                added_time,
                 permissions,
                 data_fork,
                 resource_fork,
@@ -245,7 +279,9 @@ fn parse_catalog_record(data: &[u8]) -> Result<CatalogRecord> {
             let mut name_buf = vec![0u8; name_length * 2];
             cursor.read_exact(&mut name_buf)?;
             let name_u16 = unicode::utf16be_to_u16(&name_buf);
-            let node_name = unicode::utf16_to_string(&name_u16);
+            let node_name = String::from_utf16(&name_u16).map_err(|error| {
+                HfsPlusError::CorruptedData(format!("invalid thread Unicode: {error}"))
+            })?;
 
             let record = CatalogThread {
                 parent_id,
@@ -302,7 +338,22 @@ pub fn lookup_catalog<R: Read + Seek>(
     name: &str,
 ) -> Result<Option<CatalogRecord>> {
     let name_u16 = unicode::string_to_utf16(name);
-    let comparator = make_catalog_comparator(parent_id, &name_u16, vol.is_hfsx);
+    lookup_catalog_utf16(reader, vol, btree_header, parent_id, &name_u16)
+}
+
+/// Exact stored UTF-16 lookup, used for thread/CNID identities without path normalization.
+pub fn lookup_catalog_utf16<R: Read + Seek>(
+    reader: &mut R,
+    vol: &VolumeHeader,
+    btree_header: &BTreeHeaderRecord,
+    parent_id: u32,
+    name_u16: &[u16],
+) -> Result<Option<CatalogRecord>> {
+    let comparator = make_catalog_comparator(
+        parent_id,
+        name_u16,
+        vol.is_hfsx && btree_header.key_compare_type == 0xbc,
+    );
 
     match btree::search_btree(reader, btree_header, &comparator)? {
         Some((node, record_idx)) => {
@@ -331,7 +382,11 @@ pub fn list_directory<R: Read + Seek>(
     // Strategy: search for (parent_cnid, "") which will land at the first record
     // for this parent, then scan forward collecting all records with this parent.
     let empty_name: Vec<u16> = vec![];
-    let comparator = make_catalog_comparator(parent_cnid, &empty_name, vol.is_hfsx);
+    let comparator = make_catalog_comparator(
+        parent_cnid,
+        &empty_name,
+        vol.is_hfsx && btree_header.key_compare_type == 0xbc,
+    );
 
     // Find starting position: search for the parent_cnid with empty name
     // This should land us at or before the first record for this parent
@@ -363,12 +418,15 @@ pub fn list_directory<R: Read + Seek>(
             return Ok(None);
         }
         let record = parse_catalog_record(&record_data[record_offset..])?;
-        let name = unicode::utf16_to_string(&key.node_name);
+        let name = String::from_utf16(&key.node_name).map_err(|error| {
+            HfsPlusError::CorruptedData(format!("invalid catalog Unicode: {error}"))
+        })?;
 
         match record {
             CatalogRecord::Folder(f) => Ok(Some(DirEntry {
                 name,
                 cnid: f.folder_id,
+                link_reference: None,
                 kind: EntryKind::Directory,
                 size: 0,
                 create_date: f.create_date,
@@ -385,6 +443,7 @@ pub fn list_directory<R: Read + Seek>(
                 Ok(Some(DirEntry {
                     name,
                     cnid: f.file_id,
+                    link_reference: access::link_reference(&f),
                     kind,
                     size: f.data_fork.logical_size,
                     create_date: f.create_date,
@@ -402,15 +461,24 @@ pub fn list_directory<R: Read + Seek>(
     let mut entries = Vec::new();
     let mut current_node_num = start_node;
 
+    let mut visited = std::collections::HashSet::new();
     while current_node_num != 0 {
+        if !visited.insert(current_node_num) {
+            return Err(HfsPlusError::InvalidBTree(
+                "cyclic catalog leaf chain".into(),
+            ));
+        }
         let node = btree::read_node(reader, btree_header, current_node_num)?;
 
         if node.descriptor.kind != btree::NODE_KIND_LEAF {
-            break;
+            return Err(HfsPlusError::InvalidBTree(
+                "catalog leaf chain points to non-leaf".into(),
+            ));
         }
 
         for i in 0..node.descriptor.num_records as usize {
             let record_data = node.record_data(i)?;
+            parse_catalog_key(record_data)?;
             match match_fn(record_data) {
                 Some(true) => {
                     if let Some(entry) = parse_fn(record_data)? {
@@ -441,7 +509,13 @@ fn find_leaf_for_parent<R: Read + Seek>(
 
     let mut current_node_num = btree_header.root_node;
 
+    let mut visited = std::collections::HashSet::new();
     loop {
+        if !visited.insert(current_node_num) {
+            return Err(HfsPlusError::InvalidBTree(
+                "cyclic catalog index chain".into(),
+            ));
+        }
         let node = btree::read_node(reader, btree_header, current_node_num)?;
 
         match node.descriptor.kind {
@@ -517,6 +591,7 @@ pub fn resolve_path<R: Read + Seek>(
     for (i, component) in components.iter().enumerate() {
         match lookup_catalog(reader, vol, btree_header, current_parent, component)? {
             Some(record) => {
+                let record = access::resolve_link(reader, vol, btree_header, record)?;
                 if i == components.len() - 1 {
                     return Ok((record, component.to_string()));
                 }

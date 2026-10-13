@@ -102,6 +102,7 @@ pub fn partition_ftype(kind: PartitionKind) -> Option<u64> {
         | PartitionKind::Squashfs
         | PartitionKind::Bitlocker
         | PartitionKind::BiosBoot
+        | PartitionKind::Filevault
         | PartitionKind::Luks
         | PartitionKind::Lvm
         | PartitionKind::Apm

@@ -166,6 +166,7 @@ pub fn fs_prefix_for_kind(kind: PartitionKind) -> &'static str {
         | PartitionKind::ApfsContainer
         | PartitionKind::HfsPlus
         | PartitionKind::HfsX
+        | PartitionKind::Filevault
         | PartitionKind::Luks
         | PartitionKind::Apm
         | PartitionKind::Bsd

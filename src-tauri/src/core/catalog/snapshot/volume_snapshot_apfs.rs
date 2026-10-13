@@ -56,6 +56,8 @@ pub(crate) fn apfs_container_for_key(
 /// entry per file on the volume.
 struct InodeMeta {
     size: u64,
+    needs_logical_metadata: bool,
+    link_target: Option<String>,
     create_time: i64,
     modify_time: i64,
     change_time: i64,
@@ -166,6 +168,9 @@ pub(crate) fn build_apfs_volume_snapshot(
                         oid,
                         InodeMeta {
                             size: inode.size(),
+                            needs_logical_metadata: inode.bsd_flags & 0x20 != 0
+                                || inode.kind() == apfs::catalog::INODE_SYMLINK_TYPE,
+                            link_target: None,
                             create_time: inode.create_time,
                             modify_time: inode.modify_time,
                             change_time: inode.change_time,
@@ -203,6 +208,17 @@ pub(crate) fn build_apfs_volume_snapshot(
                 // matching the generic walker's per-subtree lenience.
                 tracing::warn!("snapshot: APFS catalog scan {} failed: {err}", root_node.id);
                 continue;
+            }
+        }
+
+        for (oid, metadata) in &mut inodes {
+            if cancel.is_cancelled() {
+                anyhow::bail!("snapshot build cancelled");
+            }
+            if metadata.needs_logical_metadata {
+                let (size, target) = volume.catalog_logical_metadata(*oid)?;
+                metadata.size = size;
+                metadata.link_target = target;
             }
         }
 
@@ -277,7 +293,7 @@ pub(crate) fn build_apfs_volume_snapshot(
                     deleted: false,
                     inode: Some(edge.file_id),
                     timestamps,
-                    link_target: None,
+                    link_target: meta.and_then(|metadata| metadata.link_target.clone()),
                     has_snapshot: false,
                 };
                 let line = SnapshotEntry {
@@ -319,6 +335,75 @@ mod tests {
     use super::*;
     use crate::core::catalog::snapshot::volume_snapshot::load_snapshot;
     use crate::core::filesystem::tree::fs_tree::children_for_image;
+
+    #[test]
+    fn apfs_synthetic_snapshot_matches_live_compressed_and_symlink_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("synthetic.apfs");
+        std::fs::write(
+            &path,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/vendor/apfs/tests/data/basic.apfs"
+            )),
+        )
+        .unwrap();
+        let image = Arc::new(EvidenceSession::open(&path).unwrap());
+        let partition = image
+            .partitions
+            .iter()
+            .find(|partition| partition.kind == PartitionKind::ApfsContainer)
+            .unwrap();
+        let key = format!("part:{}", partition.id);
+        let output = directory.path().join("snapshot.dirz");
+        let cancel = CancellationToken::new();
+        build_apfs_volume_snapshot(
+            &image,
+            &key,
+            &output,
+            100,
+            "2026-10-13T00:00:00Z".into(),
+            &cancel,
+            &mut |_| {},
+        )
+        .unwrap();
+        let snapshot = load_snapshot(&output).unwrap();
+        let root = apfs_node_id(partition.id, 0, "");
+        let live = children_for_image(&image, &root).unwrap();
+        let stored = snapshot.children(&root).unwrap();
+        assert_eq!(
+            serde_json::to_value(stored).unwrap(),
+            serde_json::to_value(&live).unwrap()
+        );
+        assert_eq!(
+            live.iter()
+                .find(|node| node.name == "compressed.txt")
+                .unwrap()
+                .size,
+            16
+        );
+        assert_eq!(
+            live.iter()
+                .find(|node| node.name == "link")
+                .unwrap()
+                .link_target
+                .as_deref(),
+            Some("../plain.bin")
+        );
+        cancel.cancel();
+        let cancelled_output = directory.path().join("cancelled.dirz");
+        assert!(build_apfs_volume_snapshot(
+            &image,
+            &key,
+            &cancelled_output,
+            100,
+            "2026-10-13T00:00:00Z".into(),
+            &cancel,
+            &mut |_| {}
+        )
+        .is_err());
+        assert!(!cancelled_output.exists());
+    }
 
     /// Env-gated equivalence guard: `LOVELYCARVE_APFS_SNAPSHOT_TEST` points at
     /// an image with an APFS container. Builds a fast-path snapshot and checks

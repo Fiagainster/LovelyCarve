@@ -27,17 +27,8 @@ use crate::core::filesystem::tree::fs_tree::{
 const SAMPLE_BYTES: usize = 4096;
 const STREAM_FLOOR: usize = 64 * 1024;
 
-/// BSD `UF_COMPRESSED` flag in `HfsPermissions::admin_flags`. When set, the
-/// file's real content is stored in a `com.apple.decmpfs` extended attribute
-/// (and, for larger files, the resource fork) rather than the data fork — so
-/// the data fork reads back as 0 bytes. The vendored crate does not decode
-/// decmpfs, so we refuse the read instead of silently emitting an empty file.
-const UF_COMPRESSED: u8 = 0x20;
-
-/// Seconds between the HFS+ epoch (1904-01-01 00:00:00 UTC) and the Unix
-/// epoch (1970-01-01 00:00:00 UTC). HFS+ stores 32-bit timestamps as seconds
-/// since the HFS epoch in local time on the device that wrote them, but
-/// upstream and most consumers treat the field as UTC for display purposes.
+/// Seconds from 1904-01-01 UTC to the Unix epoch. HFS+ timestamps are UTC
+/// seconds (TN1150); traditional HFS local-time fields are unsupported.
 const HFS_EPOCH_OFFSET_SECS: i64 = 2_082_844_800;
 
 #[derive(Debug, Clone, Copy)]
@@ -83,11 +74,25 @@ pub struct HfsPlusVolume {
 impl HfsPlusVolume {
     pub fn open(image: Arc<DiskImage>, partition: &Partition) -> Result<Self> {
         let sector_size = image.sector_size as u64;
+        let base_offset = partition
+            .start_lba
+            .checked_mul(sector_size)
+            .ok_or_else(|| anyhow!("HFS+ partition offset overflow"))?;
+        let length_bytes = partition
+            .length_lba
+            .checked_mul(sector_size)
+            .ok_or_else(|| anyhow!("HFS+ partition length overflow"))?;
+        anyhow::ensure!(
+            base_offset
+                .checked_add(length_bytes)
+                .is_some_and(|end| end <= image.len()),
+            "HFS+ partition exceeds evidence"
+        );
         let volume = Self {
             image,
             partition_id: partition.id,
-            base_offset: partition.start_lba * sector_size,
-            length_bytes: partition.length_lba * sector_size,
+            base_offset,
+            length_bytes,
         };
         // Eager-validate the volume header so the caller sees parse errors
         // at open time instead of only when listing the root.
@@ -145,7 +150,14 @@ impl HfsPlusVolume {
                     deleted: false,
                     inode: Some(entry.cnid as u64),
                     timestamps,
-                    link_target: None,
+                    link_target: if kind == NodeKind::Symlink {
+                        Some(
+                            String::from_utf8(vol.read_file(&child_path)?)
+                                .map_err(|error| anyhow!("HFS+ symlink {child_path}: {error}"))?,
+                        )
+                    } else {
+                        None
+                    },
                     has_snapshot: false,
                 });
             }
@@ -165,7 +177,6 @@ impl HfsPlusVolume {
         }
         let owned = path.to_string();
         self.with_volume(move |vol| {
-            reject_compressed(vol, &owned)?;
             let mut file = vol
                 .open_file(&owned)
                 .map_err(|err| anyhow!("HFS+ open_file {owned}: {err}"))?;
@@ -184,6 +195,16 @@ impl HfsPlusVolume {
         })
     }
 
+    pub fn read_file_range(&self, path: &str, offset: u64, length: usize) -> Result<Vec<u8>> {
+        self.with_volume(|volume| {
+            let mut file = volume.open_file(path)?;
+            file.seek(SeekFrom::Start(offset))?;
+            let mut output = Vec::new();
+            file.take(length as u64).read_to_end(&mut output)?;
+            Ok(output)
+        })
+    }
+
     pub fn stream_file<F>(&self, path: &str, chunk_size: usize, mut visitor: F) -> Result<u64>
     where
         F: FnMut(&[u8]) -> Result<()>,
@@ -193,7 +214,6 @@ impl HfsPlusVolume {
         }
         let owned = path.to_string();
         self.with_volume(move |vol| {
-            reject_compressed(vol, &owned)?;
             let mut file = vol
                 .open_file(&owned)
                 .map_err(|err| anyhow!("HFS+ open_file {owned}: {err}"))?;
@@ -223,10 +243,9 @@ impl HfsPlusVolume {
                 .stat(&owned)
                 .map_err(|err| anyhow!("HFS+ stat {owned}: {err}"))?;
 
-            let compressed = matches!(stat.kind, EntryKind::File)
-                && stat.permissions.admin_flags & UF_COMPRESSED != 0;
+            let compressed = stat.compression.is_some();
 
-            let sample = if !compressed && matches!(stat.kind, EntryKind::File) && stat.size > 0 {
+            let sample = if matches!(stat.kind, EntryKind::File) && stat.size > 0 {
                 let mut file = vol
                     .open_file(&owned)
                     .map_err(|err| anyhow!("HFS+ open_file {owned}: {err}"))?;
@@ -247,10 +266,31 @@ impl HfsPlusVolume {
                 Vec::new()
             };
 
-            let mime = if compressed {
-                "compressed (decmpfs)".to_string()
+            let mime = detect_mime_bytes(&sample).to_string();
+            let data_runs = if compressed
+                || matches!(
+                    self.image.derived,
+                    Some(crate::core::evidence::image::DerivedImage::Decrypted { .. })
+                ) {
+                Vec::new()
             } else {
-                detect_mime_bytes(&sample).to_string()
+                let block_size = u64::from(vol.volume_header().block_size);
+                let mut logical_offset = 0u64;
+                vol.data_extents(&owned)?
+                    .into_iter()
+                    .filter_map(|extent| {
+                        let length = (u64::from(extent.block_count) * block_size)
+                            .min(stat.size.saturating_sub(logical_offset));
+                        let run = FsDataRun {
+                            logical_offset,
+                            physical_offset: self.base_offset
+                                + u64::from(extent.start_block) * block_size,
+                            length,
+                        };
+                        logical_offset += length;
+                        (length > 0).then_some(run)
+                    })
+                    .collect()
             };
 
             Ok(FsStat {
@@ -276,10 +316,7 @@ impl HfsPlusVolume {
                 } else {
                     Some(shannon_entropy(&sample))
                 },
-                // Extent layout is internal to the hfsplus crate's catalog +
-                // extents modules; surface an empty run list here so the
-                // FsStat panel still renders a clean MIME / entropy block.
-                data_runs: Vec::<FsDataRun>::new(),
+                data_runs,
             })
         })
     }
@@ -346,20 +383,6 @@ fn hfsplus_timestamps(
         mft_changed: hfs_time_to_rfc3339(attribute_mod_date),
         birth: created,
     }
-}
-
-/// Refuses reads of decmpfs-compressed files (`UF_COMPRESSED`) so callers get
-/// a clear error rather than a silently-empty data fork. Directories and
-/// uncompressed files pass through. A `stat` failure is non-fatal here — let
-/// the subsequent `open_file` surface the real error.
-fn reject_compressed(vol: &mut HfsVolume<PartitionCursor>, path: &str) -> Result<()> {
-    if let Ok(stat) = vol.stat(path) {
-        if matches!(stat.kind, EntryKind::File) && stat.permissions.admin_flags & UF_COMPRESSED != 0
-        {
-            anyhow::bail!("HFS+ 文件 {path} 为 decmpfs 透明压缩，暂不支持解压读取");
-        }
-    }
-    Ok(())
 }
 
 /// HFS+ stores 32-bit timestamps as seconds since 1904-01-01. Unset entries

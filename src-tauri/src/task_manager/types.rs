@@ -33,6 +33,7 @@ pub enum TaskKind {
     BitlockerScan,
     BitlockerUnlock,
     EncryptedVolumeUnlock,
+    FilevaultInspect,
     CarveRecovery,
     CarveScan,
     DirectoryExport,

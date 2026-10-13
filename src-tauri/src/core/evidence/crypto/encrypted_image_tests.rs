@@ -64,6 +64,8 @@ fn options(scheme: EncryptionScheme) -> UnlockOptions {
         scheme,
         password: "lovelycarve-test".into(),
         master_key_hex: None,
+        logical_volume_index: None,
+        encrypted_root_plist_path: None,
         partition_id: None,
         offset: None,
         length: None,
@@ -264,4 +266,65 @@ fn attached_decryption_preserves_source_bytes_ids_and_snapshot_identity() {
         assert!(fs_tree::read_file(&source, &hello.id).is_err());
         assert_eq!(source.read_range(0, 4096).unwrap(), raw);
     }
+}
+
+#[test]
+fn filevault_real_oracle_integrates_inventory_hfs_ranges_and_source_identity() {
+    use crate::core::evidence::crypto::filevault::{inspect, InspectOptions};
+    use crate::core::evidence::partitions::PartitionKind;
+    use crate::core::filesystem::{evidence_session::EvidenceSession, tree::fs_tree};
+    let Ok(path) = std::env::var("FVDE_ORACLE_IMAGE") else {
+        return;
+    };
+    let mut disk = DiskImage::open(&path).unwrap();
+    assert_eq!(disk.partitions[0].kind, PartitionKind::Filevault);
+    disk.partitions[0].id = 2;
+    let disk = Arc::new(disk);
+    let info = inspect(
+        &disk,
+        InspectOptions {
+            partition_id: Some(2),
+            offset: None,
+            length: None,
+            encrypted_root_plist_path: None,
+        },
+        CancellationToken::new(),
+    )
+    .unwrap();
+    assert_eq!(info.volumes.len(), 1);
+    assert_eq!(info.volumes[0].transaction, "7");
+    assert_eq!(info.volumes[0].pbkdf2_iterations, 90506);
+    let mut credentials = options(EncryptionScheme::Filevault);
+    credentials.password = "fvde-TEST".into();
+    credentials.logical_volume_index = Some(0);
+    credentials.partition_id = Some(2);
+    let (plain, result) = unlock(&disk, credentials, CancellationToken::new()).unwrap();
+    assert_eq!(&plain.read_range(1024, 4).unwrap(), b"H+\0\x04");
+    let source = Arc::new(EvidenceSession::from(Arc::clone(&disk)));
+    source
+        .attach_decrypted_partition(2, plain, result.read_cancellation)
+        .unwrap();
+    assert_eq!(source.info().id, disk.id);
+    assert_eq!(source.info().unlocked_partitions, vec![2]);
+    assert_eq!(
+        source.info().partitions[0].length_lba,
+        disk.partitions[0].length_lba
+    );
+    let children = fs_tree::children_for_image(&source, "part:2").unwrap();
+    assert!(!children.is_empty());
+    for node in children.iter().filter(|node| {
+        node.kind == fs_tree::NodeKind::File && node.size > 0 && node.size < 1024 * 1024
+    }) {
+        let full = fs_tree::read_file(&source, &node.id).unwrap();
+        assert_eq!(
+            fs_tree::read_file_range(&source, &node.id, 1, 17).unwrap(),
+            full[1..full.len().min(18)]
+        );
+        assert!(fs_tree::file_stat(&source, &node.id)
+            .unwrap()
+            .data_runs
+            .is_empty());
+    }
+    source.revoke_decrypted_partitions();
+    assert!(source.info().unlocked_partitions.is_empty());
 }

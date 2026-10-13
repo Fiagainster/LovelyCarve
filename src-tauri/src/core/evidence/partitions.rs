@@ -107,6 +107,7 @@ pub enum PartitionKind {
     HfsPlus,
     HfsX,
     Luks,
+    Filevault,
     Apm,
     Bsd,
     Swap,
@@ -270,6 +271,7 @@ pub fn detect_partitions_with_meta(
 fn is_container_leaf(kind: PartitionKind) -> bool {
     match kind {
         PartitionKind::Luks
+        | PartitionKind::Filevault
         | PartitionKind::Mdadm
         | PartitionKind::Lvm
         | PartitionKind::Bitlocker

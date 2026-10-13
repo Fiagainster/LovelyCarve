@@ -114,6 +114,13 @@ fn guid_to_kind(guid: Uuid) -> PartitionKind {
         PartitionKind::BiosBoot
     } else if guid == t::MACOS_APFS.guid {
         PartitionKind::ApfsContainer
+    } else if guid
+        == Uuid::from_bytes([
+            0x53, 0x74, 0x6f, 0x72, 0x61, 0x67, 0x11, 0xaa, 0xaa, 0x11, 0x00, 0x30, 0x65, 0x43,
+            0xec, 0xac,
+        ])
+    {
+        PartitionKind::Filevault
     } else if guid == APPLE_HFS_GUID {
         PartitionKind::HfsPlus
     } else if guid == BITLOCKER_GUID {

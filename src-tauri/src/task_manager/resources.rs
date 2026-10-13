@@ -139,9 +139,10 @@ impl TaskKind {
             | Self::ShadowCopyOpen
             | Self::VolumeSnapshot => TaskResourceProfile::background_random_io(),
             Self::BitlockerScan | Self::TimelineBuild => TaskResourceProfile::background_cpu(),
-            Self::GlobalSearch | Self::IosBackupAudit | Self::IosBackupUnlock => {
-                TaskResourceProfile::background_random_io_cpu()
-            }
+            Self::GlobalSearch
+            | Self::IosBackupAudit
+            | Self::IosBackupUnlock
+            | Self::FilevaultInspect => TaskResourceProfile::background_random_io_cpu(),
             Self::QrScan => TaskResourceProfile::background_random_io_cpu(),
             Self::OcrScan => ocr_resource_profile(),
         }

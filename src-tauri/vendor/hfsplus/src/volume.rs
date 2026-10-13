@@ -91,7 +91,20 @@ fn read_fork_data<R: Read>(reader: &mut R) -> Result<ForkData> {
 impl VolumeHeader {
     /// Parse the volume header from a reader positioned at the start of the partition
     pub fn parse<R: Read + Seek>(reader: &mut R) -> Result<Self> {
-        reader.seek(SeekFrom::Start(VOLUME_HEADER_OFFSET))?;
+        Self::parse_at(reader, VOLUME_HEADER_OFFSET)
+    }
+
+    /// Read the alternate header at the end of an exact volume slice.
+    pub fn parse_alternate<R: Read + Seek>(reader: &mut R) -> Result<Self> {
+        let size = reader.seek(SeekFrom::End(0))?;
+        let offset = size.checked_sub(1024).ok_or_else(|| {
+            HfsPlusError::CorruptedData("volume too short for alternate header".into())
+        })?;
+        Self::parse_at(reader, offset)
+    }
+
+    fn parse_at<R: Read + Seek>(reader: &mut R, offset: u64) -> Result<Self> {
+        reader.seek(SeekFrom::Start(offset))?;
 
         let signature = reader.read_u16::<BigEndian>()?;
         let is_hfsx = match signature {
@@ -102,7 +115,8 @@ impl VolumeHeader {
 
         let version = reader.read_u16::<BigEndian>()?;
         match version {
-            HFS_PLUS_VERSION | HFSX_VERSION => {}
+            HFS_PLUS_VERSION if !is_hfsx => {}
+            HFSX_VERSION if is_hfsx => {}
             _ => return Err(HfsPlusError::UnsupportedVersion(version)),
         }
 
@@ -118,6 +132,15 @@ impl VolumeHeader {
         let block_size = reader.read_u32::<BigEndian>()?;
         let total_blocks = reader.read_u32::<BigEndian>()?;
         let free_blocks = reader.read_u32::<BigEndian>()?;
+        if !block_size.is_power_of_two()
+            || !(512..=1024 * 1024).contains(&block_size)
+            || total_blocks == 0
+            || free_blocks > total_blocks
+        {
+            return Err(HfsPlusError::CorruptedData(
+                "invalid volume geometry".into(),
+            ));
+        }
         let next_allocation = reader.read_u32::<BigEndian>()?;
         let rsrc_clump_size = reader.read_u32::<BigEndian>()?;
         let data_clump_size = reader.read_u32::<BigEndian>()?;
@@ -136,6 +159,48 @@ impl VolumeHeader {
         let attributes_file = read_fork_data(reader)?;
         let startup_file = read_fork_data(reader)?;
 
+        let source_size = reader.seek(SeekFrom::End(0))?;
+        if u64::from(total_blocks) * u64::from(block_size) > source_size {
+            return Err(HfsPlusError::CorruptedData(
+                "declared volume exceeds source".into(),
+            ));
+        }
+        for fork in [
+            &allocation_file,
+            &extents_file,
+            &catalog_file,
+            &attributes_file,
+            &startup_file,
+        ] {
+            let mut count = 0u32;
+            // Validate below after the header is constructed (allocation geometry).
+            for extent in &fork.extents {
+                if extent.block_count != 0 {
+                    let end = extent
+                        .start_block
+                        .checked_add(extent.block_count)
+                        .ok_or_else(|| {
+                            HfsPlusError::CorruptedData("metadata extent overflow".into())
+                        })?;
+                    if end > total_blocks {
+                        return Err(HfsPlusError::CorruptedData(
+                            "metadata extent outside volume".into(),
+                        ));
+                    }
+                    count = count.checked_add(extent.block_count).ok_or_else(|| {
+                        HfsPlusError::CorruptedData("metadata allocation overflow".into())
+                    })?;
+                }
+            }
+            if count > fork.total_blocks
+                || fork.total_blocks > total_blocks
+                || fork.logical_size > u64::from(fork.total_blocks) * u64::from(block_size)
+            {
+                return Err(HfsPlusError::CorruptedData(
+                    "invalid metadata fork allocation".into(),
+                ));
+            }
+        }
         Ok(VolumeHeader {
             signature,
             version,

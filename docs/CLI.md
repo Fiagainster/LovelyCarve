@@ -334,3 +334,23 @@ LUKS1 与 LUKS2（单个动态数据段，PBKDF2 / Argon2i / Argon2id，512 / 40
 `image_unload` 可锁定返回的解密镜像；卸载源镜像会递归移除其解密镜像。
 解密镜像和凭据不会作为可自动恢复的案件检材保存，进程结束后需重新解锁。
 读取按需解密；只有显式执行导出、预览或分析缓存操作才会产生相应的明文输出。
+
+## FileVault 2 / CoreStorage 解锁
+
+先用 `filevault_inspect` 读取逻辑卷目录和法证观察，再将选中的 `index` 传入
+`encrypted_volume_unlock` 的 `logicalVolumeIndex`。区域选择沿用 `partitionId` 或
+`offset` / `length`；两个命令应使用同一区域。下例的输入是独立 CoreStorage 分区镜像：
+
+```jsonl
+{"id":"source","command":"image_load","args":{"path":"D:/evidence/corestorage.raw"}}
+{"id":"inventory","command":"filevault_inspect","args":{"options":{},"taskId":"fv-inventory"}}
+{"id":"unlock","command":"encrypted_volume_unlock","args":{"options":{"scheme":"filevault","password":"example-password","logicalVolumeIndex":0,"target":"newImage"},"taskId":"fv-unlock"}}
+{"id":"plain","command":"image_load","args":{"path":{"$ref":"unlock#/image/path"}}}
+{"id":"files","command":"fs_children","args":{"parentId":"part:0"}}
+```
+
+`password` 同时接受个人恢复密码；也可改用 `masterKeyHex`（16 字节 VMK 或 32 字节
+XTS 密钥对）。可选 `encryptedRootPlistPath` 指向本地 XML / EncryptedRoot.plist.wipekey，
+应同时传给 inspect 和 unlock。单逻辑卷支持原分区投影；多逻辑卷必须分别使用
+`newImage`，以隔离文件 ID 和索引。完整能力、上游 API 对照和不支持的布局见
+[FileVault](formats/FILEVAULT.md)。APFS 原生加密使用另一种格式，当前不能由此解锁。

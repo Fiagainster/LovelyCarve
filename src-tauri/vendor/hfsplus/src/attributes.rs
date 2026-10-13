@@ -80,6 +80,11 @@ impl AttrKey {
             .map(|o| o.next_multiple_of(2))
             .ok_or_else(|| HfsPlusError::InvalidBTree("attribute key length overflow".into()))?;
 
+        if name_len > 127 || name_end > value_offset || value_offset > record.len() {
+            return Err(HfsPlusError::InvalidBTree(
+                "invalid attribute key boundaries".into(),
+            ));
+        }
         Ok(AttrKey {
             file_id,
             start_block,
@@ -127,7 +132,7 @@ pub fn lookup<R: Read + Seek>(
     file_id: u32,
     name: &str,
 ) -> Result<Option<AttrValue>> {
-    let name = unicode::string_to_utf16(name);
+    let name: Vec<u16> = name.encode_utf16().collect();
     let comparator = |record: &[u8]| compare_key(record, file_id, &name, 0);
 
     let Some((node, index)) = btree::search_btree(reader, attributes_btree, &comparator)? else {
@@ -147,15 +152,13 @@ pub fn list_names<R: Read + Seek>(
     attributes_btree: &BTreeHeaderRecord,
     file_id: u32,
 ) -> Result<Vec<String>> {
-    let match_fn = |record: &[u8]| match AttrKey::parse(record) {
-        Ok(key) => match key.file_id.cmp(&file_id) {
+    let match_fn = |record: &[u8]| -> Result<Option<bool>> {
+        let key = AttrKey::parse(record)?;
+        Ok(match key.file_id.cmp(&file_id) {
             std::cmp::Ordering::Less => Some(false),
-            // Overflow extent records repeat a name already reported by its
-            // fork record, so only the first record of each attribute counts.
             std::cmp::Ordering::Equal => Some(key.start_block == 0),
             std::cmp::Ordering::Greater => None,
-        },
-        Err(_) => Some(false),
+        })
     };
     let parse_fn = |record: &[u8]| AttrKey::parse(record)?.to_name();
 
@@ -166,6 +169,58 @@ pub fn list_names<R: Read + Seek>(
         &match_fn,
         &parse_fn,
     )
+}
+
+/// Collect an attribute fork through its own Attributes-tree continuation records.
+/// Attribute extents do not belong to the file's data-fork overflow tree.
+pub fn fork_extents<R: Read + Seek>(
+    reader: &mut R,
+    tree: &BTreeHeaderRecord,
+    volume: &crate::VolumeHeader,
+    file_id: u32,
+    name: &str,
+    fork: &ForkData,
+) -> Result<Vec<ExtentDescriptor>> {
+    let name: Vec<u16> = name.encode_utf16().collect();
+    let mut result = Vec::new();
+    let mut allocated = 0u32;
+    crate::extents::append_extents(&mut result, &mut allocated, &fork.extents, volume, fork)?;
+    while allocated < fork.total_blocks {
+        let comparator = |record: &[u8]| compare_key(record, file_id, &name, allocated);
+        let Some((node, index)) = btree::search_btree(reader, tree, &comparator)? else {
+            return Err(HfsPlusError::CorruptedData(
+                "missing attribute extent continuation".into(),
+            ));
+        };
+        let record = node.record_data(index)?;
+        let key = AttrKey::parse(record)?;
+        let value = record
+            .get(key.value_offset..)
+            .ok_or_else(|| HfsPlusError::InvalidBTree("attribute continuation truncated".into()))?;
+        if be_u32(value, 0)? != RECORD_TYPE_EXTENTS {
+            return Err(HfsPlusError::CorruptedData(
+                "invalid attribute continuation type".into(),
+            ));
+        }
+        let mut extents = [ExtentDescriptor::default(); 8];
+        for (index, extent) in extents.iter_mut().enumerate() {
+            extent.start_block = be_u32(value, 8 + index * 8)?;
+            extent.block_count = be_u32(value, 12 + index * 8)?;
+        }
+        let previous = allocated;
+        crate::extents::append_extents(&mut result, &mut allocated, &extents, volume, fork)?;
+        if allocated == previous {
+            return Err(HfsPlusError::CorruptedData(
+                "empty attribute continuation".into(),
+            ));
+        }
+    }
+    if fork.logical_size > u64::from(allocated) * u64::from(volume.block_size) {
+        return Err(HfsPlusError::CorruptedData(
+            "attribute exceeds allocation".into(),
+        ));
+    }
+    Ok(result)
 }
 
 /// Parse an attribute record's value.

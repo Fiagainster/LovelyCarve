@@ -1,3 +1,4 @@
+pub mod access;
 pub mod attributes;
 pub mod btree;
 pub mod catalog;
@@ -23,6 +24,13 @@ pub use cmpfs::XattrKind;
 
 use std::io::{Read, Seek, Write};
 
+/// Which on-disk header was accepted during volume open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeaderCopy {
+    Primary,
+    Alternate,
+}
+
 /// Entry kind in the filesystem
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EntryKind {
@@ -38,6 +46,8 @@ pub struct DirEntry {
     pub name: String,
     /// Catalog Node ID
     pub cnid: u32,
+    /// Backing hardlink reference, retaining the directory entry CNID separately.
+    pub link_reference: Option<u32>,
     /// Entry type
     pub kind: EntryKind,
     /// Data fork logical size (0 for directories)
@@ -62,6 +72,9 @@ pub struct HfsPermissions {
     /// whose real content lives in a `com.apple.decmpfs` extended attribute
     /// (transparent compression) rather than the data fork.
     pub admin_flags: u8,
+    pub owner_flags: u8,
+    /// Union of device number, hardlink reference or link count; interpret with mode/flags.
+    pub special: u32,
 }
 
 /// Detailed file/directory metadata
@@ -74,6 +87,13 @@ pub struct FileStat {
     pub modify_date: u32,
     pub attribute_mod_date: u32,
     pub access_date: u32,
+    pub backup_date: u32,
+    /// Finder added time is signed POSIX seconds, unlike the HFS epoch fields.
+    pub added_time: Option<i32>,
+    pub catalog_flags: u16,
+    pub link_count: Option<u32>,
+    pub device_number: Option<u32>,
+    pub finder_info: [u8; 32],
     pub permissions: HfsPermissions,
     pub data_fork_extents: u32,
     pub resource_fork_size: u64,
@@ -124,6 +144,8 @@ fn classify(names: Vec<String>) -> Vec<XattrEntry> {
 pub struct HfsVolume<R: Read + Seek> {
     reader: R,
     pub(crate) header: VolumeHeader,
+    /// Selected on-disk header copy.
+    pub header_copy: HeaderCopy,
     pub(crate) catalog_btree_header: btree::BTreeHeaderRecord,
     pub(crate) extents_btree_header: btree::BTreeHeaderRecord,
     /// Attributes B-tree header, read on first use. `Some(None)` records a
@@ -136,19 +158,48 @@ pub struct HfsVolume<R: Read + Seek> {
 impl<R: Read + Seek> HfsVolume<R> {
     /// Open and validate an HFS+/HFSX volume
     pub fn open(mut reader: R) -> Result<Self> {
-        let header = volume::VolumeHeader::parse(&mut reader)?;
+        let (header, header_copy) = match VolumeHeader::parse(&mut reader) {
+            Ok(header) => (header, HeaderCopy::Primary),
+            Err(primary) => match VolumeHeader::parse_alternate(&mut reader) {
+                Ok(header) => (header, HeaderCopy::Alternate),
+                Err(_) => return Err(primary),
+            },
+        };
 
         // Read catalog B-tree header
-        let catalog_btree_header =
+        let mut catalog_btree_header =
             btree::read_btree_header(&mut reader, &header.catalog_file, header.block_size)?;
 
+        if header.is_hfsx && !matches!(catalog_btree_header.key_compare_type, 0xbc | 0xcf) {
+            return Err(HfsPlusError::InvalidBTree(
+                "unsupported HFSX catalog comparison type".into(),
+            ));
+        }
+
         // Read extents overflow B-tree header
-        let extents_btree_header =
+        let mut extents_btree_header =
             btree::read_btree_header(&mut reader, &header.extents_file, header.block_size)?;
 
+        extents_btree_header.extents = extents::collect_extents(
+            &mut reader,
+            &header,
+            &extents_btree_header,
+            &header.extents_file,
+            3,
+            extents::FORK_TYPE_DATA,
+        )?;
+        catalog_btree_header.extents = extents::collect_extents(
+            &mut reader,
+            &header,
+            &extents_btree_header,
+            &header.catalog_file,
+            4,
+            extents::FORK_TYPE_DATA,
+        )?;
         Ok(HfsVolume {
             reader,
             header,
+            header_copy,
             catalog_btree_header,
             extents_btree_header,
             attributes_btree_header: None,
@@ -178,6 +229,40 @@ impl<R: Read + Seek> HfsVolume<R> {
     /// exactly as `stat` reports it.
     fn resolve_entry_sizes(&mut self, entries: &mut [DirEntry]) -> Result<()> {
         for entry in entries.iter_mut() {
+            if entry.link_reference.is_some() {
+                let (record, _, _) = catalog::access::entry_by_id(
+                    &mut self.reader,
+                    &self.header,
+                    &self.catalog_btree_header,
+                    entry.cnid,
+                )?;
+                let record = catalog::access::resolve_link(
+                    &mut self.reader,
+                    &self.header,
+                    &self.catalog_btree_header,
+                    record,
+                )?;
+                match record {
+                    catalog::CatalogRecord::File(file) => {
+                        entry.size = self
+                            .file_compression(&file)?
+                            .map_or(file.data_fork.logical_size, |header| {
+                                header.uncompressed_size
+                            });
+                    }
+                    catalog::CatalogRecord::Folder(_) => {
+                        entry.kind = EntryKind::Directory;
+                        entry.size = 0;
+                    }
+                    catalog::CatalogRecord::FolderThread(_)
+                    | catalog::CatalogRecord::FileThread(_) => {
+                        return Err(HfsPlusError::CorruptedData(
+                            "hardlink targets a thread".into(),
+                        ));
+                    }
+                }
+                continue;
+            }
             if entry.kind == EntryKind::File
                 && let Some(header) = self.compression(entry.cnid)?
             {
@@ -194,11 +279,20 @@ impl<R: Read + Seek> HfsVolume<R> {
             let header = if self.header.attributes_file.logical_size == 0 {
                 None
             } else {
-                Some(btree::read_btree_header(
+                let mut tree = btree::read_btree_header(
                     &mut self.reader,
                     &self.header.attributes_file,
                     self.header.block_size,
-                )?)
+                )?;
+                tree.extents = extents::collect_extents(
+                    &mut self.reader,
+                    &self.header,
+                    &self.extents_btree_header,
+                    &self.header.attributes_file,
+                    8,
+                    extents::FORK_TYPE_DATA,
+                )?;
+                Some(tree)
             };
             self.attributes_btree_header = Some(header);
         }
@@ -242,15 +336,27 @@ impl<R: Read + Seek> HfsVolume<R> {
             None => Ok(None),
             Some(attributes::AttrValue::Inline(data)) => Ok(Some(data)),
             Some(attributes::AttrValue::Fork(fork)) => {
+                if fork.logical_size > 16 * 1024 * 1024 {
+                    return Err(HfsPlusError::CorruptedData(
+                        "attribute value exceeds 16 MiB memory budget".into(),
+                    ));
+                }
                 let mut data = Vec::new();
-                extents::read_fork_data(
+                let map = attributes::fork_extents(
                     &mut self.reader,
+                    &attributes,
                     &self.header,
-                    &self.extents_btree_header,
-                    &fork,
                     file_id,
-                    &mut data,
+                    name,
+                    &fork,
                 )?;
+                let mut reader = extents::ForkReader::from_extents(
+                    &mut self.reader,
+                    &fork,
+                    self.header.block_size,
+                    &map,
+                )?;
+                reader.read_to_end(&mut data)?;
                 Ok(Some(data))
             }
         }
@@ -263,6 +369,19 @@ impl<R: Read + Seek> HfsVolume<R> {
             return Ok(None);
         };
         Ok(Some(CompressionHeader::parse(&attr)?))
+    }
+
+    fn file_compression(
+        &mut self,
+        file: &catalog::CatalogFile,
+    ) -> Result<Option<CompressionHeader>> {
+        let compression = self.compression(file.file_id)?;
+        if file.permissions.owner_flags & 0x20 != 0 && compression.is_none() {
+            return Err(HfsPlusError::CorruptedData(
+                "UF_COMPRESSED file lacks decmpfs attribute".into(),
+            ));
+        }
+        Ok(compression)
     }
 
     /// Decompress a transparently compressed file.
@@ -279,6 +398,13 @@ impl<R: Read + Seek> HfsVolume<R> {
         file_record: &catalog::CatalogFile,
         header: &CompressionHeader,
     ) -> Result<Vec<u8>> {
+        if header.uncompressed_size > 512 * 1024 * 1024
+            || file_record.resource_fork.logical_size > 512 * 1024 * 1024
+        {
+            return Err(HfsPlusError::CorruptedData(
+                "compressed file exceeds 512 MiB memory budget".into(),
+            ));
+        }
         let attr = self
             .read_xattr(file_record.file_id, cmpfs::XATTR_NAME)?
             .ok_or_else(|| {
@@ -296,12 +422,13 @@ impl<R: Read + Seek> HfsVolume<R> {
                 )));
             }
             let mut data = Vec::new();
-            extents::read_fork_data(
+            extents::read_fork_data_typed(
                 &mut self.reader,
                 &self.header,
                 &self.extents_btree_header,
                 &file_record.resource_fork,
                 file_record.file_id,
+                extents::FORK_TYPE_RESOURCE,
                 &mut data,
             )?;
             Some(data)
@@ -312,87 +439,73 @@ impl<R: Read + Seek> HfsVolume<R> {
         Ok(cmpfs::decompress(&attr, resource_fork.as_deref())?)
     }
 
-    /// Read an entire file into memory.
-    ///
-    /// Errors with [`HfsPlusError::CorruptedData`] if the fork's extents run
-    /// out before its declared `logical_size` is reached. `Vec<u8>` cannot
-    /// represent "complete except for a hole", so a short read has to be a
-    /// failure here rather than a quietly truncated buffer; use
-    /// [`HfsVolume::read_file_to`], which returns the byte count, to
-    /// recover as much as the volume can give.
-    ///
-    /// Transparently compressed files are decompressed; see [`Self::stat`] to
-    /// detect one first.
+    /// Read a complete logical file. Compression and overflow use the same path as streaming.
     pub fn read_file(&mut self, path: &str) -> Result<Vec<u8>> {
-        let file_record = self.resolve_path_to_file(path)?;
+        let mut reader = self.open_file(path)?;
+        let mut output = Vec::new();
+        reader.read_to_end(&mut output)?;
+        Ok(output)
+    }
 
-        if let Some(header) = self.compression(file_record.file_id)? {
-            return self.read_compressed(&file_record, &header);
+    /// Open a logical Read + Seek stream, including compressed files and overflow extents.
+    /// Compressed content is currently decoded into memory before seeking.
+    pub fn open_file(&mut self, path: &str) -> Result<access::FileReader<'_, R>> {
+        let file = self.resolve_path_to_file(path)?;
+        if let Some(header) = self.file_compression(&file)? {
+            return Ok(access::FileReader::Decoded(std::io::Cursor::new(
+                self.read_compressed(&file, &header)?,
+            )));
         }
-
-        let declared_size = file_record.data_fork.logical_size;
-
-        let mut buf = Vec::new();
-        let bytes_read = extents::read_fork_data(
+        let map = extents::collect_extents(
             &mut self.reader,
             &self.header,
             &self.extents_btree_header,
-            &file_record.data_fork,
-            file_record.file_id,
-            &mut buf,
+            &file.data_fork,
+            file.file_id,
+            extents::FORK_TYPE_DATA,
         )?;
-
-        if bytes_read != declared_size {
-            return Err(HfsPlusError::CorruptedData(format!(
-                "file {path:?} declares {declared_size} bytes but only {bytes_read} \
-                 could be read; its extent chain ends early"
-            )));
-        }
-
-        Ok(buf)
-    }
-
-    /// Open a file for streaming Read+Seek access without loading it into memory.
-    /// Returns a ForkReader that translates logical file offsets to physical disk offsets.
-    ///
-    /// Fails on a transparently compressed file: its data fork is empty, so a
-    /// reader over the extents would report a successful read of nothing. Use
-    /// [`Self::read_file`] for those.
-    pub fn open_file(&mut self, path: &str) -> Result<extents::ForkReader<'_, R>> {
-        let file_record = self.resolve_path_to_file(path)?;
-        if let Some(header) = self.compression(file_record.file_id)? {
-            return Err(HfsPlusError::CorruptedData(format!(
-                "{path} is decmpfs-compressed (type {}); read_file decompresses it, \
-                 streaming does not",
-                header.compression_type
-            )));
-        }
-        Ok(extents::ForkReader::new(
+        Ok(access::FileReader::Fork(extents::ForkReader::from_extents(
             &mut self.reader,
-            &file_record.data_fork,
+            &file.data_fork,
             self.header.block_size,
-        ))
+            &map,
+        )?))
     }
 
-    /// Stream a file to a writer
-    ///
-    /// Transparently compressed files are decompressed and written whole.
+    /// Stream complete logical file bytes, failing on missing mappings or truncated evidence.
     pub fn read_file_to<W: Write>(&mut self, path: &str, mut writer: W) -> Result<u64> {
-        let file_record = self.resolve_path_to_file(path)?;
+        Ok(std::io::copy(&mut self.open_file(path)?, &mut writer)?)
+    }
 
-        if let Some(header) = self.compression(file_record.file_id)? {
-            let data = self.read_compressed(&file_record, &header)?;
-            writer.write_all(&data)?;
-            return Ok(data.len() as u64);
-        }
-
-        extents::read_fork_data(
+    /// Open the original resource fork, independently of transparent decompression.
+    pub fn open_resource_fork(&mut self, path: &str) -> Result<extents::ForkReader<'_, R>> {
+        let file = self.resolve_path_to_file(path)?;
+        let map = extents::collect_extents(
             &mut self.reader,
             &self.header,
             &self.extents_btree_header,
-            &file_record.data_fork,
-            file_record.file_id,
-            &mut writer,
+            &file.resource_fork,
+            file.file_id,
+            extents::FORK_TYPE_RESOURCE,
+        )?;
+        extents::ForkReader::from_extents(
+            &mut self.reader,
+            &file.resource_fork,
+            self.header.block_size,
+            &map,
+        )
+    }
+
+    /// Return the validated physical allocation map of the original data fork.
+    pub fn data_extents(&mut self, path: &str) -> Result<Vec<volume::ExtentDescriptor>> {
+        let file = self.resolve_path_to_file(path)?;
+        extents::collect_extents(
+            &mut self.reader,
+            &self.header,
+            &self.extents_btree_header,
+            &file.data_fork,
+            file.file_id,
+            extents::FORK_TYPE_DATA,
         )
     }
 
@@ -403,7 +516,7 @@ impl<R: Read + Seek> HfsVolume<R> {
             catalog::CatalogRecord::File(f) => {
                 // A compressed file's data fork is empty; the real length is
                 // in the decmpfs header.
-                let compression = self.compression(f.file_id)?;
+                let compression = self.file_compression(&f)?;
                 Ok(FileStat {
                     cnid: f.file_id,
                     // Same mode test as list_directory: a symlink is a file
@@ -418,11 +531,24 @@ impl<R: Read + Seek> HfsVolume<R> {
                     modify_date: f.content_mod_date,
                     attribute_mod_date: f.attribute_mod_date,
                     access_date: f.access_date,
+                    backup_date: f.backup_date,
+                    added_time: f.added_time,
+                    catalog_flags: f.flags,
+                    link_count: matches!(f.permissions.file_mode & 0o170000, 0o100000 | 0o120000)
+                        .then_some(f.permissions.special.max(1)),
+                    device_number: matches!(
+                        f.permissions.file_mode & 0o170000,
+                        0o020000 | 0o060000
+                    )
+                    .then_some(f.permissions.special),
+                    finder_info: f.finder_info,
                     permissions: HfsPermissions {
                         owner_id: f.permissions.owner_id,
                         group_id: f.permissions.group_id,
                         mode: f.permissions.file_mode,
                         admin_flags: f.permissions.admin_flags,
+                        owner_flags: f.permissions.owner_flags,
+                        special: f.permissions.special,
                     },
                     data_fork_extents: f
                         .data_fork
@@ -442,11 +568,19 @@ impl<R: Read + Seek> HfsVolume<R> {
                 modify_date: f.content_mod_date,
                 attribute_mod_date: f.attribute_mod_date,
                 access_date: f.access_date,
+                backup_date: f.backup_date,
+                added_time: f.added_time,
+                catalog_flags: f.flags,
+                link_count: None,
+                device_number: None,
+                finder_info: f.finder_info,
                 permissions: HfsPermissions {
                     owner_id: f.permissions.owner_id,
                     group_id: f.permissions.group_id,
                     mode: f.permissions.file_mode,
                     admin_flags: f.permissions.admin_flags,
+                    owner_flags: f.permissions.owner_flags,
+                    special: f.permissions.special,
                 },
                 data_fork_extents: 0,
                 resource_fork_size: 0,
@@ -461,7 +595,12 @@ impl<R: Read + Seek> HfsVolume<R> {
     /// Recursive walk of all entries
     pub fn walk(&mut self) -> Result<Vec<WalkEntry>> {
         let mut entries = Vec::new();
-        self.walk_recursive(catalog::CNID_ROOT_FOLDER, "", &mut entries)?;
+        self.walk_recursive(
+            catalog::CNID_ROOT_FOLDER,
+            "",
+            &mut entries,
+            &mut std::collections::HashSet::new(),
+        )?;
         Ok(entries)
     }
 
@@ -512,7 +651,13 @@ impl<R: Read + Seek> HfsVolume<R> {
         parent_cnid: u32,
         parent_path: &str,
         entries: &mut Vec<WalkEntry>,
+        visited: &mut std::collections::HashSet<u32>,
     ) -> Result<()> {
+        if !visited.insert(parent_cnid) || visited.len() > 512 {
+            return Err(HfsPlusError::CorruptedData(
+                "cyclic directory tree or walk limit".into(),
+            ));
+        }
         let mut dir_entries = catalog::list_directory(
             &mut self.reader,
             &self.header,
@@ -529,7 +674,11 @@ impl<R: Read + Seek> HfsVolume<R> {
             };
 
             let is_dir = entry.kind == EntryKind::Directory;
-            let cnid = entry.cnid;
+            let cnid = if is_dir {
+                self.resolve_path_to_cnid(&full_path)?
+            } else {
+                entry.cnid
+            };
 
             entries.push(WalkEntry {
                 path: full_path.clone(),
@@ -537,10 +686,11 @@ impl<R: Read + Seek> HfsVolume<R> {
             });
 
             if is_dir {
-                self.walk_recursive(cnid, &full_path, entries)?;
+                self.walk_recursive(cnid, &full_path, entries, visited)?;
             }
         }
 
+        visited.remove(&parent_cnid);
         Ok(())
     }
 }

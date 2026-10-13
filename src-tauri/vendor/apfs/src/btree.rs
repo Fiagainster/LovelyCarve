@@ -186,6 +186,14 @@ impl BTreeNode {
     pub fn parse(block: &[u8]) -> Result<Self> {
         let header = ObjectHeader::parse(block)?;
         let node_header = BTreeNodeHeader::parse(&block[ObjectHeader::SIZE..])?;
+        if !matches!(
+            header.object_type(),
+            object::OBJECT_TYPE_BTREE | object::OBJECT_TYPE_BTREE_NODE
+        ) || node_header.btn_level > 64
+            || node_header.is_leaf() != (node_header.btn_level == 0)
+        {
+            return Err(ApfsError::InvalidBTree("invalid node type or level".into()));
+        }
 
         let toc_start =
             ObjectHeader::SIZE + BTreeNodeHeader::SIZE + node_header.btn_table_space_off as usize;
@@ -196,10 +204,19 @@ impl BTreeNode {
             + BTreeNodeHeader::SIZE
             + node_header.btn_table_space_off as usize
             + node_header.btn_table_space_len as usize;
+        let toc_width = if fixed_kv { 4 } else { 8 };
+        if key_area_off > block.len()
+            || node_header.btn_nkeys as usize > node_header.btn_table_space_len as usize / toc_width
+        {
+            return Err(ApfsError::InvalidBTree("node table outside block".into()));
+        }
 
         // Parse BTreeInfo if this is a root node (it's at the end of the value area)
         let info = if node_header.is_root() {
-            let info_start = block.len() - BTreeInfo::SIZE;
+            let info_start = block
+                .len()
+                .checked_sub(BTreeInfo::SIZE)
+                .ok_or_else(|| ApfsError::InvalidBTree("short root node".into()))?;
             Some(BTreeInfo::parse(&block[info_start..])?)
         } else {
             None
@@ -253,7 +270,10 @@ impl BTreeNode {
 
     /// Get the key bytes for a given TOC index.
     pub fn key(&self, index: usize, fixed_key_size: u32) -> Result<&[u8]> {
-        let entry = &self.toc[index];
+        let entry = self
+            .toc
+            .get(index)
+            .ok_or_else(|| ApfsError::InvalidBTree("key index outside table".into()))?;
         let start = self.key_area_off + entry.key_off as usize;
         let len = if self.node_header.is_fixed_kv() {
             fixed_key_size as usize
@@ -261,7 +281,7 @@ impl BTreeNode {
             entry.key_len as usize
         };
         let end = start + len;
-        if end > self.block_data.len() {
+        if end > self.val_area_end {
             return Err(ApfsError::InvalidBTree(format!(
                 "key out of bounds: start={}, len={}, block_size={}",
                 start,
@@ -279,7 +299,10 @@ impl BTreeNode {
     ///
     /// For internal (non-leaf) nodes, the value is always an oid_t (u64, 8 bytes).
     pub fn value(&self, index: usize, fixed_val_size: u32) -> Result<&[u8]> {
-        let entry = &self.toc[index];
+        let entry = self
+            .toc
+            .get(index)
+            .ok_or_else(|| ApfsError::InvalidBTree("value index outside table".into()))?;
         let len = if !self.node_header.is_leaf() {
             // Internal node values are always an oid_t (8 bytes)
             8
@@ -290,9 +313,12 @@ impl BTreeNode {
         };
 
         let val_off = entry.val_off as usize;
-        let start = self.val_area_end - val_off;
+        let start = self
+            .val_area_end
+            .checked_sub(val_off)
+            .ok_or_else(|| ApfsError::InvalidBTree("value offset underflow".into()))?;
         let end = start + len;
-        if end > self.block_data.len() || start < self.key_area_off {
+        if end > self.val_area_end || start < self.key_area_off {
             return Err(ApfsError::InvalidBTree(format!(
                 "value out of bounds: start={}, len={}, val_area_end={}, block_size={}",
                 start,
@@ -322,7 +348,7 @@ struct BTreeParams {
     block_size: u32,
     fixed_key_size: u32,
     fixed_val_size: u32,
-    omap_root: Option<u64>,
+    omap_root: Option<omap::OmapTree>,
 }
 
 /// Resolve a child OID to a physical block number.
@@ -332,12 +358,53 @@ fn resolve_child_oid<R: Read + Seek>(
     reader: &mut R,
     child_oid: u64,
     block_size: u32,
-    omap_root: Option<u64>,
+    omap_root: Option<omap::OmapTree>,
 ) -> Result<u64> {
     match omap_root {
         Some(omap) => omap::omap_lookup(reader, omap, block_size, child_oid),
         None => Ok(child_oid),
     }
+}
+
+/// Find the greatest key not exceeding a target in a physical fixed-size tree.
+/// OMAP needs a predecessor of (OID, XID), rather than the first matching OID.
+pub(crate) fn btree_predecessor<R: Read + Seek, F>(
+    reader: &mut R,
+    mut block: u64,
+    block_size: u32,
+    key_size: u32,
+    value_size: u32,
+    compare: F,
+) -> Result<Option<(Vec<u8>, Vec<u8>)>>
+where
+    F: Fn(&[u8]) -> Result<std::cmp::Ordering>,
+{
+    let mut visited = std::collections::HashSet::new();
+    for _ in 0..64 {
+        if !visited.insert(block) {
+            return Err(ApfsError::InvalidBTree("cyclic OMAP tree".into()));
+        }
+        let (_, data) = object::read_object(reader, block, block_size)?;
+        let node = BTreeNode::parse(&data)?;
+        let mut selected = None;
+        for index in 0..node.node_header.btn_nkeys as usize {
+            if compare(node.key(index, key_size)?)?.is_gt() {
+                break;
+            }
+            selected = Some(index);
+        }
+        let Some(index) = selected else {
+            return Ok(None);
+        };
+        if node.node_header.is_leaf() {
+            return Ok(Some((
+                node.key(index, key_size)?.to_vec(),
+                node.value(index, value_size)?.to_vec(),
+            )));
+        }
+        block = node.child_oid(index)?;
+    }
+    Err(ApfsError::InvalidBTree("OMAP depth exceeds 64".into()))
 }
 
 /// Look up a key in a B-tree.
@@ -367,7 +434,7 @@ pub fn btree_lookup<R: Read + Seek, F>(
     fixed_key_size: u32,
     fixed_val_size: u32,
     compare_fn: &F,
-    omap_root: Option<u64>,
+    omap_root: Option<omap::OmapTree>,
 ) -> Result<Option<Vec<u8>>>
 where
     F: Fn(&[u8]) -> Result<std::cmp::Ordering>,
@@ -485,6 +552,11 @@ where
 
         let (_, child_data) = object::read_object(reader, child_block, params.block_size)?;
         let child_node = BTreeNode::parse(&child_data)?;
+        if child_node.node_header.btn_level + 1 != node.node_header.btn_level {
+            return Err(ApfsError::InvalidBTree(
+                "child level does not decrease (cycle or malformed tree)".into(),
+            ));
+        }
 
         btree_lookup_node(reader, &child_node, params, compare_fn)
     }
@@ -553,6 +625,11 @@ fn btree_walk_node<R: Read + Seek>(
         };
         let (_, child_data) = object::read_object(reader, child_block, params.block_size)?;
         let child_node = BTreeNode::parse(&child_data)?;
+        if child_node.node_header.btn_level + 1 != node.node_header.btn_level {
+            return Err(ApfsError::InvalidBTree(
+                "child level does not decrease (cycle or malformed tree)".into(),
+            ));
+        }
         if !btree_walk_node(reader, &child_node, params, omap_cache, visit)? {
             return Ok(false);
         }
@@ -576,7 +653,7 @@ pub fn btree_scan<R: Read + Seek, F>(
     fixed_key_size: u32,
     fixed_val_size: u32,
     compare_fn: &F,
-    omap_root: Option<u64>,
+    omap_root: Option<omap::OmapTree>,
 ) -> Result<Vec<(Vec<u8>, Vec<u8>)>>
 where
     F: Fn(&[u8]) -> Result<std::cmp::Ordering>,
@@ -650,6 +727,11 @@ where
                 resolve_child_oid(reader, child_oid, params.block_size, params.omap_root)?;
             let (_, child_data) = object::read_object(reader, child_block, params.block_size)?;
             let child_node = BTreeNode::parse(&child_data)?;
+            if child_node.node_header.btn_level + 1 != node.node_header.btn_level {
+                return Err(ApfsError::InvalidBTree(
+                    "child level does not decrease (cycle or malformed tree)".into(),
+                ));
+            }
 
             if !btree_scan_node(reader, &child_node, params, compare_fn, results)? {
                 return Ok(false);

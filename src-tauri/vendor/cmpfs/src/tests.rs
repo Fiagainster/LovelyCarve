@@ -283,6 +283,32 @@ fn type_8_resource_fork_stored() {
 }
 
 #[test]
+fn type_10_resource_fork_requires_raw_markers_and_preserves_multiple_blocks() {
+    let data = vec![b'R'; BLOCK_SIZE + 17];
+    let blocks: Vec<Vec<u8>> = data
+        .chunks(BLOCK_SIZE)
+        .map(|chunk| {
+            let mut block = vec![0xcc];
+            block.extend_from_slice(chunk);
+            block
+        })
+        .collect();
+    let attribute = header(10, data.len() as u64);
+    let mut fork = offset_fork(&blocks);
+    assert_eq!(decompress(&attribute, Some(&fork)).unwrap(), data);
+    let first = u32::from_le_bytes(fork[..4].try_into().unwrap()) as usize;
+    fork[first] = 0;
+    assert!(decompress(&attribute, Some(&fork)).is_err());
+}
+
+#[test]
+fn resource_fork_payload_cannot_point_into_the_offset_table() {
+    let mut fork = offset_fork(&[vec![0xcc, b'A']]);
+    fork[..4].copy_from_slice(&0u32.to_le_bytes());
+    assert!(decompress(&header(10, 1), Some(&fork)).is_err());
+}
+
+#[test]
 fn type_12_resource_fork_lzfse() {
     let data: Vec<u8> = b"lzfse in a resource fork ".repeat(4000);
     let blocks: Vec<Vec<u8>> = data
@@ -299,6 +325,26 @@ fn type_12_resource_fork_lzfse() {
     assert_eq!(
         decompress(&attr, Some(&offset_fork(&blocks))).unwrap(),
         data
+    );
+}
+
+#[test]
+fn lzfse_inline_and_resource_fork_allow_the_stored_marker() {
+    let mut attribute = header(11, 5);
+    attribute.extend_from_slice(b"\xffhello");
+    assert_eq!(decompress(&attribute, None).unwrap(), b"hello");
+    let fork = offset_fork(&[b"\xffhello".to_vec()]);
+    assert_eq!(decompress(&header(12, 5), Some(&fork)).unwrap(), b"hello");
+}
+
+#[test]
+fn type_8_resource_fork_decodes_compressed_lzvn() {
+    let block = vec![
+        0xe5, b'h', b'e', b'l', b'l', b'o', 0x06, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    assert_eq!(
+        decompress(&header(8, 5), Some(&offset_fork(&[block]))).unwrap(),
+        b"hello"
     );
 }
 
@@ -332,4 +378,12 @@ fn rejects_block_past_end_of_fork() {
         decompress(&attr, Some(&fork[..fork.len() - 2])),
         Err(CmpfsError::TruncatedResourceFork { .. } | CmpfsError::CorruptedData(_))
     ));
+}
+
+#[test]
+fn oversized_declared_output_is_rejected_before_allocation() {
+    let mut attribute = 0x636d7066u32.to_le_bytes().to_vec();
+    attribute.extend_from_slice(&11u32.to_le_bytes());
+    attribute.extend_from_slice(&u64::MAX.to_le_bytes());
+    assert!(decompress(&attribute, None).is_err());
 }

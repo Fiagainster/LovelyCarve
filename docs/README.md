@@ -15,7 +15,7 @@
 
 [格式总览与维护要求](formats/README.md) 汇总读取器的通用约束，并链接各格式专题：
 
-[NTFS](formats/NTFS.md) · [ext2/3/4](formats/EXT.md) · [FAT / exFAT](formats/FAT.md) · [XFS](formats/XFS.md) · [ReFS](formats/REFS.md) · [GPT](formats/GPT.md) · [MBR / EBR](formats/MBR.md) · [LVM2](formats/LVM.md) · [LUKS](formats/LUKS.md) · [BitLocker](formats/BITLOCKER.md) · [卷影副本](formats/VSS.md)
+[NTFS](formats/NTFS.md) · [ext2/3/4](formats/EXT.md) · [FAT / exFAT](formats/FAT.md) · [XFS](formats/XFS.md) · [ReFS](formats/REFS.md) · [APFS](formats/APFS.md) · [GPT](formats/GPT.md) · [MBR / EBR](formats/MBR.md) · [LVM2](formats/LVM.md) · [LUKS](formats/LUKS.md) · [BitLocker](formats/BITLOCKER.md) · [卷影副本](formats/VSS.md)
 
 vendored 读取器的上游版本与本地补丁记录在 [vendor/UPSTREAM.md](../src-tauri/vendor/UPSTREAM.md)，后端探针程序见 [examples/README.md](../src-tauri/examples/README.md)。
 
@@ -33,3 +33,6 @@ vendored 读取器的上游版本与本地补丁记录在 [vendor/UPSTREAM.md](.
 | 报告安全问题 | [安全策略](../SECURITY.md) |
 
 新增或修改功能时同步更新所属文档：用户可见的变化写入 [CHANGELOG](../CHANGELOG.md) 的 `[Unreleased]`，格式能力写入对应的格式专题。测试样本的来源、许可与哈希保存在样本目录，第三方许可证与来源说明随代码保留。
+
+- [HFS+ / HFSX 完整对照](formats/HFS.md)：libfshfs 95 API、fork、压缩、Unicode 与来源边界。
+- [FileVault 2 完整对照](formats/FILEVAULT.md)：filevault-forensic 接入、libfvde 88 API、CoreStorage 解锁 / 库存与验证。
