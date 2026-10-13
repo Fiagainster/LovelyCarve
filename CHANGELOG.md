@@ -7,20 +7,20 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-13
+
+补齐分区表、卷管理与加密容器的读取能力，与 libyal 系列库逐项对照并修正一批取证读取问题，同时重新整理 README 与文档。
+
 ### Added
 
 - 普通磁盘与 RAID 重组镜像顶部提供原始 RAW 导出；已解锁的 LUKS、VeraCrypt 和 BitLocker 分区按明文导出，保留整盘布局与大小。
-
+- BitLocker 支持 AES-256 Diffuser（8001）、Vista、Used Disk Space Only（EOW）与 4 KiB 扇区卷，新增明文密钥、BEK 启动密钥、FVEK / TWEAK 与 VMK 直接解锁，并提供 libbde 能力对照。
+- XFS 读取覆盖格式 1–5、目录 v1–v3 的全部布局、扩展属性、BIGTIME 与 metadata UUID，支持文件范围读取与来源区间映射，并记录 libfsxfs 全部 82 个公开 API 的能力对照。
 - 补齐 VSS 原始块/存储区间枚举、签名检查与有界 seek/read，增加只读检查入口和 libvshadow 全部 48 个公开 API 的能力对照。
-
 - 补齐 LVM2 的 VG/PV/LV/segment/stripe 元数据与原始 LV 范围读取，支持单 PV 碎片多段卷，提供 libvslvm 全部 69 个公开 API 的能力对照。
-
 - 补齐 GPT 原始槽位、类型/唯一 GUID、属性、UTF-16 名称、主备头校验与有界 seek/read，增加分区探针 `--gpt` 及 libvsgpt 全部 42 个公开 API 对照。
-
 - 补齐 MBR/EBR 原始类型、启动标志、CHS、槽位来源和有边界限制的 seek/read 接口，提供分区探针 `--mbr` 及 libvsmbr 全部 38 个公开 API 的能力对照。
-
 - 补齐 LUKS 的 AES-CBC/ECB、Blowfish、Serpent、ARC4、更多 IV 和 SHA-224/384，提供 LUKS1/2 主密钥解锁入口及 libluksde 全部 36 个公开 API 的能力对照。
-
 - 补齐 FAT/exFAT 文件范围读取、原始属性与目录项偏移等后端元数据接口，并记录 libfsfat 全部 53 个公开 API 的能力对照。
 - 补齐 ext2/3/4 内联文件与目录、EA-inode 扩展属性、旧式目录和 meta_bg 读取，并记录完整 libfsext 能力对照。
 - ext 读者提供卷挂载历史、feature masks、UID/GID、链接数和设备编号等元数据 API。
@@ -28,22 +28,18 @@
 ### Changed
 
 - 插件 SDK、隔离宿主与 `linuxinfo` 改由独立的 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 子模块维护；源码构建需递归克隆或运行 `just bootstrap` 初始化子模块。
+- RAID 自动重组的标签页与页面标题统一为「RAID N 重组镜像」，完整会话标识移至可复制的详情字段。
+- 重写 README 并加入界面截图；整理文档，格式与读取器专题移至 `docs/formats/`。
 
 ### Fixed
 
 - VSS 损坏或循环 catalog 明确报错，存储头完整读取并校验；异常 catalog 卷尺寸按 NTFS 主备几何恢复可读范围，保留原始值，长副本链不再依赖递归栈。
-
 - LVM2 验证标签、元数据头及文本 CRC，拼接活动环形缓冲回绕并读取远端备份；修复同大小 PV 身份、4Kn 的固定 512 字节单位、首段截断与未使用 PE 判定，跨镜像缺失/冲突成员不再组装为残缺 LV。
-
 - GPT 优先采用头与数组 CRC 完整的副本，磁盘 GUID 与分区保持同一来源；修复 1024/2048/4096 字节几何、单扇区分区和完整范围校验，超过 256 个可浏览分区明确报错，避免 ID 回绕。
-
 - 修复 Vite 8 干净安装后前端构建因缺少 esbuild 失败，改用内置 Oxc 压缩器。
 - Windows 默认构建恢复 MSVC 链接器，移除对额外 LLVM 链接器的强制要求；完整 QR/OCR 构建仍需 libclang。
-
 - 修复含主数据分区的 1024/2048/4096 字节扇区 MBR 几何识别，支持多个扩展入口及分叉 EBR，并校验完整分区/链接范围；循环、损坏和遍历限额提供告警，分区 ID 不再回绕。
-
 - LUKS 密钥材料按扇区补齐，LUKS2 密钥槽支持与卷主密钥不同的长度；解密 seek 溢出、无效 PBKDF2 轮数和不合法的算法组合明确报错。
-
 - 修复 exFAT 文件初始化尾部、负时区与 10 毫秒时间精度、跨目录槽位 UTF-16 名称及连续子目录的删除项扫描。
 - FAT 按数据簇数识别格式并支持大逻辑扇区；FAT/exFAT 读取校验损坏簇链与短读，保留同名删除记录，并避免把未知本地时区标成 UTC。
 - ext 文件范围与流式读取统一完整间接块映射，未写入 extent 读零，越过卷边界或来源短读时报错。
@@ -81,5 +77,6 @@
 - 可选二维码识别与 OCR 构建；默认轻量构建关闭这些功能，完整构建通过 `*-full` 配方启用。
 - 源码构建、Windows 安装包与便携包、CLI 和插件的本地打包配方，以及使用、开发、接口和第三方来源说明。
 
-[Unreleased]: https://github.com/LovelyTeams/LovelyCarve/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/LovelyTeams/LovelyCarve/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/LovelyTeams/LovelyCarve/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/LovelyTeams/LovelyCarve/releases/tag/v1.0.0
