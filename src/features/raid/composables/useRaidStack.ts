@@ -2,7 +2,7 @@
 // images (LVM PV joins and mdadm member sets span images), so its result is
 // not per-image — every RaidStackPanel instance (one per tab) shares one
 // stack, and panel remounts render the cached result without re-firing the
-// IPC. Case restore (AuthorizedApp.onOpenCaseEvidence) runs the same detect
+// IPC. Case restore (AppShell.onOpenCaseEvidence) runs the same detect
 // so freshly re-registered synthetic images show up in already-open panels.
 import { ref } from 'vue';
 import { imageInfoById } from '../../../lib/ipc/image';
@@ -25,7 +25,7 @@ let generation = 0;
 const incompleteToasts = new Map<string, PersistentToastHandle>();
 const promptedAssembled = new Set<string>();
 
-// Tab opener injected by AuthorizedApp (the only place that owns the tab
+// Tab opener injected by AppShell (the only place that owns the tab
 // manager) — a composable can't emit through the component tree.
 let openImage: ((path: string) => void) | null = null;
 

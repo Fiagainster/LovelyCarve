@@ -3,7 +3,7 @@
     <header class="ui-card-header panel-header">
       <h3 class="ui-card-title"><Boxes :size="15" />RAID 检测</h3>
       <span v-if="arrayCount > 0" class="ui-count accent">{{ arrayCount }} 阵列</span>
-      <div class="header-actions">
+      <div v-if="info.source_format !== 'assembled'" class="header-actions">
         <button
           class="ui-btn sm"
           title="手动指定成员盘、块大小和数据偏移"
@@ -42,7 +42,7 @@
           :diagnostics="relevantArrays.length === 1 ? stack.diagnostics : undefined"
           :opening="openingId === arr.assembled_image_id" :exporting="!!arr.assembled_image_id && !!jobFor(arr.assembled_image_id)"
           :diagram-open="diagramOverrides[arr.set_uuid] ?? !arr.assembled_image_id" @diagram-toggle="open => diagramOverrides[arr.set_uuid] = open"
-          @open="openAssembled(arr)" @browse-files="emit('browse-files')" @export="exportAssembled(arr)" />
+          @open="openAssembled(arr)" @export="exportAssembled(arr)" />
 
         <!-- LVM volume groups on this image, one line each (the layer RAID
              members may sit on — slot rows above already name the LVs) -->
@@ -94,7 +94,7 @@ import RaidVolumeGroupCard from './RaidVolumeGroupCard.vue';
 import { exportBaseName, relevantRaidArrays, relevantRaidVolumeGroups } from '../model/stackView';
 
 const props = defineProps<{ info: ImageInfo }>();
-const emit = defineEmits<{ 'open-image': [path: string]; 'browse-files': [] }>();
+const emit = defineEmits<{ 'open-image': [path: string] }>();
 
 // Detection state is session-wide (the scan covers every loaded image) and
 // shared across panel instances — see useRaidStack. Rendering, however, is

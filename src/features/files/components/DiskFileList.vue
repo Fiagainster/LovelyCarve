@@ -198,7 +198,7 @@ import { HASH_MENU_OPTIONS } from '../model/derivedData';
 
 type FsNode = DiskFsNode;
 
-// 稳定组件名：本面板被 AuthorizedApp 用 <KeepAlive> 缓存（切到镜像信息再切回时
+// 稳定组件名：本面板被 AppShell 用 <KeepAlive> 缓存（切到镜像信息再切回时
 // 保留导航栈 / 滚动 / 勾选状态）。显式命名便于 devtools 辨识，也不依赖文件名推断。
 defineOptions({ name: 'DiskFileList' });
 

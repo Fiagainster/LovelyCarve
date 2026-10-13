@@ -13,24 +13,55 @@
     <p class="evidence-size">
       <strong class="mono">{{ formatBytes(info.size_bytes) }}</strong>
       <template v-if="onDiskSummary"> · 实际占用 <span class="mono">{{ onDiskSummary.size }}</span>（{{ onDiskSummary.ratio }}）
-</template>
-          </p>
-        </div>
-        <AutoDetectBadge class="evidence-platform" :image-id="info.id" />
-      </header>
+      </template>
+    </p>
+  </div>
+  <div class="evidence-actions">
+    <AutoDetectBadge :image-id="info.id">
+      <button v-if="canExport" class="ui-btn"
+        :disabled="exporting" :aria-busy="exporting" title="导出完整 RAW 镜像；已解锁分区使用解密内容" @click="exportRawImage">
+        <Loader2 v-if="exporting" :size="14" class="spin" />
+        <HardDriveDownload v-else :size="14" />导出原始镜像
+      </button>
+    </AutoDetectBadge>
+  </div>
+</header>
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { Archive, Boxes, Container, Copy, FolderOpen, HardDrive, History, LockOpen } from 'lucide-vue-next';
+import { Archive, Boxes, Container, Copy, FolderOpen, HardDrive, HardDriveDownload, History, Loader2, LockOpen } from 'lucide-vue-next';
 import type { ImageInfo } from '../../../lib/ipc/image';
 import { evidenceDisplayName, formatBytes } from '../model/evidenceOverview';
 import AutoDetectBadge from './AutoDetectBadge.vue';
+import { useImageExport } from '../composables/useImageExport';
+import { notifyError } from '../../../composables/useToast';
 const props = defineProps<{ info: ImageInfo }>();
 const emit = defineEmits<{ copy: [label: string, value: string] }>();
 
 // ── 检材头部 ─────────────────────────────────────────────────────────────
 const fileName = computed(() => evidenceDisplayName(props.info));
+const LOGICAL_FORMATS = new Set(['folder', 'tar', 'zip', 'sevenz', 'ad1', 'docker']);
+const canExport = computed(() => !props.info.index_only && !props.info.ios_backup && !LOGICAL_FORMATS.has(props.info.source_format));
+const { startImageExport, jobFor } = useImageExport();
+const exporting = computed(() => !!jobFor(props.info.id));
+
+async function exportRawImage() {
+  const info = props.info;
+  if (!canExport.value || jobFor(info.id)) return;
+  try {
+    await startImageExport({
+      imageId: info.id,
+      defaultFileName: `${fileName.value.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, '_')}.dd`,
+      mode: 'unlockedPartitions',
+      title: '导出原始镜像为 RAW',
+      runningTitle: '导出原始镜像中…',
+      doneTitle: '原始镜像导出完成',
+    });
+  } catch (error) {
+    notifyError('导出失败', String(error));
+  }
+}
 
 /** 格式徽章：镜像格式写代号（VMDK、EWF），其余写中文名。 */
 const FORMAT_LABELS: Record<string, string> = {
@@ -103,10 +134,10 @@ const onDiskSummary = computed(() => {
 .evidence-path .ui-icon-btn { flex-shrink: 0; }
 .evidence-size { margin: 2px 0 0; color: var(--text-secondary); font-size: 12px; }
 .evidence-size strong { color: var(--text-primary); font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.evidence-platform { padding-top: 6px; }
+.evidence-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 4px; }
 
 @container image-info (max-width: 640px) {
   .evidence-head { grid-template-columns: auto minmax(0, 1fr); }
-  .evidence-platform { grid-column: 2; justify-content: flex-start; padding-top: 0; }
+  .evidence-actions { grid-column: 2; justify-content: flex-start; padding-top: 0; }
 }
 </style>

@@ -301,7 +301,12 @@ just test-cli
 成功后在原镜像分区内浏览并自动补建索引，不切换或新增镜像标签；切换页面不取消任务。
 从分区行进入时固定该分区。CLI 命令仍等待解锁结果，便于后续 JSONL 引用。
 桌面使用 `options.target: "sourcePartition"`，返回原 `image.id` 与 `volume_key`，文件节点沿用
-`part:N`；原镜像哈希和 RAW 导出仍读取源密文。省略 `target` 或使用 `"newImage"` 时保留
+`part:N`；原镜像哈希仍读取源密文，RAW 导出省略 `mode` 或使用 `"source"` 时也读取源字节。
+桌面「导出原始镜像」使用 `image_export_raw` 的 `mode: "unlockedPartitions"`：以导出开始时的
+已解锁状态投影所有 LUKS / VeraCrypt / BitLocker 分区，明文从原分区起始位置写入，
+较短明文后的分区尾部补零；分区表、其他分区及整盘大小保留。导出开始后的解锁不改变本次输出，
+解密会话关闭、短读或越界时报错。目标文件必须不存在，避免覆盖源镜像或已有导出。
+省略 `target` 或使用 `"newImage"` 时保留
 下方 CLI 示例的独立解密镜像行为，便于显式导出明文。原分区接入要求解密内容为单个完整卷。
 
 JSONL 会话示例（`lovelycarve-cli session`，逐行从标准输入发送）：

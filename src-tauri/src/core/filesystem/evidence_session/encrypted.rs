@@ -10,8 +10,8 @@ use crate::core::evidence::image::{DiskImage, ImageInfo};
 
 #[derive(Debug)]
 pub(super) struct AttachedEncryptedVolume {
-    session: Arc<EvidenceSession>,
-    cancellation: CancellationToken,
+    pub(super) session: Arc<EvidenceSession>,
+    pub(super) cancellation: CancellationToken,
 }
 
 impl EvidenceSession {

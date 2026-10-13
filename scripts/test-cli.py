@@ -73,6 +73,7 @@ def main():
 
             attached_file = root / (filename + ".attached.txt")
             attached_raw = root / (filename + ".source.raw")
+            attached_plain = root / (filename + ".attached.raw")
             attached_requests = [
                 {"id": "case", "command": "case_create", "args": {"dir": str(root / (filename + "-case")), "name": "attached unlock"}},
                 {"id": "source", "command": "image_load", "args": {"path": str(encrypted_fixtures / filename)}},
@@ -82,6 +83,7 @@ def main():
                 {"id": "indexes", "command": "snapshot_list"},
                 {"id": "read", "command": "fs_read", "args": {"nodeId": "fat:part:0:" + b"/HELLO.TXT".hex()}, "output": str(attached_file)},
                 {"id": "raw", "command": "image_export_raw", "args": {"destination": str(attached_raw), "taskId": "attached-raw", "readFaultPolicy": "strict"}},
+                {"id": "plaintext", "command": "image_export_raw", "args": {"destination": str(attached_plain), "taskId": "attached-plaintext", "readFaultPolicy": "strict", "mode": "unlockedPartitions"}},
                 {"id": "close", "command": "case_close"},
                 {"id": "remove", "command": "case_remove", "args": {"dir": str(root / (filename + "-case"))}},
             ]
@@ -97,6 +99,10 @@ def main():
                        for index in attached_rows["indexes"]["result"]), (filename, attached_rows["indexes"], attached_result.stderr)
             assert attached_file.read_bytes() == b"LovelyCarve encrypted evidence fixture.\n"
             assert attached_raw.read_bytes() == (encrypted_fixtures / filename).read_bytes(), "source export changed after unlock"
+            converted = attached_plain.read_bytes()
+            assert len(converted) == attached_raw.stat().st_size
+            assert converted[:len(plaintext)] == plaintext, filename
+            assert converted[len(plaintext):] == bytes(len(converted) - len(plaintext)), filename
 
         requests = [
             {"id": "image", "command": "image_load", "args": {"path": str(evidence)}},
@@ -255,18 +261,21 @@ export hello.txt "{exported}"
         encrypted = root / "bitlocker.bin"
         encrypted.write_bytes(gzip.decompress(fixture.read_bytes()))
         decrypted = root / "bitlocker-decrypted.bin"
+        current_raw = root / "bitlocker-current.raw"
         partition = {"$ref": "open#/partitions/0/id"}
         requests = [
             {"id": "open", "command": "image_load", "args": {"path": str(encrypted)}},
             {"id": "unlock", "command": "bitlocker_unlock", "args": {"partitionId": partition, "password": "bde-TEST"}},
             {"id": "status", "command": "bitlocker_status", "args": {"partitionId": partition}},
             {"id": "export", "command": "bitlocker_export_decrypted_image", "args": {"partitionId": partition, "destination": str(decrypted), "taskId": "bde-export"}},
+            {"id": "current", "command": "image_export_raw", "args": {"destination": str(current_raw), "taskId": "bde-current", "mode": "unlockedPartitions"}},
         ]
         result = run(["session"], "\n".join(json.dumps(request) for request in requests))
         rows = [json.loads(line) for line in result.stdout.splitlines()]
         assert all("result" in row for row in rows), rows
         assert rows[1]["result"]["locked"] is False and rows[2]["result"]["locked"] is False
         assert decrypted.stat().st_size == encrypted.stat().st_size
+        assert current_raw.read_bytes() == decrypted.read_bytes()
         with decrypted.open("rb") as stream:
             assert hashlib.sha256(stream.read(512)).hexdigest() == "139b857c537e341ceb98bcfde2d31825efcf4b0c0281dd66672e954b34ed28f3"
             stream.seek(0x8000)

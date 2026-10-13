@@ -18,7 +18,7 @@ LovelyCarve 是一个 Tauri v2 桌面取证工具。前端使用 Vue 3、TypeScr
 │                                                            │
 │  Vue 3 + TypeScript + Vite        Rust backend              │
 │  src/App.vue                      src-tauri/src/lib.rs      │
-│  src/AuthorizedApp.vue     IPC    commands::*               │
+│  src/AppShell.vue          IPC    commands::*               │
 │  components/composables ────────► core::*                   │
 │  src/lib/ipc/*             events state / tasks / cases     │
 │                                                            │
@@ -36,7 +36,7 @@ LovelyCarve 是一个 Tauri v2 桌面取证工具。前端使用 Vue 3、TypeScr
 src/
 ├── main.ts                 Vue 入口
 ├── App.vue                 主窗口根组件：主壳 + Toast/确认框宿主
-├── AuthorizedApp.vue       唯一主壳装配点：标题栏、侧栏、标签页及面板连接
+├── AppShell.vue            唯一主壳装配点：标题栏、侧栏、标签页及面板连接
 ├── app/                    bootstrap、主壳组件、workspace 与跨功能 workflows
 ├── features/               cases/evidence/files/preview/search/carving/timeline/analysis/bcp/tasks/raid/settings
 │   └── <功能>/             components、composables、model 与就近测试；按需提供 api.ts
@@ -119,7 +119,9 @@ src-tauri/src/
 
 `src-tauri/examples/` 按用途分类，全部 46 个原目标在 Cargo 中显式声明，仍通过 `just run-example <原名>` 调用；`just check-examples` 检查这些目标。`vendor/`、资源、DLL 和打包路径保持原有归属。新增模块使用 `<name>.rs` 加 `<name>/`，不新增 `mod.rs`。
 
-`core::evidence::image::DiskImage` 负责镜像源、分区布局、字节读取、解密和定位缓存。`AppState.images` 登记的对象是 `Arc<core::filesystem::evidence_session::EvidenceSession>`：它持有同一个字节读者，并拥有宿主 Docker、NTFS 删除记录投影及外部卷注册表。字节扫描、RAID、哈希和 RAW 导出借用 `disk_image()`；文件树、预览和插件证据浏览借用 session。原证据 ID、路径、序列化字段和分区寻址保持不变。
+`core::evidence::image::DiskImage` 负责镜像源、分区布局、字节读取、解密和定位缓存。`AppState.images` 登记的对象是 `Arc<core::filesystem::evidence_session::EvidenceSession>`：它持有同一个字节读者，并拥有宿主 Docker、NTFS 删除记录投影及外部卷注册表。字节扫描、RAID、哈希和源字节导出借用 `disk_image()`；文件树、预览和插件证据浏览借用 session。原证据 ID、路径、序列化字段和分区寻址保持不变。
+
+`EvidenceSession::raw_export_reader` 提供独立的 RAW 导出投影。`image_export_raw` 默认 `mode: source`，桌面镜像头部使用 `unlockedPartitions`，导出开始时固定已解锁的 LUKS / VeraCrypt / BitLocker 读者。明文放在原分区起始位置，容器开销对应的分区尾部补零；整盘大小、分区表、未解锁分区和分区间隙保留原字节。范围重叠、溢出、越界、明文过长及短读明确失败，关闭解密会话不回退到密文。该投影不影响普通读取、源哈希和证据身份；尾部补零是导出转换规则，源坏区仍沿用读故障审计。导出目标以 `create_new` 创建。
 
 外部卷通过 `filesystem::external_volume::ExternalVolume` 提供只读 Volume 和关闭契约；插件 `RemoteVolume` 实现这个接口。未知分区的插件探测、源登记和卷安装由 `app/workflows/filesystem.rs` 编排。卸载先撤销 AppState 登记、取消任务和停止挂载，再 drain 外部卷并逐项关闭、移除源和其他缓存；持有调用句柄的线程释放前，provider backing 继续存活。字节读者本身不持有插件连接。
 
@@ -163,7 +165,7 @@ LVM 标签/CRC/活动副本位于 `evidence/partitions/lvm2/header.rs`，有界�
 
 ## 核心数据流
 
-1. `AuthorizedApp.vue` 通过案件管理器确保当前有活动案件。
+1. `AppShell.vue` 通过案件管理器确保当前有活动案件。
 2. 用户选择镜像文件、文件夹证据、物理磁盘或 RAID 成员。
 3. 前端调用 `image_load`，后端把证据注册到内存状态和活动案件。
 
@@ -375,7 +377,7 @@ RAID 成员、当前检材卷快照和案件详情默认折叠，切换与锁定
 
 ### 分析结果目录与记录表
 
-`AuthorizedApp.vue` 将 `AnalysisResultsNav.vue` 放入 `SidebarNav` 的中间栏插槽；显示分析大类时替代静态子页面菜单，包括收起状态下的悬停预览。
+`AppShell.vue` 将 `AnalysisResultsNav.vue` 放入 `SidebarNav` 的中间栏插槽；显示分析大类时替代静态子页面菜单，包括收起状态下的悬停预览。
 `SidebarNav` 使用左侧大类栏与中间子类栏，选中大类由主壳的当前页面推导；镜像、工具、分析分别组织页面，BCP 按检材额外追加。
 主窗口不再显示全局底部状态栏；主题切换集中在设置中心的「界面」，当前会话日志在「日志」中搜索、筛选、复制和清空，软件版本与本地构建时间位于「关于」。通用版本读取和控制台捕获由 `src/composables/useAppVersion.ts` 与 `useConsoleCapture.ts` 提供；日志在启动时捕获，即使设置未打开也持续收集，最多保留 5,000 条。
 分析中间栏直接显示插件执行结果，不重复大类标题或「分析结果」菜单；目录保留自身搜索框，大类栏底部仅保留子类栏展开 / 收起，不再提供过滤或添加证据入口。收起子类栏后点击分析大类或展开按钮即可重新展开。目录仅显示当前检材，省略重复的检材与分类层级，
@@ -400,7 +402,7 @@ RAID 成员、当前检材卷快照和案件详情默认折叠，切换与锁定
 
 ### 右上角任务中心面板
 
-主窗口 `AuthorizedApp.vue` 通过 `Titlebar` 的插槽提供「任务中心」入口，活动任务数持续显示在入口上；面板本身是 `TaskHub.vue`。
+主窗口 `AppShell.vue` 通过 `Titlebar` 的插槽提供「任务中心」入口，活动任务数持续显示在入口上；面板本身是 `TaskHub.vue`。
 面板固定在右上角，「任务」与「快速分析」以页签切换（左右方向键可切换），始终跟随顶部当前检材标签，检材名称以只读标签显示在页签行右侧。
 页内不提供检材选择器或“全部检材”选项；没有当前检材时显示打开提示，不自动回退到案件第一份检材。
 切换顶部标签时任务列表、通知、活动数量和快速分析目标一起更新，其他检材已启动的后台任务继续运行。

@@ -3,8 +3,8 @@ import { formatBinaryBytes as formatBytes, formatEpochSeconds } from '../../../u
 import { KIND_LABELS } from '../../../lib/models/filesystemLabels';
 export { formatBytes, KIND_LABELS };
 
-/** Keep synthetic RAID identities out of the main evidence heading. */
-export function evidenceDisplayName(info: ImageInfo): string {
+/** Shared evidence heading and workspace tab name; keep RAID session identities in details. */
+export function evidenceDisplayName(info: Pick<ImageInfo, 'path' | 'source_format'>): string {
   if (info.source_format === 'assembled') {
     const automatic = /^assembled:\/\/md:auto-raid(\d+)-[a-f0-9]{32}$/i.exec(info.path);
     return automatic ? `RAID ${automatic[1]} 重组镜像` : 'RAID 重组镜像';

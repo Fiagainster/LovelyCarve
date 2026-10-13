@@ -19,7 +19,7 @@ Use `docs/README.md` for the documentation map and `CONTRIBUTING.md` / `docs/DEV
 - `src/composables/`: generic reactive capabilities such as theme, motion, persistence, notifications, and confirmation; business state lives in its feature's `composables/` (no global store).
 - `src/lib/models/`: shared pure contracts such as file-location targets; transport types remain under IPC.
 - `src/utils/`: shared pure helpers for formatting, safe HTML, CSV and similar concerns.
-- `src/views/`: secondary app windows (the detached `FilePreviewWindow.vue`). The main shell is `src/AuthorizedApp.vue`.
+- `src/views/`: secondary app windows (the detached `FilePreviewWindow.vue`). The main shell is `src/AppShell.vue`.
 - `src/lib/ipc/`: the typed IPC service layer — `client.ts` (sole `invoke` wrapper), `events.ts` (`onEvent`/`emitEvent`), and per-domain command modules. Components/composables call this layer, not Tauri `invoke`/`listen` directly.
 - `src/styles/themes.css`: all theme tokens for `light`, `dark`, and `pink`.
 - `src/styles/ui.css`: shared UI primitives (buttons, fields, tabs, badges, cards, modal shell, menus, empty states, panel headers), loaded globally through `global.css`.
@@ -193,7 +193,7 @@ Vue 3 single-file components with `<script setup lang="ts">` and the Composition
 - Modals are `.ui-modal-overlay` > `.ui-modal` with `ui-modal-header` / `ui-modal-body` / `ui-modal-footer`, normally inside `<Transition name="ui-modal">`. The structured file viewers (PE / ELF / Mach-O / ar / GGUF) share `src/styles/report-viewer.css` and the SQLite / Realm browsers share `src/styles/db-browser.css`, both included through `<style scoped src>` like `data-table.css`.
 - Filled controls (primary / danger buttons, switches) use `--primary-solid` / `--danger-solid` and their `-hover` tokens with `--accent-contrast` labels; `--primary-color` stays for text, icons, borders, focus rings, and tints. Keep those labels at 4.5:1 contrast or better in every theme. `--primary-color` and `--text-secondary` are text colors too: keep them at 4.5:1 on the surfaces, `--sidebar-bg` and `--sidebar-active-bg` in every theme (the softer brand tones live in gradients, glows and tints). Status bar labels use `--statusbar-fg`.
 - Validation: mark the failing `ui-input` / `ui-select` / `ui-textarea` (or the input inside `ui-search`) with `aria-invalid="true"` and state the problem in a `ui-field-error` linked through `aria-describedby`; a toast alone is not field feedback. Font sizes are whole pixels; primitive spacing follows the 4px grid.
-- Do not add new top-level chrome outside `src/AuthorizedApp.vue` (the main shell).
+- Do not add new top-level chrome outside `src/AppShell.vue` (the main shell).
 - Workspace pages carry no title bar: they open on a `ui-toolbar` (search and filters on the left, page actions in `ui-toolbar-actions` on the right), then the work surface, then a `ui-footbar` that holds the page context (current task, state) and counts. The sidebar already names the page.
 - `lucide-vue-next` is the icon system (`import { Icon } from 'lucide-vue-next'`, `<Icon :size="16" />`). Do not add other icon libraries or emoji in the UI.
 - The spin indicator is lucide `Loader2` with the `.spin` class (exempt from the reduced-motion freeze in `base.css`; with motion off it turns at half speed); `AsyncPanelLoading.vue` covers lazy panels. Prefer skeletons or segmented progress for long tasks.

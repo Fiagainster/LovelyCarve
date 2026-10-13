@@ -135,7 +135,6 @@
           v-if="activePanel === 'dashboard' && imageId"
           :info="imageInfo"
           @open-image="onOpenImageFromInfo"
-          @browse-files="handleSidebarSelect('files')"
         />
 
         <BcpPanel

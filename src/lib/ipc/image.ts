@@ -210,6 +210,8 @@ export function imageExportRaw(args: {
   destination: string;
   taskId: string;
   readFaultPolicy?: 'strict' | 'zeroFillAndReport';
+  /** Preserve source bytes by default; optionally project unlocked partitions as plaintext. */
+  mode?: 'source' | 'unlockedPartitions';
 }): Promise<ImageExportResult> {
   return invokeCmd<ImageExportResult>('image_export_raw', args);
 }

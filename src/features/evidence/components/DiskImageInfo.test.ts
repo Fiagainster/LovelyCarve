@@ -12,12 +12,14 @@ vi.mock('../../../lib/ipc/bitlocker', () => ({ bitlockerStatus: vi.fn(async () =
 const shadow = vi.hoisted(() => ({ list: vi.fn(), open: vi.fn() }));
 vi.mock('../../../lib/ipc/shadow', () => ({ shadowCopyList: shadow.list, shadowCopyOpen: shadow.open }));
 const hash = vi.hoisted(() => ({ result: { value: undefined as Record<string, string | null> | undefined } }));
+const imageExport = vi.hoisted(() => ({ start: vi.fn(), job: vi.fn() }));
+vi.mock('../composables/useImageExport', () => ({ useImageExport: () => ({ startImageExport: imageExport.start, jobFor: imageExport.job }) }));
 vi.mock('../composables/useImageHash', () => ({ useImageHashResult: () => hash.result }));
 vi.mock('../../cases/composables/useCaseSession', () => ({ useCaseSession: () => ({ activeCase: { value: null } }) }));
 vi.mock('../../../composables/useToast', () => ({ notifySuccess: vi.fn(), notifyError: vi.fn() }));
 vi.mock('./ImageHashPanel.vue', () => ({ default: { render: () => h('input', { 'aria-label': '哈希校验测试状态' }) } }));
-vi.mock('./AutoDetectBadge.vue', () => ({ default: { render: () => h('span', '平台结论') } }));
-vi.mock('../../raid/components/RaidStackPanel.vue', () => ({ default: defineComponent({ emits: ['browse-files'], setup: (_, { emit }) => () => h('button', { class: 'raid-browse', onClick: () => emit('browse-files') }, 'RAID 检测结果') }) }));
+vi.mock('./AutoDetectBadge.vue', () => ({ default: defineComponent({ setup: (_, { slots }) => () => h('div', ['平台结论', slots.default?.(), h('button', { 'aria-label': '重新识别平台' }, '刷新')]) }) }));
+vi.mock('../../raid/components/RaidStackPanel.vue', () => ({ default: { render: () => h('div', 'RAID 检测结果') } }));
 vi.mock('./BitlockerUnlockControl.vue', () => ({ default: { render: () => h('button', '解锁 BitLocker') } }));
 vi.mock('./EncryptedVolumeUnlockDialog.vue', async () => {
   const { defineComponent: define, h: render } = await import('vue');
@@ -64,7 +66,6 @@ function volume(partition_id: number, shadow_copies: ShadowCopyInfo[], error: st
 let app: App | undefined;
 let host: HTMLDivElement;
 const opened = vi.fn();
-const browsed = vi.fn();
 
 async function settle() {
   for (let i = 0; i < 4; i += 1) await nextTick();
@@ -74,7 +75,7 @@ async function mount(info: ImageInfo = fixture) {
   host = document.createElement('div');
   document.body.append(host);
   const currentInfo = shallowRef(info);
-  app = createApp(defineComponent({ render: () => h(DiskImageInfo, { info: currentInfo.value, 'onOpen-image': opened, 'onBrowse-files': browsed }) }));
+  app = createApp(defineComponent({ render: () => h(DiskImageInfo, { info: currentInfo.value, 'onOpen-image': opened }) }));
   app.mount(host);
   await settle();
   return currentInfo;
@@ -94,6 +95,7 @@ function button(scope: ParentNode, label: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  imageExport.job.mockReset();
   vi.mocked(fsMounts).mockReset().mockResolvedValue([]);
   hash.result.value = undefined;
   shadow.list.mockResolvedValue([]);
@@ -105,7 +107,7 @@ afterEach(() => {
 });
 
 describe('DiskImageInfo evidence overview', () => {
-  it('shows a readable reconstruction name, preserves its identity and forwards browsing', async () => {
+  it('shows a readable reconstruction name and exports its original image from the header', async () => {
     const path = 'assembled://md:auto-raid5-59494dc69af24768b6a690819d35420e';
     await mount({ ...fixture, path, source_format: 'assembled', on_disk_bytes: null,
       partitions: [{ id: 0, kind: 'ext4', label: null, start_lba: 0, length_lba: 2097152 }] });
@@ -114,8 +116,12 @@ describe('DiskImageInfo evidence overview', () => {
     expect(section('details')?.textContent).toContain(path);
     expect(section('details')?.querySelector('[aria-label="复制重组镜像标识"]')).not.toBeNull();
     expect(row(0).querySelector('.part-index')).toBeNull();
-    host.querySelector<HTMLButtonElement>('.raid-browse')!.click(); await settle();
-    expect(browsed).toHaveBeenCalledOnce(); expect(opened).not.toHaveBeenCalled();
+    const exportButton = button(host.querySelector('.evidence-head')!, '导出原始镜像')!;
+    expect(exportButton.disabled).toBe(false);
+    exportButton.click(); await settle();
+    expect(imageExport.start).toHaveBeenCalledWith({ imageId: fixture.id, defaultFileName: 'RAID_5_重组镜像.dd',
+      mode: 'unlockedPartitions', title: '导出原始镜像为 RAW', runningTitle: '导出原始镜像中…', doneTitle: '原始镜像导出完成' });
+    expect(opened).not.toHaveBeenCalled();
   });
   it('keeps the drive picker open inside the extracted mount control and dispatches the selected drive', async () => {
     useUiPreferences().mountTarget.value = 'drive';
@@ -135,6 +141,10 @@ describe('DiskImageInfo evidence overview', () => {
     expect(host.querySelector('.evidence-name')?.textContent).toBe('disk.E01');
     expect(host.querySelector('.evidence-head')?.textContent).toContain('EWF');
     expect(host.querySelector('.evidence-head')?.textContent).toContain('平台结论');
+    const actions = host.querySelector('.evidence-actions')!;
+    expect([...actions.querySelectorAll('button')].map(item => item.textContent?.trim())).toEqual(['导出原始镜像', '刷新']);
+    button(actions, '导出原始镜像')!.click(); await settle();
+    expect(imageExport.start).toHaveBeenCalledWith(expect.objectContaining({ imageId: fixture.id, mode: 'unlockedPartitions', defaultFileName: 'disk.E01.dd' }));
     expect(host.querySelector('.evidence-path')?.textContent).toContain('D:/evidence/disk.E01');
     expect(host.querySelector('.evidence-size')?.textContent?.trim()).toBe('1.00 GiB · 实际占用 512.00 MiB（50.0%）');
     for (const name of ['volumes', 'integrity', 'details']) {
@@ -270,6 +280,7 @@ describe('DiskImageInfo evidence overview', () => {
     expect(host.querySelector('.synthetic-root-mount .mount-btn')).not.toBeNull();
     expect(host.querySelector('.partition-table')).toBeNull();
     expect(button(host, '解锁加密容器')).toBeUndefined();
+    expect(button(host, '导出原始镜像')).toBeUndefined();
     expect(shadow.list).not.toHaveBeenCalled();
   });
 

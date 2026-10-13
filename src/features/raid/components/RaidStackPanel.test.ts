@@ -17,12 +17,12 @@ vi.mock('./RaidLayoutDiagram.vue', () => ({ default: { render: () => h('div', { 
 const array: RaidArray = { set_uuid: 'array-a', set_name: 'array/a', level: 5, layout: 0, chunksize_sectors: 128, raid_disks: 3, data_offset_sectors: 0, assembled_bytes: 1024000, assembled_image_id: null, heuristic: false, members: [{ dev_number: 0, slot: 0, device_uuid: 'member-a', data_size_sectors: 1000, reconstructed: false, origin: { kind: 'whole', image_id: 'a', partition_id: 1, byte_offset: 0, byte_length: 512000 } }] };
 const stack: RaidStack = { images: [{ image_id: 'a', path: 'D:/member-a.dd', size_bytes: 512000, partition_count: 1, lvm_pv_count: 0 }], volume_groups: [], arrays: [array], filesystems: [], diagnostics: ['diagnostic'] };
 const info = shallowRef<ImageInfo>({ id: 'a', path: 'D:/member-a.dd', source_format: 'raw', size_bytes: 512000, sector_size: 512, partitions: [{ id: 1, kind: 'ntfs', label: null, start_lba: 0, length_lba: 1000 }], table_scheme: 'gpt', disk_id: null, on_disk_bytes: null, created_unix_ms: null, modified_unix_ms: null, ewf: null });
-let app: App; let host: HTMLElement; const opened = vi.fn(); const browsed = vi.fn();
+let app: App; let host: HTMLElement; const opened = vi.fn();
 async function settle() { for (let index = 0; index < 8; index++) await nextTick(); }
-async function mount() { host = document.createElement('div'); document.body.append(host); app = createApp({ render: () => h(RaidStackPanel, { info: info.value, 'onOpen-image': opened, 'onBrowse-files': browsed }) }); app.mount(host); await settle(); }
+async function mount() { host = document.createElement('div'); document.body.append(host); app = createApp({ render: () => h(RaidStackPanel, { info: info.value, 'onOpen-image': opened }) }); app.mount(host); await settle(); }
 function button(label: string) { return [...host.querySelectorAll<HTMLButtonElement>('button')].find(item => item.textContent?.trim() === label)!; }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { resolve, promise }; }
-beforeEach(() => { vi.resetAllMocks(); info.value = { ...info.value, id: 'a', table_scheme: 'gpt' }; detection.value = stack; loading.value = false; error.value = null; });
+beforeEach(() => { vi.resetAllMocks(); info.value = { ...info.value, id: 'a', source_format: 'raw', table_scheme: 'gpt' }; detection.value = stack; loading.value = false; error.value = null; });
 afterEach(() => { app?.unmount(); host?.remove(); });
 
 describe('RAID panel composition', () => {
@@ -79,17 +79,15 @@ describe('RAID panel composition', () => {
     detection.value = { ...stack, arrays: [{ ...array, assembled_image_id: 'assembled-a' }] }; await mount(); button('打开重组镜像').click(); app.unmount();
     summary.resolve({ path: 'assembled://array-a' }); await settle(); expect(opened).not.toHaveBeenCalled();
   });
-  it('browses the current reconstruction directly and retains export', async () => {
+  it('keeps current reconstruction details without duplicate header or array actions', async () => {
     detection.value = { ...stack, arrays: [{ ...array, assembled_image_id: 'assembled-a' }], filesystems: [{ set_uuid: array.set_uuid, kind: 'ext4', fsid: null, total_bytes: null, bytes_used: null, num_devices: null, sector_size: null, node_size: null }] };
-    info.value = { ...info.value, id: 'assembled-a' };
+    info.value = { ...info.value, id: 'assembled-a', source_format: 'assembled' };
     await mount();
     expect(host.querySelector('.array-facts')).toBeNull();
     expect(host.querySelectorAll('details')).toHaveLength(1);
     expect(host.querySelector('.array-details summary')?.textContent).toBe('重组详情');
-    expect([...host.querySelectorAll('button')].some(item => item.textContent?.includes('打开重组镜像'))).toBe(false);
-    button('浏览文件').click(); await settle();
-    expect(browsed).toHaveBeenCalledOnce(); expect(calls.info).not.toHaveBeenCalled(); expect(opened).not.toHaveBeenCalled();
-    button('导出重组镜像').click(); await settle(); expect(calls.export).toHaveBeenCalledWith({ imageId: 'assembled-a', defaultFileName: 'array_a_RAID5.dd' });
+    expect(host.querySelectorAll('button')).toHaveLength(0);
+    expect(calls.info).not.toHaveBeenCalled(); expect(calls.export).not.toHaveBeenCalled();
   });
   it('keeps manual reconstruction reachable for a raw member and auto-detects hinted evidence', async () => {
     info.value = { ...info.value, partitions: [], table_scheme: 'mdadm' }; detection.value = null;

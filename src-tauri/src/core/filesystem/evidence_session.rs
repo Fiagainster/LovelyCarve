@@ -18,6 +18,8 @@ use crate::core::evidence::image::DiskImage;
 use crate::core::evidence::partitions::SectorSource;
 mod encrypted;
 use encrypted::AttachedEncryptedVolume;
+mod export;
+pub use export::{ImageExportMode, RawExportReader};
 
 #[derive(Debug)]
 pub struct EvidenceSession {

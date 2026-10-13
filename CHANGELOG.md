@@ -9,6 +9,8 @@
 
 ### Added
 
+- 普通磁盘与 RAID 重组镜像顶部提供原始 RAW 导出；已解锁的 LUKS、VeraCrypt 和 BitLocker 分区按明文导出，保留整盘布局与大小。
+
 - 补齐 VSS 原始块/存储区间枚举、签名检查与有界 seek/read，增加只读检查入口和 libvshadow 全部 48 个公开 API 的能力对照。
 
 - 补齐 LVM2 的 VG/PV/LV/segment/stripe 元数据与原始 LV 范围读取，支持单 PV 碎片多段卷，提供 libvslvm 全部 69 个公开 API 的能力对照。

@@ -77,6 +77,7 @@ async function startImageExport(opts: {
   doneTitle?: string;
   duplicateMessage?: string;
   exporter?: Exporter;
+  mode?: 'source' | 'unlockedPartitions';
 }): Promise<boolean> {
   if (jobs.has(opts.imageId) || choices.has(opts.imageId)) {
     notifyError('导出失败', opts.duplicateMessage ?? '此镜像已有导出任务在进行中');
@@ -165,6 +166,7 @@ async function startImageExport(opts: {
       imageId: opts.imageId,
       destination,
       taskId: job.taskId,
+      ...(opts.mode ? { mode: opts.mode } : {}),
     });
     if (epoch !== generation) return true;
     const written = typeof outcome === 'number' ? outcome : outcome.bytes_written;

@@ -10,17 +10,16 @@
         <span v-if="arr.heuristic" class="ui-badge outline" :title="heuristicTitle(arr)">参数推定</span>
         <span class="member-count mono">{{ activeMembers(arr) }} / {{ arr.raid_disks }} 成员盘</span>
       </div>
-      <div v-if="arr.assembled_image_id" class="array-actions">
+      <div v-if="arr.assembled_image_id && !isCurrentImage" class="array-actions">
         <button class="ui-btn" :disabled="exporting" :aria-busy="exporting"
           title="将重组镜像导出为 RAW（.dd）文件" @click="emit('export')">
           <Loader2 v-if="exporting" :size="14" class="spin" />
           <HardDriveDownload v-else :size="14" />导出重组镜像
         </button>
         <button class="ui-btn primary" :disabled="opening" :aria-busy="opening"
-          :title="isCurrentImage ? '查看当前重组镜像的文件列表' : '打开重组镜像标签'" @click="isCurrentImage ? emit('browse-files') : emit('open')">
+          title="打开重组镜像标签" @click="emit('open')">
           <Loader2 v-if="opening" :size="14" class="spin" />
-          <FolderOpen v-else-if="isCurrentImage" :size="14" />
-          <ExternalLink v-else :size="14" />{{ isCurrentImage ? '浏览文件' : '打开重组镜像' }}
+          <ExternalLink v-else :size="14" />打开重组镜像
         </button>
       </div>
     </header>
@@ -61,14 +60,14 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
-import { CircleAlert, CircleCheck, CircleDot, ChevronRight, ExternalLink, FolderOpen, HardDriveDownload, Loader2 } from 'lucide-vue-next';
+import { CircleAlert, CircleCheck, CircleDot, ChevronRight, ExternalLink, HardDriveDownload, Loader2 } from 'lucide-vue-next';
 import { vDisclosureMotion } from '../../../composables/uiMotionDirectives';
 import type { RaidArray } from '../../../lib/ipc/raid';
 import { activeMembers, arrayStatus, arrayTitle, chunkDisplay, dataOffsetDisplay, diskLabelsFor, heuristicTitle, layoutLabel, memberShortLabel, missingSlotFor, orderedMembers, originTitle, showDiagram } from '../model/stackView';
 import RaidLayoutDiagram from './RaidLayoutDiagram.vue';
 
 const props = defineProps<{ arr: RaidArray; imageId: string; imagePaths: ReadonlyMap<string, string>; opening: boolean; exporting: boolean; diagramOpen: boolean; diagnostics?: string[] }>();
-const emit = defineEmits<{ open: []; export: []; 'browse-files': []; 'diagram-toggle': [open: boolean] }>();
+const emit = defineEmits<{ open: []; export: []; 'diagram-toggle': [open: boolean] }>();
 const isCurrentImage = computed(() => props.arr.assembled_image_id === props.imageId);
 const statusIcons = { success: CircleCheck, warn: CircleAlert, info: CircleDot };
 const status = computed(() => arrayStatus(props.arr));

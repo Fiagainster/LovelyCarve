@@ -10,6 +10,7 @@
     <span v-else class="platform-state">尚未识别平台</span>
     <span v-if="report?.is_backup" class="ui-badge sm info">备份</span>
     <span v-for="extra in extraPlatforms" :key="extra" class="ui-badge sm">{{ platformLabel(extra) }}</span>
+    <slot />
     <button
       class="ui-icon-btn sm"
       type="button"

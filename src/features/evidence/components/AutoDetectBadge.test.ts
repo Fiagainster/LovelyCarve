@@ -20,10 +20,10 @@ import AutoDetectBadge from './AutoDetectBadge.vue';
 let app: App;
 let host: HTMLDivElement;
 
-function mount() {
+function mount(action?: boolean) {
   host = document.createElement('div');
   document.body.append(host);
-  app = createApp({ render: () => h(AutoDetectBadge, { imageId: 'disk-one' }) });
+  app = createApp({ render: () => h(AutoDetectBadge, { imageId: 'disk-one' }, action ? { default: () => h('button', '导出原始镜像') } : undefined) });
   app.mount(host);
 }
 
@@ -44,17 +44,18 @@ describe('platform badge', () => {
 
   it('shows the conclusion and runs it again on request', async () => {
     report.value = { platform: 'windows', platforms: ['windows', 'linux'], display_platform_name: null, evidence_type: 'disk', is_backup: false, manufactor: null } as unknown as AutoDetectReport;
-    mount();
+    mount(true);
     expect(detect.run).not.toHaveBeenCalled();
     expect(host.querySelector('.platform-chip')?.textContent).toContain('Windows');
     expect(host.querySelector('.platform-chip')?.textContent).toContain('磁盘镜像');
     expect(host.textContent).toContain('Linux');
-    host.querySelector<HTMLButtonElement>('button')!.click();
+    expect([...host.querySelectorAll('button')].map(item => item.textContent?.trim())).toEqual(['导出原始镜像', '']);
+    host.querySelector<HTMLButtonElement>('[aria-label="重新识别平台"]')!.click();
     expect(detect.run).toHaveBeenCalledWith('disk-one');
 
     pending.value = true;
     await nextTick();
-    expect(host.querySelector<HTMLButtonElement>('button')!.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>('[aria-label="重新识别平台"]')!.disabled).toBe(true);
   });
 
   it('names a failed detection', () => {

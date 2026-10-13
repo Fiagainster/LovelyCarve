@@ -22,7 +22,7 @@ type WorkspaceShellOptions = {
    *  with no active case — they must create / open a case there first. */
   onNeedCase: () => void;
   /** Show the "添加证据" chooser (镜像文件 / 文件夹 / RAID 磁盘). The shell only
-   *  gates on the active case and delegates the actual pick + load to App.vue,
+   *  gates on the active case and delegates the actual pick + load to AppShell.vue,
    *  which owns the dialog state and the RAID-reconstruction orchestration. */
   onRequestAddImage: () => void;
   /** Close the case gate before replaying a pending open action. */
@@ -103,7 +103,7 @@ export function useWorkspaceShell(options: WorkspaceShellOptions) {
 
   /** Public-facing "add image" — what the welcome screen, sidebar open
    *  button, "+" button on Tabbar, and Ctrl+O all call. Gates on an active
-   *  case, then opens the chooser dialog (镜像文件 / 文件夹 / RAID 磁盘); App.vue
+   *  case, then opens the chooser dialog (镜像文件 / 文件夹 / RAID 磁盘); AppShell.vue
    *  picks the source and runs the matching load flow. */
   const handleOpenFile = async () => {
     if (!ensureCaseBeforeOpen({ kind: 'choose-source' })) return;
@@ -314,7 +314,7 @@ export function useWorkspaceShell(options: WorkspaceShellOptions) {
     openImagePath,
     handleSidebarSelect,
     clearPendingOpenRequest,
-    /** TabManager hook implementations (App.vue wires these via
+    /** TabManager hook implementations (AppShell.vue wires these via
      *  `initTabManagerHooks`). Exposed instead of called inline so
      *  the workspace shell stays decoupled from tab-manager imports
      *  on its own setup path. */

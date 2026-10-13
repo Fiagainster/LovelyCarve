@@ -5,7 +5,7 @@
       <p class="ui-empty-title">未加载镜像</p>
     </div>
     <div v-else class="overview ui-stagger">
-      <!-- 检材头部：哪份检材（文件名、格式、完整路径、容量），右侧是平台识别结论。
+      <!-- 检材头部：哪份检材（文件名、格式、完整路径、容量），右侧是平台识别结论与原始镜像导出。
            不做卡片；页面名由侧栏给出。 -->
       <EvidenceHeader :info="info" @copy="copyText" />
       <div v-if="info.index_only" class="ui-alert info" role="status">离线索引 · 原镜像不可用。容量与格式来自案件记录；目录和属性可在文件列表查看，恢复原路径的镜像后重新打开即可读取正文。</div>
@@ -15,7 +15,7 @@
         @unlock="openUnlock" @open-image="emit('open-image', $event)" @copy="copyText" />
 
       <!-- RAID 检测（与该镜像无关时自隐） -->
-      <RaidStackPanel v-if="!info.index_only" :info="info" @open-image="emit('open-image', $event)" @browse-files="emit('browse-files')" />
+      <RaidStackPanel v-if="!info.index_only" :info="info" @open-image="emit('open-image', $event)" />
 
       <div v-if="!info.index_only" class="overview-grid">
         <EvidenceIntegrityCard :info="info" @copy="copyText" />
@@ -50,7 +50,7 @@ import EvidenceIntegrityCard from './EvidenceIntegrityCard.vue';
 import EvidenceAcquisitionCard from './EvidenceAcquisitionCard.vue';
 
 const props = defineProps<{ info: ImageInfo | null }>();
-const emit = defineEmits<{ 'open-image': [path: string]; 'browse-files': [] }>();
+const emit = defineEmits<{ 'open-image': [path: string] }>();
 
 const { activeCase } = useCaseContext();
 const LOGICAL_FORMATS = new Set(['folder', 'tar', 'zip', 'sevenz', 'ad1', 'docker']);

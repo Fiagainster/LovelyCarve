@@ -12,7 +12,7 @@
  *
  * Why service-locator (rather than direct imports of the file-session
  * composables): `useFileSession` etc. are factory-called once at
- * App.vue setup time, and the resulting refs are the canonical app
+ * AppShell.vue setup time, and the resulting refs are the canonical app
  * state. If TabManager imported `useFileSession` itself it would call
  * the factory a *second* time and end up with a parallel set of refs
  * disconnected from the rest of the app. Hooks dodge that without
@@ -29,11 +29,12 @@
  * file references after evidence moves on disk).
  */
 import { computed, ref } from 'vue';
+import { evidenceDisplayName } from '../../features/evidence/model/evidenceOverview';
 
 export interface WorkspaceTab {
   id: string;            // crypto.randomUUID()
   filePath: string;      // absolute path; doubles as the backend cache key
-  fileName: string;      // basename for the chip label
+  fileName: string;      // evidence display name for the chip label
   mode: 'image' | 'evidence';
   /** Panel the tab was on when the user last left it. Restored on
    *  re-activation so each tab "remembers where you were". */
@@ -63,7 +64,7 @@ function nextActivationSeq(): number { return ++activationCounter; }
 // ── Module-level singleton state ─────────────────────────────────────
 //
 // Multiple importers all see the same arrays/refs, no Pinia / Vuex needed.
-// App.vue is responsible for calling `initTabManagerHooks(...)` exactly once.
+// AppShell.vue is responsible for calling `initTabManagerHooks(...)` exactly once.
 const tabs = ref<WorkspaceTab[]>([]);
 const activeTabId = ref<string | null>(null);
 const isSwitching = ref(false);
@@ -85,7 +86,7 @@ type SetActivePanelFn = (panelId: string) => void;
 type IsBusyFn = () => boolean;
 
 /** Opaque session snapshot — the tab manager doesn't read its
- *  contents, just stores and replays it. App.vue bundles per-composable
+ *  contents, just stores and replays it. AppShell.vue bundles per-composable
  *  snapshots into this object. */
 export type SessionSnapshot = unknown;
 
@@ -162,10 +163,6 @@ function deriveMode(_filePath: string): WorkspaceTab['mode'] {
   return 'image';
 }
 
-function basename(filePath: string): string {
-  return filePath.split(/[\\/]/).pop() ?? filePath;
-}
-
 function snapshotActivePanel(): void {
   if (!hooks) return;
   const cur = tabs.value.find(t => t.id === activeTabId.value);
@@ -215,7 +212,7 @@ async function openNewTab(filePath: string, opts?: LoadFileOptions): Promise<Ope
       ? crypto.randomUUID()
       : `tab-${nextActivationSeq()}-${Math.random().toString(36).slice(2, 8)}`,
     filePath,
-    fileName: basename(filePath),
+    fileName: evidenceDisplayName({ path: filePath, source_format: filePath.startsWith('assembled://') ? 'assembled' : '' }),
     mode,
     lastActivePanel: '',
     lastActiveSeq: nextActivationSeq(),

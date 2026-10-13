@@ -45,7 +45,7 @@ const snapshots = ref<SnapshotInfo[]>([]);
 const buildProgress = ref<Map<string, SnapshotProgress>>(new Map());
 const busy = ref(false);
 
-// Workspace teardown injected by the shell (AuthorizedApp): closes every open
+// Workspace teardown injected by the shell (AppShell): closes every open
 // image tab + wipes the live file session. A case's evidence is its working
 // set, so switching to (or closing) a case must retire the previous case's
 // tabs — otherwise a stale tab re-`image_load`s its image into the now-active
@@ -62,7 +62,7 @@ let listening: Promise<void> | null = null;
 let unlisten: UnlistenFn | null = null;
 
 /** Register the handler that closes all image tabs + clears the file session.
- *  Called once by AuthorizedApp. */
+ *  Called once by AppShell. */
 export function registerCaseWorkspaceTeardown(teardown: () => void | Promise<void>): () => void {
   workspaceTeardown = teardown;
   return () => { if (workspaceTeardown === teardown) workspaceTeardown = null; };

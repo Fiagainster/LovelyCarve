@@ -12,6 +12,7 @@ use crate::core::evidence::image::ReadFaultReport;
 use crate::core::evidence::physical_disk::PhysicalDisk;
 use crate::core::evidence::raid;
 use crate::core::evidence::raid::RaidStack;
+use crate::core::filesystem::evidence_session::ImageExportMode;
 use crate::state::AppState;
 
 #[tauri::command]
@@ -77,6 +78,8 @@ pub async fn raid_manual_assemble(
 /// the existing `task_cancel` IPC. The exporter checks that token between
 /// chunks and aborts cleanly with a partial file (the partial result is
 /// not deleted — leaving artefact recovery to the user).
+/// `mode: unlockedPartitions` snapshots all currently unlocked partitions and
+/// writes their plaintext into the original disk layout. Omitted mode is source.
 #[tauri::command]
 pub async fn image_export_raw(
     app: AppHandle,
@@ -85,6 +88,7 @@ pub async fn image_export_raw(
     destination: String,
     task_id: String,
     read_fault_policy: Option<ReadFaultPolicy>,
+    mode: Option<ImageExportMode>,
 ) -> Result<ImageExportResult, AppError> {
     crate::app::workflows::evidence::image_export_raw(
         app,
@@ -93,6 +97,7 @@ pub async fn image_export_raw(
         destination,
         task_id,
         read_fault_policy,
+        mode,
     )
     .await
 }

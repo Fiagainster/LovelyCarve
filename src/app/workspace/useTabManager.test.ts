@@ -121,6 +121,18 @@ describe('useTabManager', () => {
   });
 
   describe('openNewTab', () => {
+    it('uses evidence display names for queued RAID tabs while retaining their source paths', async () => {
+      makeHookHarness({ busy: true });
+      const manager = useTabManager();
+      const path = 'assembled://md:auto-raid5-59494dc69af24768b6a690819d35420e';
+      await manager.openNewTab(path);
+      await manager.openNewTab('assembled://md:custom-array');
+      expect(manager.tabs.value.map(tab => [tab.fileName, tab.filePath, tab.pendingLoad])).toEqual([
+        ['RAID 5 重组镜像', path, true],
+        ['RAID 重组镜像', 'assembled://md:custom-array', true],
+      ]);
+    });
+
     it('inserts a tab and activates it on successful load', async () => {
       const h = makeHookHarness();
       const tm = useTabManager();

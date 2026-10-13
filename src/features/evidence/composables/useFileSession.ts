@@ -84,12 +84,12 @@ function isDiskImagePath(fileName: string): boolean {
 const alertedBitlockerImageIds = new Set<string>();
 
 // 「前往解锁」跳转回调：把用户带到镜像信息面板（BitLocker 解锁控件所在）。由
-// AuthorizedApp 注入——组合式函数不持有面板状态，沿用 useRaidStack 的
+// AppShell 注入——组合式函数不持有面板状态，沿用 useRaidStack 的
 // registerRaidImageOpener 解耦套路。
 let bitlockerUnlockNavigator: (() => void) | null = null;
 
 /** Register the handler that navigates to the 镜像信息 panel where
- *  BitLocker unlock lives. Called once by AuthorizedApp. */
+ *  BitLocker unlock lives. Called once by AppShell. */
 export function registerBitlockerUnlockNavigator(navigate: () => void) {
   bitlockerUnlockNavigator = navigate;
   return () => { if (bitlockerUnlockNavigator === navigate) bitlockerUnlockNavigator = null; };
