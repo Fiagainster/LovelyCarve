@@ -75,6 +75,10 @@ just --dry-run pack           # 展开依赖与命令，不执行构建
 just run-example probe_partitions '"D:\Evidence Files\disk.E01"'
 ```
 
+VSS 独立 reader 使用 `test-vsc` / `clippy-vsc`；`probe-vsc <NTFS卷RAW> --blocks --hash`
+检查原始元数据并顺序计算每个快照的完整摘要，`compare-vsc <oracle目录> <数量>`
+运行 pyvshadow 差分语料。样本和可选环境变量见 [VSS](VSS.md)。
+
 桌面 `release` 体积优先，热点依赖保留独立优化；`release-fast` 用于性能比较。开发版 Argon2 / BLAKE2 也启用优化，以满足高内存 LUKS2 的派生预算。性能验证见 [PERFORMANCE.md](PERFORMANCE.md)。
 
 ## 插件与资源

@@ -97,9 +97,22 @@ pub struct StoreDescriptor {
     /// from the type-0x03 entry at offset 72; `None` when the entry is absent
     /// or records no previous bitmap (offset 0).
     pub store_previous_bitmap_offset: Option<u64>,
+    /// Volume-relative range-list pointer from type 0x03 (+40).
+    pub store_block_range_list_offset: Option<u64>,
+    /// Raw NTFS file reference from type 0x03 (+56).
+    pub ntfs_file_reference: Option<u64>,
+    /// Raw allocated size from type 0x03 (+64).
+    pub allocated_size: Option<u64>,
 }
 
 impl StoreDescriptor {
+    /// Whether a type-0x03 entry supplies this store's in-volume data pointers.
+    /// This does not establish that the pointed-to metadata is readable.
+    #[must_use]
+    pub fn has_in_volume_data(&self) -> bool {
+        self.store_header_offset.is_some()
+    }
+
     /// The store identifier rendered as a canonical GUID string.
     #[must_use]
     pub fn store_id_string(&self) -> String {
@@ -122,6 +135,9 @@ pub(crate) enum CatalogEntry {
         store_header_offset: u64,
         store_bitmap_offset: u64,
         store_previous_bitmap_offset: u64,
+        store_block_range_list_offset: u64,
+        ntfs_file_reference: u64,
+        allocated_size: u64,
     },
     /// Any other entry type (0x01, unknown).
     Other,
@@ -140,6 +156,9 @@ pub(crate) fn parse_catalog_entry(buf: &[u8]) -> CatalogEntry {
             store_bitmap_offset: None,
             store_block_list_offset: None,
             store_previous_bitmap_offset: None,
+            store_block_range_list_offset: None,
+            ntfs_file_reference: None,
+            allocated_size: None,
         }),
         0x03 => CatalogEntry::StorePointer {
             store_id: read_guid(buf, 16),
@@ -147,6 +166,9 @@ pub(crate) fn parse_catalog_entry(buf: &[u8]) -> CatalogEntry {
             store_header_offset: le_u64(buf, 32),
             store_bitmap_offset: le_u64(buf, 48),
             store_previous_bitmap_offset: le_u64(buf, 72),
+            store_block_range_list_offset: le_u64(buf, 40),
+            ntfs_file_reference: le_u64(buf, 56),
+            allocated_size: le_u64(buf, 64),
         },
         0x00 => CatalogEntry::Empty,
         _ => CatalogEntry::Other,
@@ -161,5 +183,7 @@ pub(crate) fn catalog_next_block_offset(block: &[u8]) -> u64 {
 /// Whether a catalog block header carries the VSS identifier and catalog record
 /// type — used to stop walking on a corrupt/foreign block.
 pub(crate) fn is_catalog_block(block: &[u8]) -> bool {
-    read_guid(block, 0) == VSS_IDENTIFIER && le_u32(block, 20) == CATALOG_BLOCK_RECORD_TYPE
+    read_guid(block, 0) == VSS_IDENTIFIER
+        && le_u32(block, 16) == 1
+        && le_u32(block, 20) == CATALOG_BLOCK_RECORD_TYPE
 }

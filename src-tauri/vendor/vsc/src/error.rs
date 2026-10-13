@@ -13,6 +13,15 @@ pub enum VssError {
     #[error("i/o error reading VSS volume: {0}")]
     Io(#[from] std::io::Error),
 
+    /// Invalid volume header, catalog chain, or snapshot geometry.
+    #[error("VSS metadata at {offset:#x} is corrupt: {reason}")]
+    CorruptVolumeMetadata {
+        /// Volume-relative location of the offending metadata.
+        offset: u64,
+        /// The failed integrity check.
+        reason: &'static str,
+    },
+
     /// A store index passed to [`crate::VssVolume::store_info`] is past the end
     /// of the enumerated stores.
     #[error("store index {index} out of range ({count} store(s) enumerated)")]

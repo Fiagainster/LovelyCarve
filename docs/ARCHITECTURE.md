@@ -1029,7 +1029,11 @@ LUKS 扇区密码套件由 vendored `sector_cipher` 统一分派，密码槽与�
 资源调度，注册前确认父镜像仍在会话中，同一副本已打开时复用原会话。`image_load` 对 `vss://`
 路径只查找已注册会话，不写入案件检材清单；RAID 检测不把卷影副本当作候选成员。
 前端由 `useShadowCopies` 读取列表，镜像信息页在对应分区行显示副本数（有 VSS 区而无副本时显示「无卷影副本」），
-展开后由 `ShadowCopyList.vue` 列出副本，打开后在新标签页浏览；解锁 BitLocker 后重新读取列表。CLI 暂未提供该功能。
+展开后由 `ShadowCopyList.vue` 列出副本，打开后在新标签页浏览；解锁 BitLocker 后重新读取列表。
+CLI 注册表提供 `shadow-copy-list` / `shadow-copy-open`，在同一会话中保留父镜像与副本。
+读取器公开 `store_blocks` / `store_ranges` 原始枚举和 `Snapshot: Read + Seek`；完整 API 对照与
+验证边界见 [VSS](VSS.md)。catalog 损坏/循环不再返回部分成功列表，存储头整块读取并校验。
+原始 catalog 尺寸保留用于调查，布局尺寸独立求值；异常时要求主备 NTFS 几何一致。
 
 ## SQLite 删除记录恢复
 

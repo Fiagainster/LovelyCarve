@@ -400,10 +400,7 @@ pub fn open(
             index + 1
         )
     })?;
-    let shadow_copy_id = volume
-        .store_info(index)
-        .ok()
-        .map(|info| info.shadow_copy_id_string());
+    let shadow_copy_id = Some(volume.store_info(index)?.shadow_copy_id_string());
     let layout = volume.snapshot_layout(index)?;
     if cancellation.is_cancelled() {
         bail!("shadow copy open cancelled");

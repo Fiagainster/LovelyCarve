@@ -40,7 +40,17 @@ fn main() {
             out.copy_from_slice(&image[start..start + out.len()]);
             Ok(())
         };
-        let mut volume = VssVolume::open(Cursor::new(image.clone())).unwrap();
+        let mut volume = match VssVolume::open(Cursor::new(image.clone())) {
+            Ok(volume) => volume,
+            Err(error) => {
+                if status.starts_with("error ") {
+                    continue;
+                }
+                failures += 1;
+                println!("rand_{k}: catalog rejected: {error}");
+                continue;
+            }
+        };
 
         if let Some(message) = status.strip_prefix("error ") {
             let accepted = (0..volume.store_count()).all(|i| volume.snapshot_layout(i).is_ok());

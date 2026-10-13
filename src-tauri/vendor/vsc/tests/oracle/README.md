@@ -14,7 +14,7 @@ descriptors, and the newer store has a previous bitmap. The expected per-store
 digests were produced with libvshadow-python 20260714.
 
 ```
-VSC_ORACLE_IMAGE=/path/to/vss.raw cargo test --test oracle_dfvfs
+VSC_ORACLE_IMAGE=/path/to/vss.raw just test-vsc --test oracle_dfvfs
 ```
 
 ## Random multi-store volumes (forwarders, overlays, not-used, bitmaps)
@@ -25,7 +25,7 @@ covers them:
 ```
 python -m venv venv && venv/bin/pip install libvshadow-python==20260714
 venv/bin/python tests/oracle/random_images.py out 300 20261003 /path/to/vss.raw
-cargo run --release --example differential -- out 300
+just compare-vsc /absolute/path/to/out 300
 ```
 
 `random_images.py` writes NTFS-headed volumes (the boot sector and VSS
@@ -36,3 +36,11 @@ swaps, and carry random current and previous bitmaps. pyvshadow dumps every
 store, and the example compares whole volumes plus 500 random unaligned ranges
 per store. On 2026-10-03 seeds 20261003 (300 images) and 7 (500 images) gave
 1,984 stores and 992,000 ranges identical, with no rejections on either side.
+
+Run `just` recipes from the repository root. On 2026-10-13 the pinned dfVFS
+image was downloaded, its source SHA-256 verified, and both whole-store hashes
+were exercised by the reader oracle, `just probe-vsc ... --blocks --hash`, and
+the application's env-gated VSS/NTFS tests. These use the existing independent
+20260714 oracle digests; neither the current libvshadow source nor the random
+corpus was rebuilt/rerun on that date. See `docs/VSS.md` for API parity,
+synthetic regressions and remaining limits.

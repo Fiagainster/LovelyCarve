@@ -396,6 +396,24 @@ clippy-bitlocker *args:
 test-vsc *args:
     cargo test {{ args }}
 
+# Lint the standalone Volume Shadow Copy reader and its probes.
+[group("readers")]
+[working-directory("src-tauri/vendor/vsc")]
+clippy-vsc:
+    cargo clippy --all-targets -- -D warnings
+
+# Inspect a raw NTFS volume's VSS header, stores and raw block/range metadata.
+[group("readers")]
+[working-directory("src-tauri/vendor/vsc")]
+probe-vsc *args:
+    cargo run --example inspect -- {{ args }}
+
+# Compare generated pyvshadow whole-volume and range dumps (see tests/oracle/README.md).
+[group("readers")]
+[working-directory("src-tauri/vendor/vsc")]
+compare-vsc directory count:
+    cargo run --release --example differential -- {{ directory }} {{ count }}
+
 # Test the SQLite record carver; its sqlite3 oracle tests need sqlite3 on PATH or SQLITE3_BIN.
 [group("readers")]
 [working-directory("src-tauri/vendor/sqlite-core")]

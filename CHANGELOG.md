@@ -9,6 +9,8 @@
 
 ### Added
 
+- 补齐 VSS 原始块/存储区间枚举、签名检查与有界 seek/read，增加只读检查入口和 libvshadow 全部 48 个公开 API 的能力对照。
+
 - 补齐 LVM2 的 VG/PV/LV/segment/stripe 元数据与原始 LV 范围读取，支持单 PV 碎片多段卷，提供 libvslvm 全部 69 个公开 API 的能力对照。
 
 - 补齐 GPT 原始槽位、类型/唯一 GUID、属性、UTF-16 名称、主备头校验与有界 seek/read，增加分区探针 `--gpt` 及 libvsgpt 全部 42 个公开 API 对照。
@@ -26,6 +28,8 @@
 - 插件 SDK、隔离宿主与 `linuxinfo` 改由独立的 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 子模块维护；源码构建需递归克隆或运行 `just bootstrap` 初始化子模块。
 
 ### Fixed
+
+- VSS 损坏或循环 catalog 明确报错，存储头完整读取并校验；异常 catalog 卷尺寸按 NTFS 主备几何恢复可读范围，保留原始值，长副本链不再依赖递归栈。
 
 - LVM2 验证标签、元数据头及文本 CRC，拼接活动环形缓冲回绕并读取远端备份；修复同大小 PV 身份、4Kn 的固定 512 字节单位、首段截断与未使用 PE 判定，跨镜像缺失/冲突成员不再组装为残缺 LV。
 

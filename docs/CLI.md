@@ -110,6 +110,7 @@ lovelycarve-cli --image "D:\evidence\disk.img" image-hash-compute --algorithms '
 | 功能 | 主要命令入口 |
 | --- | --- |
 | 镜像、物理磁盘、RAID、RAW 导出 | `image-*`、`physical-disks-list`、`raid-*` |
+| NTFS 卷影副本枚举、只读历史会话 | `shadow-copy-list`、`shadow-copy-open`；父/子镜像保持同一会话，见 [VSS](VSS.md) |
 | 文件系统、文件索引、目录分页、定位、Docker | `fs-*`、`filedb-*` |
 | 签名雕刻、状态、暂停/恢复、结果、恢复报告 | `carve-*` |
 | 文件/目录/ZIP 导出、命名数据流 | `fs-export*`、`fs-stream-*` |

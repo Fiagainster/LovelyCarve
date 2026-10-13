@@ -39,37 +39,21 @@
 //! volume are I/O errors and are never zero-filled.
 
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::Arc;
 
-use crate::block::{BlockDescriptor, BLOCK_DESCRIPTOR_LEN};
+use crate::block::BlockDescriptor;
 use crate::catalog::BLOCK_SIZE;
 use crate::error::VssError;
-use crate::store::{StoreBlockHeader, STORE_BLOCK_HEADER_LEN};
+use crate::metadata::ChainReader;
 use crate::VssVolume;
 
-/// Record type of a block-descriptor-list (diff-area) block.
-const BLOCK_LIST_RECORD_TYPE: u32 = 0x0003;
-
-/// Record type of a store-bitmap block.
-const BITMAP_RECORD_TYPE: u32 = 0x0006;
-
-/// The only store block format version in use.
-const STORE_BLOCK_VERSION: u32 = 1;
-
-/// [`BLOCK_SIZE`] as a volume offset.
+/// VSS block size in volume-relative bytes.
 const BLOCK_BYTES: u64 = BLOCK_SIZE as u64;
-
-/// Size of one overlay sub-block, in bytes.
+/// Each overlay bitmap addresses 32 sectors of 512 bytes.
 const SUB_BLOCK_SIZE: usize = 512;
-
-/// Number of 512-byte sub-blocks an overlay allocation bitmap addresses.
 const SUB_BLOCK_COUNT: u32 = (BLOCK_SIZE / SUB_BLOCK_SIZE) as u32;
-
-/// Upper bound on the metadata blocks walked for one store, so a corrupt chain
-/// cannot keep the loader busy indefinitely.
-const MAX_STORE_BLOCKS: usize = 1 << 20;
 
 fn block_number(offset: u64) -> u64 {
     offset / BLOCK_BYTES
@@ -240,17 +224,20 @@ impl StoreMap {
 #[derive(Debug, Clone)]
 pub struct SnapshotLayout {
     volume_size: u64,
+    source_size: u64,
     stores: Vec<Arc<StoreMap>>,
 }
 
 impl SnapshotLayout {
     /// Compose a layout from store maps: the requested store first, then each
     /// newer store in creation order (the order of [`VssVolume::stores`]).
-    /// `volume_size` is the snapshot's volume size from its catalog entry.
+    /// `volume_size` is the validated logical snapshot length. Raw catalog
+    /// sizes remain available separately on `StoreDescriptor`.
     #[must_use]
     pub fn new(volume_size: u64, stores: Vec<Arc<StoreMap>>) -> Self {
         SnapshotLayout {
             volume_size,
+            source_size: volume_size,
             stores,
         }
     }
@@ -267,10 +254,9 @@ impl SnapshotLayout {
     /// (offset 0 = the NTFS boot sector) or fail.
     ///
     /// # Errors
-    /// [`io::ErrorKind::UnexpectedEof`] when the range runs past
-    /// [`SnapshotLayout::volume_size`], [`io::ErrorKind::InvalidData`] when a
-    /// descriptor points outside the addressable range, and any error of
-    /// `read_volume`.
+    /// [`io::ErrorKind::UnexpectedEof`] when the logical or source range is out
+    /// of bounds, [`io::ErrorKind::InvalidData`] on descriptor offset overflow,
+    /// and any error of `read_volume`.
     pub fn read_at<F>(&self, offset: u64, buf: &mut [u8], read_volume: &mut F) -> io::Result<()>
     where
         F: FnMut(u64, &mut [u8]) -> io::Result<()>,
@@ -289,56 +275,61 @@ impl SnapshotLayout {
                 ),
             ));
         }
-        self.read_chain(0, offset, buf, read_volume)
-    }
-
-    fn read_chain<F>(
-        &self,
-        depth: usize,
-        mut offset: u64,
-        buf: &mut [u8],
-        read_volume: &mut F,
-    ) -> io::Result<()>
-    where
-        F: FnMut(u64, &mut [u8]) -> io::Result<()>,
-    {
-        let Some(store) = self.stores.get(depth) else {
-            return read_volume(offset, buf);
+        let mut read_volume = |offset: u64, out: &mut [u8]| {
+            if offset
+                .checked_add(out.len() as u64)
+                .is_none_or(|end| end > self.source_size)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "snapshot data lies outside the source volume",
+                ));
+            }
+            read_volume(offset, out)
         };
-        let has_next = depth + 1 < self.stores.len();
-        let is_active = depth == 0;
-
-        let mut done = 0usize;
+        let mut done = 0;
         while done < buf.len() {
-            let within = (offset % BLOCK_BYTES) as usize;
-            let (source, piece) = piece_at(store, offset, within, is_active);
-            let length = piece.min(buf.len() - done);
-            let out = &mut buf[done..done + length];
-            match source {
-                PieceSource::Descriptor {
-                    offset: block,
-                    forwarder,
-                } => {
-                    let target = block.checked_add(within as u64).ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!("shadow copy descriptor offset {block:#x} overflows"),
-                        )
-                    })?;
-                    if forwarder && has_next {
-                        self.read_chain(depth + 1, target, out, read_volume)?;
-                    } else {
-                        read_volume(target, out)?;
+            let mut target = offset + done as u64;
+            let mut length = buf.len() - done;
+            let mut depth = 0;
+            loop {
+                let Some(store) = self.stores.get(depth) else {
+                    read_volume(target, &mut buf[done..done + length])?;
+                    break;
+                };
+                let within = (target % BLOCK_BYTES) as usize;
+                let (source, piece) = piece_at(store, target, within, depth == 0);
+                length = length.min(piece);
+                let has_next = depth + 1 < self.stores.len();
+                match source {
+                    PieceSource::Descriptor {
+                        offset: block,
+                        forwarder,
+                    } => {
+                        target = block.checked_add(within as u64).ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "shadow copy descriptor offset overflows",
+                            )
+                        })?;
+                        if forwarder && has_next {
+                            depth += 1;
+                            continue;
+                        }
+                        read_volume(target, &mut buf[done..done + length])?;
                     }
+                    PieceSource::Absent if has_next => {
+                        depth += 1;
+                        continue;
+                    }
+                    PieceSource::Absent if depth == 0 && store.reads_as_zeros(target) => {
+                        buf[done..done + length].fill(0);
+                    }
+                    PieceSource::Absent => read_volume(target, &mut buf[done..done + length])?,
                 }
-                PieceSource::Absent if has_next => {
-                    self.read_chain(depth + 1, offset, out, read_volume)?;
-                }
-                PieceSource::Absent if is_active && store.reads_as_zeros(offset) => out.fill(0),
-                PieceSource::Absent => read_volume(offset, out)?,
+                break;
             }
             done += length;
-            offset += length as u64;
         }
         Ok(())
     }
@@ -406,6 +397,7 @@ fn piece_at(store: &StoreMap, offset: u64, within: usize, is_active: bool) -> (P
 pub struct Snapshot<'v, R> {
     reader: &'v mut R,
     layout: SnapshotLayout,
+    position: u64,
 }
 
 impl<R: Read + Seek> VssVolume<R> {
@@ -419,6 +411,7 @@ impl<R: Read + Seek> VssVolume<R> {
     ///   chain.
     /// - [`VssError::Io`] on an underlying read/seek failure.
     pub fn store_map(&mut self, index: usize) -> Result<StoreMap, VssError> {
+        self.store_info(index)?;
         let count = self.stores.len();
         let store = self
             .stores
@@ -431,13 +424,7 @@ impl<R: Read + Seek> VssVolume<R> {
         };
         let previous_bitmap_offset = store.store_previous_bitmap_offset;
 
-        let mut chains = ChainReader {
-            reader: &mut self.reader,
-            volume_size: self.volume_size,
-            store: index,
-            visited: HashSet::new(),
-            block: vec![0u8; BLOCK_SIZE],
-        };
+        let mut chains = ChainReader::new(&mut self.reader, self.volume_size, index);
         let current_bitmap = chains.read_bitmap(bitmap_offset)?;
         let previous_bitmap = previous_bitmap_offset
             .map(|offset| chains.read_bitmap(offset))
@@ -456,17 +443,19 @@ impl<R: Read + Seek> VssVolume<R> {
     /// # Errors
     /// As [`VssVolume::store_map`], for store `index` or any newer store.
     pub fn snapshot_layout(&mut self, index: usize) -> Result<SnapshotLayout, VssError> {
+        self.store_info(index)?;
         let count = self.stores.len();
-        let volume_size = self
-            .stores
+        self.stores
             .get(index)
-            .ok_or(VssError::StoreIndexOutOfRange { index, count })?
-            .volume_size;
+            .ok_or(VssError::StoreIndexOutOfRange { index, count })?;
+        let volume_size = self.snapshot_size()?;
         let mut maps = Vec::with_capacity(count - index);
         for chain_index in index..count {
             maps.push(Arc::new(self.store_map(chain_index)?));
         }
-        Ok(SnapshotLayout::new(volume_size, maps))
+        let mut layout = SnapshotLayout::new(volume_size, maps);
+        layout.source_size = self.volume_size;
+        Ok(layout)
     }
 
     /// Reconstruct store `index` over this volume's reader.
@@ -478,6 +467,7 @@ impl<R: Read + Seek> VssVolume<R> {
         Ok(Snapshot {
             reader: &mut self.reader,
             layout,
+            position: 0,
         })
     }
 }
@@ -515,92 +505,34 @@ impl<R: Read + Seek> Snapshot<'_, R> {
     }
 }
 
-/// Walks one store's metadata chains, rejecting any block read twice across
-/// them (as a cycle or cross-linked chain would).
-struct ChainReader<'a, R> {
-    reader: &'a mut R,
-    volume_size: u64,
-    store: usize,
-    visited: HashSet<u64>,
-    block: Vec<u8>,
+impl<R: Read + Seek> Read for Snapshot<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = buffer.len().min(
+            usize::try_from(self.layout.volume_size.saturating_sub(self.position))
+                .unwrap_or(usize::MAX),
+        );
+        if count == 0 {
+            return Ok(0);
+        }
+        self.read_at(self.position, &mut buffer[..count])
+            .map_err(|error| match error {
+                VssError::Io(error) => error,
+                other => io::Error::new(io::ErrorKind::InvalidData, other),
+            })?;
+        self.position += count as u64;
+        Ok(count)
+    }
 }
 
-impl<R: Read + Seek> ChainReader<'_, R> {
-    fn corrupt(&self, offset: u64, reason: &'static str) -> VssError {
-        VssError::CorruptStoreMetadata {
-            index: self.store,
-            offset,
-            reason,
-        }
-    }
-
-    /// Visit the payload of every block of the chain starting at `first`.
-    fn walk(
-        &mut self,
-        first: u64,
-        record_type: u32,
-        mut visit: impl FnMut(&[u8]) -> Result<(), &'static str>,
-    ) -> Result<(), VssError> {
-        let mut next = first;
-        let mut blocks = 0usize;
-        while next != 0 {
-            if blocks == MAX_STORE_BLOCKS {
-                return Err(self.corrupt(next, "metadata chain exceeds the block limit"));
-            }
-            if !self.visited.insert(next) {
-                return Err(self.corrupt(next, "metadata block is reached twice"));
-            }
-            if next
-                .checked_add(BLOCK_BYTES)
-                .is_none_or(|end| end > self.volume_size)
-            {
-                return Err(self.corrupt(next, "metadata block runs past the volume"));
-            }
-            self.reader.seek(SeekFrom::Start(next))?;
-            self.reader.read_exact(&mut self.block)?;
-            let header = StoreBlockHeader::parse(&self.block);
-            if !header.has_vss_identifier || header.version != STORE_BLOCK_VERSION {
-                return Err(self.corrupt(next, "not a version-1 VSS store block"));
-            }
-            if header.record_type != record_type {
-                return Err(self.corrupt(next, "unexpected store block record type"));
-            }
-            if let Err(reason) = visit(&self.block[STORE_BLOCK_HEADER_LEN..]) {
-                return Err(self.corrupt(next, reason));
-            }
-            blocks += 1;
-            next = header.next_offset;
-        }
-        Ok(())
-    }
-
-    /// Concatenate a bitmap chain's payloads in chain order.
-    fn read_bitmap(&mut self, first: u64) -> Result<Vec<u8>, VssError> {
-        let mut bitmap = Vec::new();
-        self.walk(first, BITMAP_RECORD_TYPE, |payload| {
-            bitmap.extend_from_slice(payload);
-            Ok(())
-        })?;
-        Ok(bitmap)
-    }
-
-    /// Collect a block list's descriptors in on-disk order, skipping empty slots.
-    fn read_block_list(&mut self, first: u64) -> Result<Vec<BlockDescriptor>, VssError> {
-        let mut descriptors = Vec::new();
-        self.walk(first, BLOCK_LIST_RECORD_TYPE, |payload| {
-            let (records, _) = payload.as_chunks::<BLOCK_DESCRIPTOR_LEN>();
-            for record in records {
-                if record.iter().all(|&byte| byte == 0) {
-                    continue;
-                }
-                let descriptor = BlockDescriptor::parse(record);
-                if descriptor.flags.is_forwarder() && descriptor.store_offset != 0 {
-                    return Err("forwarder descriptor carries a store offset");
-                }
-                descriptors.push(descriptor);
-            }
-            Ok(())
-        })?;
-        Ok(descriptors)
+impl<R: Read + Seek> Seek for Snapshot<'_, R> {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        let position = match from {
+            SeekFrom::Start(offset) => i128::from(offset),
+            SeekFrom::Current(delta) => i128::from(self.position) + i128::from(delta),
+            SeekFrom::End(delta) => i128::from(self.layout.volume_size) + i128::from(delta),
+        };
+        self.position = u64::try_from(position)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid shadow copy seek"))?;
+        Ok(self.position)
     }
 }

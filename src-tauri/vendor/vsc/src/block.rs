@@ -1,9 +1,8 @@
 //! Typed diff-area records: the block descriptor and store block range.
 //!
-//! Phase 1 parses these two records so a consumer sees the copy-on-write mapping
-//! structurally. The full snapshot-reconstruction engine (overlaying diff-area
-//! blocks to materialize a snapshot's view of the volume) is Phase 2 and is
-//! deliberately **not** implemented here.
+//! These raw records retain the mapping before reconstruction folds forwarders
+//! and overlays. [`crate::VssVolume::store_blocks`] / `store_ranges` enumerate
+//! them; [`crate::SnapshotLayout`] reconstructs logical snapshot bytes.
 
 use crate::bytes::{le_u32, le_u64};
 

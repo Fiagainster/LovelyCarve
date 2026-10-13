@@ -3,7 +3,7 @@
 //! These build a minimal valid VSS byte image in-code and assert the parser
 //! round-trips known values. They prove parser MECHANICS only — the authoritative
 //! correctness check is the Tier-1 env-gated oracle test in
-//! `tests/oracle_pcmus001.rs`, which validates against `pyvshadow` on a real
+//! `tests/oracle_dfvfs.rs`, which validates against existing `pyvshadow` hashes on a real
 //! disk image.
 
 use std::io::Cursor;
@@ -17,6 +17,9 @@ use crate::catalog::{
 use crate::guid::{format_guid, VSS_IDENTIFIER};
 use crate::store::{AttributeFlags, StoreBlockHeader, StoreInfo};
 use crate::{VssError, VssVolume};
+
+#[path = "parity_tests.rs"]
+mod parity;
 
 // ---------------------------------------------------------------------------
 // Known synthetic values (Tier-3: we author both fixture and expected answer).
@@ -204,6 +207,9 @@ fn parse_catalog_entry_store_pointer() {
             store_header_offset: STORE_HDR_OFF,
             store_bitmap_offset: STORE_BITMAP_OFF,
             store_previous_bitmap_offset: STORE_PREVIOUS_BITMAP_OFF,
+            store_block_range_list_offset: 0,
+            ntfs_file_reference: 0,
+            allocated_size: 0,
         }
     );
 }
@@ -255,6 +261,9 @@ fn open_enumerates_single_store() {
             store_bitmap_offset: Some(STORE_BITMAP_OFF),
             store_block_list_offset: Some(STORE_LIST_OFF),
             store_previous_bitmap_offset: Some(STORE_PREVIOUS_BITMAP_OFF),
+            store_block_range_list_offset: Some(0),
+            ntfs_file_reference: Some(0),
+            allocated_size: Some(0),
         }
     );
 }
@@ -264,7 +273,7 @@ fn open_no_vss_header() {
     let vol = VssVolume::open(Cursor::new(vec![0u8; IMG_LEN])).unwrap();
     assert!(!vol.has_vss_header());
     assert_eq!(vol.store_count(), 0);
-    assert!(vol.stores().is_empty());
+    assert_eq!(vol.stores(), []);
 }
 
 #[test]
@@ -289,9 +298,10 @@ fn open_corrupt_catalog_block_stops() {
     let mut b = build_image(true);
     let c = CATALOG_OFF as usize;
     wr(&mut b, c, &[0u8; 16]); // wipe the catalog block's VSS identifier
-    let vol = VssVolume::open(Cursor::new(b)).unwrap();
-    assert!(vol.has_vss_header());
-    assert_eq!(vol.store_count(), 0);
+    assert!(matches!(
+        VssVolume::open(Cursor::new(b)),
+        Err(VssError::CorruptVolumeMetadata { .. })
+    ));
 }
 
 #[test]
@@ -299,8 +309,10 @@ fn open_catalog_next_offset_out_of_range_stops() {
     let mut b = build_image(true);
     let c = CATALOG_OFF as usize;
     wr(&mut b, c + 40, &(IMG_LEN as u64).to_le_bytes()); // next block past end
-    let vol = VssVolume::open(Cursor::new(b)).unwrap();
-    assert_eq!(vol.store_count(), 1);
+    assert!(matches!(
+        VssVolume::open(Cursor::new(b)),
+        Err(VssError::CorruptVolumeMetadata { .. })
+    ));
 }
 
 #[test]
@@ -308,9 +320,10 @@ fn open_catalog_self_loop_terminates() {
     let mut b = build_image(true);
     let c = CATALOG_OFF as usize;
     wr(&mut b, c + 40, &CATALOG_OFF.to_le_bytes()); // next block points at itself
-    let vol = VssVolume::open(Cursor::new(b)).unwrap();
-    // The visited-set guard stops the loop; the single store is still enumerated.
-    assert_eq!(vol.store_count(), 1);
+    assert!(matches!(
+        VssVolume::open(Cursor::new(b)),
+        Err(VssError::CorruptVolumeMetadata { .. })
+    ));
 }
 
 // ---------------------------------------------------------------------------

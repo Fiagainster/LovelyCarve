@@ -219,6 +219,77 @@ fn closed_source_never_yields_snapshot_bytes() {
     assert!(snapshot.read_range((11 * BLOCK) as u64, 512).is_err());
 }
 
+fn image_from_volume(volume: Vec<u8>) -> Arc<DiskImage> {
+    let length = volume.len() as u64;
+    Arc::new(
+        DiskImage::from_assembled(
+            "vss-integrity".into(),
+            Arc::new(MemorySource(volume)),
+            vec![Partition {
+                id: 0,
+                kind: PartitionKind::Ntfs,
+                start_lba: 0,
+                length_lba: length / 512,
+                label: None,
+                unique_guid: None,
+            }],
+            512,
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn corrupt_catalog_is_reported_instead_of_an_empty_shadow_list() {
+    let mut volume = shadowed_volume();
+    put(&mut volume, BLOCK + 40, &(BLOCK as u64).to_le_bytes());
+    let image = image_from_volume(volume);
+    let listed = list(&image);
+    assert_eq!(listed.len(), 1);
+    assert!(listed[0]
+        .error
+        .as_deref()
+        .is_some_and(|error| error.contains("reached twice")));
+    assert!(open(&image, 0, 0, &CancellationToken::new()).is_err());
+}
+
+#[test]
+fn corrupt_store_header_is_unavailable_in_listing_and_cannot_open() {
+    let mut volume = shadowed_volume();
+    put(&mut volume, 2 * BLOCK + 20, &3u32.to_le_bytes());
+    let image = image_from_volume(volume);
+    let listed = list(&image);
+    assert!(listed[0].shadow_copies[0].unavailable_reason.is_some());
+    assert!(listed[0].shadow_copies[0].shadow_copy_id.is_none());
+    assert!(open(&image, 0, 0, &CancellationToken::new()).is_err());
+}
+
+#[test]
+fn corrupt_catalog_size_opens_with_verified_ntfs_length() {
+    let mut volume = shadowed_volume();
+    let mut boot = [0; 512];
+    put(&mut boot, 3, b"NTFS    ");
+    put(&mut boot, 11, &512u16.to_le_bytes());
+    put(
+        &mut boot,
+        40,
+        &((volume.len() as u64 / 512) - 1).to_le_bytes(),
+    );
+    put(&mut boot, 510, &[0x55, 0xaa]);
+    put(&mut volume, 0, &boot);
+    let backup = volume.len() - 512;
+    put(&mut volume, backup, &boot);
+    put(&mut volume, BLOCK + 128 + 8, &u64::MAX.to_le_bytes());
+    let image = image_from_volume(volume);
+    assert_eq!(list(&image)[0].shadow_copies[0].volume_size, u64::MAX);
+    let snapshot = open(&image, 0, 0, &CancellationToken::new()).unwrap();
+    assert_eq!(snapshot.len(), (VOLUME_BLOCKS * BLOCK) as u64);
+    assert_eq!(
+        snapshot.read_range((10 * BLOCK) as u64, 512).unwrap(),
+        vec![0x55; 512]
+    );
+}
+
 #[test]
 fn rejects_volumes_without_shadow_copies_and_bad_requests() {
     let image = disk_with_shadow_copy();

@@ -407,7 +407,8 @@ licensed under Apache-2.0 (full license in the vendor directory). Only the core
 reader is integrated, not the forensic analyzer; local changes are listed in
 `LOVELYCARVE.md`. The store-chain reconstruction follows the rules published in
 the libvshadow "Volume Shadow Snapshot (VSS) format" documentation by Joachim
-Metz and is differentially tested against libvshadow-python; no libvshadow code
+Metz and is differentially tested against libvshadow-python; the complete public
+API/source comparison is recorded in `docs/VSS.md`. No libvshadow code
 is included or distributed. The dfVFS `vss.raw` image used by the optional
 oracle test is not committed.
 

@@ -1,5 +1,11 @@
 # vsc-forensic
 
+LovelyCarve carries the reader only, with local integrity and API patches.
+See [LOVELYCARVE.md](LOVELYCARVE.md) and the complete
+[libvshadow capability comparison](../../../docs/VSS.md) for the shipped
+implementation, verification and limitations. The remainder describes the
+upstream project; its analyzer, hosted documentation and CI are not vendored.
+
 [![Crates.io vsc-core](https://img.shields.io/crates/v/vsc-core.svg?label=vsc-core)](https://crates.io/crates/vsc-core)
 [![Crates.io vsc-forensic](https://img.shields.io/crates/v/vsc-forensic.svg?label=vsc-forensic)](https://crates.io/crates/vsc-forensic)
 [![Docs.rs](https://img.shields.io/docsrs/vsc-core?label=docs.rs)](https://docs.rs/vsc-core)

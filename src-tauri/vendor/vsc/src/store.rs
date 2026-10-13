@@ -14,7 +14,8 @@ pub const STORE_BLOCK_HEADER_LEN: usize = 128;
 /// Record type of a store header block (offset 20).
 pub const STORE_HEADER_RECORD_TYPE: u32 = 0x0004;
 
-/// Upper bound on store-information bytes read, to bound a corrupt size field.
+/// Legacy caller-side information bound. `VssVolume::store_info` now reads the
+/// format's fixed 16 KiB block instead of trusting its declared information size.
 pub const MAX_STORE_INFO_LEN: usize = 1 << 20;
 
 /// A decoded store block header (the 128-byte record at a store's block offset).
@@ -128,6 +129,24 @@ pub struct StoreInfo {
 }
 
 impl StoreInfo {
+    /// Decode a complete store-information payload, rejecting truncated or odd
+    /// UTF-16 string lengths rather than publishing default identity fields.
+    pub fn parse_checked(buf: &[u8]) -> Result<Self, &'static str> {
+        if buf.len() < 68 {
+            return Err("truncated store information");
+        }
+        let operating_size = usize::from(le_u16(buf, 64));
+        let service_size_offset = 66 + operating_size;
+        if operating_size % 2 != 0 || service_size_offset + 2 > buf.len() {
+            return Err("invalid operating machine string size");
+        }
+        let service_size = usize::from(le_u16(buf, service_size_offset));
+        if service_size % 2 != 0 || service_size_offset + 2 + service_size > buf.len() {
+            return Err("invalid service machine string size");
+        }
+        Ok(Self::parse(buf))
+    }
+
     /// The shadow-copy identifier rendered as a canonical GUID string.
     #[must_use]
     pub fn shadow_copy_id_string(&self) -> String {

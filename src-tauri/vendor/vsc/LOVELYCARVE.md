@@ -7,7 +7,7 @@ Workspace manifest fields are expanded for a standalone crate. The separate
 forensic analyzer, fuzz targets, hosted CI, the external PC-MUS-001 oracle
 tests and the optional `forensic-vfs` bridge are not included.
 
-The application uses `core/vss_image.rs` to list each NTFS volume's shadow
+The application uses `core/evidence/vss_image.rs` to list each NTFS volume's shadow
 copies and to expose one as a session-only `vss://` image; no temporary
 extraction or native DLL is involved.
 
@@ -36,6 +36,34 @@ Local changes:
 - New owned, `Send + Sync` `StoreMap` / `SnapshotLayout` API so one layout
   serves concurrent positioned readers; `Snapshot` keeps the borrowed API.
 - `rust-version` is raised to 1.88 (`Option::is_none_or`, `slice::as_chunks`).
+- Full comparison with libvshadow commit
+  `fa4776f06ec965cde633d3637227562609138c4c` (2026-10-13) and all 48 public
+  functions is recorded in [docs/VSS.md](../../../docs/VSS.md).
+  No libvshadow C code is copied.
+- Volume headers validate versions 1/2 and record type; catalogs validate
+  version/type, unknown entries, bounds, cycles, limits and unique GUIDs.
+  Scattered type-3 pointers are paired after traversal. Corruption no longer
+  returns a silently truncated successful catalog.
+- `check_volume_signature` restores the reader position. `header()` exposes
+  volume/storage IDs and maximum size; descriptors retain range-list pointer,
+  raw NTFS reference and allocated size, and expose `has_in_volume_data()`.
+- `store_info` reads/validates the entire 16 KiB header block as libvshadow
+  does, without trusting its information-size field. String bounds and odd
+  UTF-16 lengths are errors; the existing lossy surrogate decoding remains.
+- `store_blocks` enumerates raw nonempty records (not folded map entries);
+  `store_ranges` walks/validates optional type-5 range chains. Common metadata
+  traversal moved to `metadata.rs`; each store has a 4096-block input budget
+  (64 MiB; decoded maps need additional memory). Exceeding it fails explicitly.
+- `snapshot_size` separates logical geometry from raw catalog values and
+  source length. Consistent in-source sizes use the catalog; otherwise primary
+  and backup NTFS geometry must agree. Saved diff-area data is checked against
+  source length even for a smaller logical snapshot.
+- Snapshot implements `Read + Seek`; positioned reads retain cursor position.
+  Store-chain reads are iterative and validate every physical source range
+  before calling the reader. Active unaligned descriptors are rejected.
+- `inspect` example / `just probe-vsc` exposes metadata and streaming snapshot
+  hashes; `just clippy-vsc` lints all targets and `just compare-vsc` runs the
+  existing differential corpus runner (including catalog rejections).
 
 Tests: `just test-vsc` runs the synthetic chain tests;
 `VSC_ORACLE_IMAGE=<dfVFS vss.raw> just test-vsc` adds the pyvshadow oracle;
