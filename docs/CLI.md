@@ -110,7 +110,7 @@ lovelycarve-cli --image "D:\evidence\disk.img" image-hash-compute --algorithms '
 | 功能 | 主要命令入口 |
 | --- | --- |
 | 镜像、物理磁盘、RAID、RAW 导出 | `image-*`、`physical-disks-list`、`raid-*` |
-| NTFS 卷影副本枚举、只读历史会话 | `shadow-copy-list`、`shadow-copy-open`；父/子镜像保持同一会话，见 [VSS](VSS.md) |
+| NTFS 卷影副本枚举、只读历史会话 | `shadow-copy-list`、`shadow-copy-open`；父/子镜像保持同一会话，见 [VSS](formats/VSS.md) |
 | 文件系统、文件索引、目录分页、定位、Docker | `fs-*`、`filedb-*` |
 | 签名雕刻、状态、暂停/恢复、结果、恢复报告 | `carve-*` |
 | 文件/目录/ZIP 导出、命名数据流 | `fs-export*`、`fs-stream-*` |
@@ -197,14 +197,13 @@ CLI 与 GUI 复用后端初始化，但清空 Tauri 配置的窗口列表，绝�
 案件锁、源读取审计、文件格式限制和任务资源预算与桌面版一致。请用独立案件避免与 GUI
 同时占用同一案件；检材以只读方式打开。
 
-二维码/OCR/原生文件系统仍需要发布包内相应 DLL/模型及平台环境。这里的“全功能”指
-当前 LovelyCarve 已注册的后端功能，不包括已移除/未实现的旧界面入口，也不承诺 Flux
-Forensics 特有功能（如其命令历史、Tab 补全、管道及额外格式）已经实现。
+二维码 / OCR 仍需要发布包内相应的 DLL、模型及平台环境。这里的“全功能”指
+LovelyCarve 已注册的全部后端命令；交互 shell 不提供命令历史、Tab 补全或管道。
 
 ## EWF 后端
 
 E01/Ex01 使用 [ewf-forensic](https://github.com/SecurityRonin/ewf-forensic) 仓库中的
-`ewf` 0.4.10 纯 Rust 读取器，与桌面和挂载入口共用，不再加载或分发 `libewf.dll`。
+`ewf` 0.4.10 纯 Rust 读取器，与桌面和挂载入口共用，不需要 `libewf.dll`。
 支持多分卷、随机读取、zlib、Ex01 bzip2/模式填充、存储哈希与采集元数据。
 打开时检查分卷序号和块表覆盖，缺失分卷会报错；坏块通过原有读取故障机制报告。
 加密的 EWF2 容器仍会明确返回不支持；BitLocker 卷解锁是独立功能。
@@ -219,7 +218,7 @@ just test-ewf
 ## VMDK 后端
 
 VMDK 使用 [vmdk-forensic](https://github.com/SecurityRonin/vmdk-forensic) 中的
-`vmdk-core` 0.8.4 纯 Rust 读取器，桌面、CLI 和挂载共用，不再加载或分发 `libvmdk.dll`。
+`vmdk-core` 0.8.4 纯 Rust 读取器，桌面、CLI 和挂载共用，不需要 `libvmdk.dll`。
 支持 monolithicFlat、monolithicSparse、streamOptimized 压缩镜像、分卷 flat/sparse，
 以及读取器支持的 COWD / seSparse 格式。打开描述符时需保留相邻分卷，缺失文件会报错；
 直接打开 `*-flat.vmdk` 会优先寻找描述符，无描述符时按原始磁盘读取。
@@ -240,16 +239,16 @@ just test-vmdk
 ## BitLocker 后端
 
 [bitlocker-forensic](https://github.com/SecurityRonin/bitlocker-forensic) 的 `bitlocker-core`
-0.3.5 接管密码与 48 位恢复密码解锁，不再加载或分发 `libbde.dll`。原 VMK 内存扫描、
-从 VMK 恢复恢复密码、解锁及解密导出命令保持不变。直接读取 RAW/EWF/VMDK 等镜像内的
+0.3.5 负责密码与 48 位恢复密码解锁，不需要 `libbde.dll`。VMK 内存扫描、
+从 VMK 恢复恢复密码、解锁及解密导出都可以在 CLI 中使用。直接读取 RAW / EWF / VMDK 等镜像内的
 分区，无需将整个加密卷转储到临时目录；源镜像关闭后读取失败，不延长检材句柄生命周期。
 
 解锁进度仍使用原事件：密钥派生前为 0，认证完成后为卷大小；它不表示已复制的数据。
 取消在派生前后检查，派生进行中可能稍后才响应。错误密码/密钥认证失败和截断密文均报错。
 
-支持六种 AES-CBC / Elephant Diffuser / XTS 方法，包括 0x8001，以及按 BPB 扇区大小解密。
-新增明文密钥、BEK、直接 VMK/FVEK，修复 Vista 和 used-space-only EOW 读取。
-完整 libbde 对照、真实样本验证范围和限制见 [BITLOCKER](BITLOCKER.md)。
+支持六种 AES-CBC / Elephant Diffuser / XTS 方法（包括 0x8001），按 BPB 扇区大小解密；
+另支持明文密钥、BEK、直接 VMK / FVEK，以及 Vista 与 used-space-only（EOW）卷。
+完整 libbde 对照、真实样本验证范围和限制见 [BITLOCKER](formats/BITLOCKER.md)。
 
 `bitlocker_metadata` 无需凭据，返回算法、卷 GUID、原始 FILETIME（十进制字符串）、卷描述和
 保护器 ID/类型，不返回密钥 payload。`bitlocker_unlock` 只选一种参数：`password`、
@@ -289,7 +288,7 @@ just test-cli
 ```
 
 回归样本来源、固定的上游提交和本地改动见两个 vendor 目录的 `LOVELYCARVE.md`。
-全盘 SHA-256 参考值由迁移前的 libvhdi 独立读取公开样本得到；测试不再依赖该 DLL。
+全盘 SHA-256 参考值来自 libvhdi 对公开样本的独立读取，测试本身不依赖该 DLL。
 
 ## LUKS / VeraCrypt 解锁
 
@@ -319,18 +318,17 @@ JSONL 会话示例（`lovelycarve-cli session`，逐行从标准输入发送）�
 {"id":"export","command":"image_export_raw","args":{"destination":"D:/exports/plain.raw","taskId":"export-1","readFaultPolicy":"strict"}}
 ```
 
-LUKS 使用 `"scheme":"luks"`，不传 `pim`/`hidden`。密码之外，也可只传 `options.masterKeyHex`（已恢复卷主密钥的十六进制，不与密码同时传）；LUKS1/2 均先核验密钥摘要。算法与能力对照见 [LUKS](LUKS.md)。`options.partitionId` 选择分区；
+LUKS 使用 `"scheme":"luks"`，不传 `pim`/`hidden`。密码之外，也可只传 `options.masterKeyHex`（已恢复卷主密钥的十六进制，不与密码同时传）；LUKS1/2 均先核验密钥摘要。算法与能力对照见 [LUKS](formats/LUKS.md)。`options.partitionId` 选择分区；
 也可指定相对源镜像的字节 `offset` 和 `length`（省略长度时到源末尾），两种区域选择
 不能混用。默认整个源镜像。VeraCrypt 没有明文签名，需要用户明确选择格式和隐藏卷。
 密码按 UTF-8 字节传入；命令本身不保存密码或导出主密钥，敏感输入宜走标准输入，
 避免把真实密码放进命令行参数或保存的脚本。
 
-当前支持 LUKS1 AES-XTS plain64（PBKDF2），LUKS2 单个动态 AES-XTS 数据段
-（PBKDF2 / Argon2i / Argon2id，512 / 4096 字节加密扇区），以及 VeraCrypt
-普通／隐藏卷（512 字节扇区）、上游支持的 AES / Serpent / Twofish 及其级联、PIM 0–1000。
-分区识别使用 512 字节逻辑扇区。暂不支持密钥文件、分离头部、备份头恢复、系统加密、
-LUKS2 完整性/重加密/多数据段/固定长度数据段；不声明完整 TrueCrypt 兼容性。
-LUKS2 主头校验失败会报错，不自动尝试备份头。超过上游 KDF 资源预算也会报错。
+LUKS1 与 LUKS2（单个动态数据段，PBKDF2 / Argon2i / Argon2id，512 / 4096 字节加密扇区）支持的
+密码算法、IV 方案与哈希见 [LUKS](formats/LUKS.md)。VeraCrypt 支持普通／隐藏卷（512 字节扇区）、
+上游支持的 AES / Serpent / Twofish 及其级联、PIM 0–1000。分区识别使用 512 字节逻辑扇区。
+暂不支持密钥文件、分离头部、备份头恢复、系统加密、LUKS2 完整性 / 重加密 / 多数据段 / 固定长度数据段，
+也不声明完整的 TrueCrypt 兼容性。LUKS2 主头校验失败时报错，不自动尝试备份头；超过 KDF 资源预算同样报错。
 
 `task_cancel` 可以取消解锁；KDF 当前执行阶段可能延迟响应。
 `image_unload` 可锁定返回的解密镜像；卸载源镜像会递归移除其解密镜像。

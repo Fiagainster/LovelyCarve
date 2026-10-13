@@ -38,7 +38,7 @@ Local changes:
 - `rust-version` is raised to 1.88 (`Option::is_none_or`, `slice::as_chunks`).
 - Full comparison with libvshadow commit
   `fa4776f06ec965cde633d3637227562609138c4c` (2026-10-13) and all 48 public
-  functions is recorded in [docs/VSS.md](../../../docs/VSS.md).
+  functions is recorded in [docs/formats/VSS.md](../../../docs/formats/VSS.md).
   No libvshadow C code is copied.
 - Volume headers validate versions 1/2 and record type; catalogs validate
   version/type, unknown entries, bounds, cycles, limits and unique GUIDs.

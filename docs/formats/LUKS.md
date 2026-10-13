@@ -1,34 +1,34 @@
-# LUKS 读取与 libluksde 能力对照
+# LUKS
 
-对照基准：2026-10-12 获取的 [libyal/libluksde](https://github.com/libyal/libluksde)，
-提交 [`5d3b7c997a7a491f981680552a0f136c614641e0`](https://github.com/libyal/libluksde/tree/5d3b7c997a7a491f981680552a0f136c614641e0)。
-检查范围包括 README、全部 36 个公开 C API、头部/密码/AF/扇区解密实现、工具和 Python 绑定。
-实现继续使用 Apache-2.0 的 vendored `luks-core` 和 RustCrypto；libluksde 仅作行为对照，未引入其 C 源码或运行时 DLL。
+LUKS 由 Apache-2.0 的 vendored `luks-core` 与 RustCrypto 读取；libluksde 只作行为参照，没有引入其 C 源码或运行时 DLL。
+本文以 [libyal/libluksde](https://github.com/libyal/libluksde) 提交
+[`5d3b7c997a7a491f981680552a0f136c614641e0`](https://github.com/libyal/libluksde/tree/5d3b7c997a7a491f981680552a0f136c614641e0)（2026-10-12 核对）为参照，
+检查范围包括 README、全部 36 个公开 C API、头部 / 密码 / AF / 扇区解密实现、工具和 Python 绑定。
 
 ## 格式、算法与凭据
 
-| 能力 | 修改前 LovelyCarve | 当前 LovelyCarve | libluksde 基准 |
-| --- | --- | --- | --- |
-| LUKS1 | 支持 | 支持 | 支持 |
-| LUKS2 | 单动态段、主头校验 | 保留；新增算法也接入数据段和密钥槽 | 不支持 |
-| AES-XTS | plain64，32/64 字节密钥 | null/plain/plain64/benbi，32/64 字节 | 支持 AES-XTS |
-| AES-CBC / ECB | 不支持 | 16/24/32 字节密钥 | 支持 |
-| Blowfish-CBC / ECB | 不支持 | 4–56 字节密钥，8 字节块 | 支持 |
-| Serpent-CBC / ECB | 不支持 | 16–32 字节密钥，16 字节块 | 支持 |
-| ARC4-ECB | 不支持 | 5–256 字节密钥；每个扇区独立初始化 | 支持，但流状态依赖调用顺序，见下文 |
-| null / plain / plain64 / benbi IV | 仅 plain64 | 支持；plain 在 32 位扇区号处回绕，benbi 根据块大小计算 | 声明支持 |
-| ESSIV SHA-256 | 不支持 | CBC 支持，使用完整哈希作为同算法的 IV 密钥 | 声明支持；实现仅 AES，且使用原数据密钥位数 |
-| ESSIV SHA-1 | 不支持 | Blowfish / Serpent CBC 支持；AES 拒绝无效的 20 字节哈希密钥 | 声明支持；AES 路径补零/截断哈希，见下文 |
-| PBKDF2 / AF SHA-224 | 不支持 | 支持 | 支持 |
-| PBKDF2 / AF SHA-1/256/512 | 支持 | 保留 | 支持 |
-| PBKDF2 / AF SHA-384 | 不支持 | 支持 | README 未列出 |
-| Argon2i / Argon2id | LUKS2 支持 | 保留 | 不支持 LUKS2 |
-| UTF-8 密码 | 支持 | 保留，按原始 UTF-8 字节，不做规范化 | 支持 |
-| UTF-16 密码 | 可由调用方转换 | reader 提供 `unlock_with_utf16_password`，拒绝非法代理项 | 支持 |
-| 二进制密码 / keyfile 内容 | reader 接受字节 | 保留 `unlock_with_passphrase(&[u8])`；桌面未提供二进制 keyfile 选择器 | UTF-8/UTF-16 密码 API |
-| 已恢复卷主密钥 | 不支持 | LUKS1/2 reader、桌面弹窗和 CLI/IPC 的 `masterKeyHex`；先核验卷密钥摘要 | `set_key`，旧别名 `set_keys` |
-| LUKS2 密钥槽与卷密钥长度不同 | 不支持 | 分开保存和推导 `area.key_size` / `key_size` | 不适用 |
-| UUID、版本、密码套件、扇区大小 | 原始头部字段 / 已解锁信息 | 原始头部字段及 `VolumeInfo.uuid` | 加密方法、卷标识接口 |
+| 能力 | LovelyCarve | libluksde 基准 |
+| --- | --- | --- |
+| LUKS1 | 支持 | 支持 |
+| LUKS2 | 单个动态数据段，校验主头；下列算法同样用于数据段和密钥槽 | 不支持 |
+| AES-XTS | null/plain/plain64/benbi，32/64 字节 | 支持 AES-XTS |
+| AES-CBC / ECB | 16/24/32 字节密钥 | 支持 |
+| Blowfish-CBC / ECB | 4–56 字节密钥，8 字节块 | 支持 |
+| Serpent-CBC / ECB | 16–32 字节密钥，16 字节块 | 支持 |
+| ARC4-ECB | 5–256 字节密钥；每个扇区独立初始化 | 支持，但流状态依赖调用顺序，见下文 |
+| null / plain / plain64 / benbi IV | 支持；plain 在 32 位扇区号处回绕，benbi 根据块大小计算 | 声明支持 |
+| ESSIV SHA-256 | CBC 支持，使用完整哈希作为同算法的 IV 密钥 | 声明支持；实现仅 AES，且使用原数据密钥位数 |
+| ESSIV SHA-1 | Blowfish / Serpent CBC 支持；AES 拒绝无效的 20 字节哈希密钥 | 声明支持；AES 路径补零/截断哈希，见下文 |
+| PBKDF2 / AF SHA-224 | 支持 | 支持 |
+| PBKDF2 / AF SHA-1/256/512 | 支持 | 支持 |
+| PBKDF2 / AF SHA-384 | 支持 | README 未列出 |
+| Argon2i / Argon2id | 支持（LUKS2） | 不支持 LUKS2 |
+| UTF-8 密码 | 按原始 UTF-8 字节，不做规范化 | 支持 |
+| UTF-16 密码 | reader 提供 `unlock_with_utf16_password`，拒绝非法代理项 | 支持 |
+| 二进制密码 / keyfile 内容 | `unlock_with_passphrase(&[u8])` 接受任意字节；桌面没有 keyfile 选择器 | UTF-8/UTF-16 密码 API |
+| 已恢复卷主密钥 | LUKS1/2 reader、桌面弹窗和 CLI/IPC 的 `masterKeyHex`；先核验卷密钥摘要 | `set_key`，旧别名 `set_keys` |
+| LUKS2 密钥槽与卷密钥长度不同 | 分开保存和推导 `area.key_size` / `key_size` | 不适用 |
+| UUID、版本、密码套件、扇区大小 | 原始头部字段及 `VolumeInfo.uuid` | 加密方法、卷标识接口 |
 
 目前没有 anubis、CAST5/6、Twofish、ARC4-CBC、lmk 或 plumb 的解密路径；这些也是基准 README
 列出的未支持项。LUKS2 完整重加密、多段、固定大小段、integrity、token 自动凭据和备份头恢复仍不支持；
@@ -54,6 +54,9 @@
 以下是语义对照，不是 ABI 兼容层。路径型 C API 在 Rust 中以 `std::fs::File` / `Read + Seek` 替代，
 错误和资源生命周期使用 `Result` / 所有权；应用使用已有镜像源、任务中心和会话卸载流程。
 
+<details>
+<summary>展开全部 36 个公开函数的对应关系</summary>
+
 | libluksde API（省略 `libluksde_`） | LovelyCarve 对应能力 |
 | --- | --- |
 | `get_version` | `luks-core` 包版本及 `VolumeInfo.version`（格式版本是不同概念） |
@@ -61,7 +64,7 @@
 | `get_codepage` | Rust 路径用 `Path` / `OsStr`，无全局代码页 |
 | `set_codepage` | 同上；密码固定为调用方提供的字节 / UTF-16 转 UTF-8 |
 | `check_volume_signature` | `Luks1Header::parse` / `Luks2Header::parse`、应用 `LuksParser` |
-| `check_volume_signature_wide` | 同上，`File::open(Path)` 支持本机 Unicode 路径 |
+| `check_volume_signature_wide` | 同上，`File::open(Path)` 直接支持 Unicode 路径 |
 | `check_volume_signature_file_io_handle` | 同上，输入可为自定义 `Read + Seek` |
 | `notify_set_verbose` | 应用 `tracing` 与 `RUST_LOG`；reader 返回错误，不打印成功信息 |
 | `notify_set_stream` | 应用 tracing subscriber；不增加 reader 全局输出流 |
@@ -76,7 +79,7 @@
 | `volume_free` | `DecryptedPayload` / 会话 drop，主密钥缓冲区清零 |
 | `volume_signal_abort` | 应用 TaskManager 的 CancellationToken 在读/seek 边界检查，KDF 有预算，见限制 |
 | `volume_open` | `File::open` + `LuksVolume::unlock_with_passphrase` / `unlock_with_master_key` |
-| `volume_open_wide` | 同上，Rust 本机路径 |
+| `volume_open_wide` | 同上，Rust 原生路径类型 |
 | `volume_open_file_io_handle` | 通用 `Read + Seek`；应用 EvidenceReader 可包装 RAW/EWF/分区区域 |
 | `volume_close` | drop；应用递归卸载父镜像及派生解密会话 |
 | `volume_is_locked` | 类型区分解析头部和 `DecryptedPayload`；应用 `unlocked_partitions` |
@@ -92,6 +95,8 @@
 | `volume_set_keys` | 上游已弃用的别名，与上行相同 |
 | `volume_set_utf8_password` | `unlock_with_passphrase(password.as_bytes())` |
 | `volume_set_utf16_password` | `unlock_with_utf16_password` |
+
+</details>
 
 工具语义：`luksdeinfo` 的头部事实由公共头部模型与 `VolumeInfo` 提供；`luksdemount` 的解密字节读取
 由解密镜像和既有文件系统浏览/导出/Windows Dokany 流程提供。没有专门的 LUKS FUSE 程序、Python C 扩展或 C ABI；
@@ -120,23 +125,10 @@
 无需外部镜像或 Python 即可被 `just test-luks` 和应用回归测试使用。它覆盖第二密码槽成功、AF 末块/扇区补齐、
 各算法密钥长度、Unicode 密码、主密钥摘要验证、LUKS2 独立 area key size、非对齐随机/顺序读与截断失败。
 大扇区向量单独覆盖 2^32 之后的 plain/plain64 和 Blowfish benbi 步长。
-原有 `oracle_luks1/2` 的 cryptsetup 大镜像测试仍由 `LUKS1_ORACLE` / `LUKS2_ORACLE` 控制，未配置时跳过；
-独立 Python 样本通过不等于已经运行了这些外部 cryptsetup oracle。
+`oracle_luks1/2` 的 cryptsetup 大镜像测试由 `LUKS1_ORACLE` / `LUKS2_ORACLE` 控制，未配置时跳过；
+独立 Python 样本通过不等于已经运行了这些外部 cryptsetup 对照。
 
-本地入口：`just fmt`、`just test-luks`、`just clippy-luks`、`just check`、`just clippy`、`just test`，
-以及 IPC/界面变更的 `just ipc-check`、`just frontend-structure-check`、`just typecheck`、`just test-fe`、`just build-fe`。
-
-2026-10-13 验证记录：后端库 965 通过、12 个外部样本测试忽略，CLI 模块解析 2 通过；
-前端 770 通过、1 跳过；LUKS reader 67 个单元测试、4 个独立语料测试及 doctest 通过。
-上面的格式化、编译、Clippy、IPC/结构及前端构建检查通过，三套主题与 400px 窄窗口表单已检查。
-当前 Rust 1.99 在增量构建 example 时偶发内部编译器错误；最终完整测试通过临时关闭增量编译运行：
-
-```powershell
-$env:CARGO_INCREMENTAL = '0'
-just test
-```
-
-未修改仓库构建设置；外部 cryptsetup oracle 本次未配置。
+读取器测试使用 `just test-luks` 与 `just clippy-luks`；涉及解锁界面或 IPC 时另跑前端与 IPC 检查。
 
 应用严格检查源范围、LUKS1 payload/keyslot 范围和 LUKS2 主头校验/布局。
 每次 KDF 预算 30 秒、整个密码解锁预算 90 秒，Argon2 内存上限 4 GiB；预算用于拒绝预测过贵的推导，

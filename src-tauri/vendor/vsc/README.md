@@ -2,7 +2,7 @@
 
 LovelyCarve carries the reader only, with local integrity and API patches.
 See [LOVELYCARVE.md](LOVELYCARVE.md) and the complete
-[libvshadow capability comparison](../../../docs/VSS.md) for the shipped
+[libvshadow capability comparison](../../../docs/formats/VSS.md) for the shipped
 implementation, verification and limitations. The remainder describes the
 upstream project; its analyzer, hosted documentation and CI are not vendored.
 

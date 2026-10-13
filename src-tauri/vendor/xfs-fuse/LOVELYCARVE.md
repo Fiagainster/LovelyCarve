@@ -18,4 +18,4 @@ and data caches are bounded and volume-local. Raw path bytes remain lossless.
 No libfsxfs C code or corpus is copied or linked. BSD-2-Clause remains the
 vendored crate license. Synthetic test data is generated locally; see test_data.
 Full 82-function mapping, host integration and unverified real-image/oracle limits:
-[docs/XFS.md](../../../docs/XFS.md).
+[docs/formats/XFS.md](../../../docs/formats/XFS.md).

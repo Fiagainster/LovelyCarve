@@ -1,87 +1,170 @@
-# LovelyCarve
+<p align="center">
+  <img src="src/assets/app-icon.png" width="120" alt="LovelyCarve 图标">
+</p>
 
-LovelyCarve 是基于 Rust、Tauri v2 和 Vue 3 的桌面磁盘取证工具，提供案件管理、只读证据浏览、原类型预览、导出、哈希、搜索、时间线与文件雕刻。界面以中文为主，支持浅色、深色和樱花色主题。
+<h1 align="center">LovelyCarve</h1>
 
-项目持续开发中，桌面开发与发布配方面向 Windows x64。源证据采用只读访问，案件、索引、缓存和导出产物写入主机目录。
+<p align="center">
+  <b>a forensic carver with a soft heart</b><br>
+  基于 Rust、Tauri 2 与 Vue 3 的桌面磁盘取证与数据恢复工具
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-blue"></a>
+  <img alt="Platform: Windows x64" src="https://img.shields.io/badge/platform-Windows%20x64-0078d4">
+  <img alt="Rust 1.99+" src="https://img.shields.io/badge/rust-1.99%2B-dea584">
+  <img alt="Tauri 2" src="https://img.shields.io/badge/tauri-2-24c8db">
+  <img alt="Vue 3" src="https://img.shields.io/badge/vue-3-42b883">
+</p>
+
+<p align="center">
+  <a href="#功能">功能</a> ·
+  <a href="#界面">界面</a> ·
+  <a href="#支持的格式">支持的格式</a> ·
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#从源码构建">从源码构建</a> ·
+  <a href="docs/README.md">文档</a>
+</p>
+
+LovelyCarve 面向电子数据取证、应急响应和 CTF 取证题：加载磁盘镜像、逻辑证据或物理磁盘，识别分区与文件系统，浏览、预览、检索、校验并导出证据，再用时间线、文件雕刻和插件分析补全线索。镜像、文件系统与加密容器的读取器均为纯 Rust 实现，证据始终只读打开；界面以中文为主，提供浅色、深色和樱花色三套主题。
+
+<p align="center">
+  <img src="docs/images/file-browser.png" alt="文件浏览：目录树、文件列表与原类型预览">
+</p>
 
 ## 功能
 
-| 领域 | 能力 |
+- **案件管理**：一个目录就是一个案件，登记多份检材，记录标签和带哈希链的操作审计；卷快照与文件索引落盘复用，原始镜像暂时缺失时仍可浏览已索引的目录和元数据。
+- **证据接入**：磁盘镜像、文件夹、归档、AD1 逻辑镜像、Docker/OCI 镜像、iOS 本地备份、Windows 物理磁盘，以及由成员盘重组的 RAID。
+- **分区、卷与加密**：GPT、MBR/EBR、APM、BSD 分区与 LVM2 逻辑卷；mdadm 检测与 RAID0/RAID5 重组；解锁 BitLocker、LUKS、VeraCrypt 和加密的 iOS 备份，浏览 NTFS 卷影副本。解密视图按需读取，不生成整卷明文。
+- **文件浏览**：目录树与分页文件列表，排序、列筛选和递归“全显”；按文件系统能力展示删除项、未分配空间、命名流、符号链接与元数据节点。
+- **原类型预览**：文本、十六进制、图片、音视频、PDF、Office 文档和归档；SQLite（含 WAL 回放与删除记录恢复）、Realm、PE / ELF / Mach-O / GGUF 等结构化视图；预览可拆出为独立窗口。
+- **校验与导出**：MD5、SHA-1、SHA-256、SM3；E01 采集哈希核对；导出文件、目录、ZIP、RAW 镜像与解密镜像。读取遇到坏区时报告合成零字节，短读不会被当作完整结果。
+- **全局搜索**：关键词与正则，覆盖 ASCII、UTF-8、UTF-16LE/BE、GBK，可包含删除文件与未分配空间；命中可回到源文件并定位字节偏移，支持去重与 CSV 导出。
+- **时间线**：投影文件修改时间、插件事件与 NTFS USN 日志，提供年度活动热力图、趋势钻取、筛选和导出。
+- **文件雕刻**：按签名扫描整盘、分区或分区间隙，解析 JPEG、PNG、GIF、PDF、ZIP/Office、SQLite 等 14 种格式；扫描可暂停、继续和取消，恢复文件时生成 SHA-256 与 DFXML。
+- **插件分析**：基于 C ABI 的 LPP 动态库插件，默认在独立宿主进程中运行；内置 `linuxinfo`，提取 Linux 系统、用户、登录、网络、服务、软件、定时任务与命令历史等信息。
+- **命令行与挂载**：独立的 `lovelycarve-cli` 支持交互式浏览和 JSONL 自动化，覆盖桌面端全部后端命令；Windows 下可借助 Dokany 把卷只读挂载为盘符或文件夹。
+
+## 界面
+
+以下截图来自 2026 精武杯服务器取证检材（Ubuntu 22.04，E01，58 GiB）。
+
+| 镜像信息 | SQLite 浏览与删除记录 |
+| :---: | :---: |
+| <img src="docs/images/image-info.png" alt="镜像信息：分区布局、平台识别与完整性校验"> | <img src="docs/images/sqlite-viewer.png" alt="SQLite 浏览：表清单、行数与 WAL 回放"> |
+| 分区布局、平台识别、完整性校验与采集信息 | 浏览器历史库的表与记录，自动回放 `-wal` |
+| **全局搜索** | **时间线** |
+| <img src="docs/images/global-search.png" alt="全局搜索：命中列表与上下文"> | <img src="docs/images/timeline.png" alt="时间线：活动热力图与事件列表"> |
+| 13 万处命中按文件去重，查看偏移、编码与上下文 | 59 万条事件的年度热力图与明细 |
+| **文件雕刻** | **插件分析** |
+| <img src="docs/images/file-carving.png" alt="文件雕刻：结果列表与预览"> | <img src="docs/images/plugin-results.png" alt="插件分析：Linux 登录记录"> |
+| 从分区扫描恢复文件，按类型筛选并预览 | `linuxinfo` 解析 wtmp 登录记录并回溯源文件 |
+
+## 支持的格式
+
+| 类别 | 格式 |
 | --- | --- |
-| 案件与证据 | 多证据案件、标签、卷快照、索引与分析结果持久化 |
-| 镜像与逻辑证据 | RAW、E01/EWF、VMDK、VHD/VHDX、QCOW2、VDI、DMG、AD1；文件夹、归档、Docker、iOS 本地备份与物理磁盘 |
-| 分区与卷 | GPT、MBR/EBR、APM、BSD，LVM2 线性/碎片卷读取、mdadm RAID 检测、RAID0/RAID5 重组 |
-| 文件系统 | NTFS、Ext4、FAT16/32、exFAT、APFS、HFS+/HFSX、Btrfs、ZFS、[XFS 1–5](docs/XFS.md)、UFS/UFS2、SquashFS、ReFS 等 Rust 读取器 |
-| 加密与历史视图 | BitLocker、LUKS、VeraCrypt、iOS 本地备份解锁与 NTFS 卷影副本 |
-| 浏览、预览与导出 | 目录树、分页、筛选、删除项、命名流；文本、Hex、媒体、文档、数据库与可执行文件预览；文件、目录与镜像导出 |
-| 分析 | 多编码关键词与正则搜索、文件与插件时间线、NTFS USN / Ext4 日志、结构化雕刻 |
-| 插件 | LPP 动态库接口，内置 `linuxinfo` Linux 基本信息分析插件 |
-| 命令行与挂载 | 独立 `lovelycarve-cli`、交互浏览与 JSONL 自动化；Windows 桌面只读挂载 |
+| 镜像容器 | RAW / DD / IMG / ISO、E01 / Ex01、AD1、VMDK、VHD / VHDX、QCOW2、VDI、DMG、DiskGenius PMFX、雷电模拟器 LDBK、小米 HDR1 固件 |
+| 逻辑证据 | 文件夹（自动展开其中的小米 `.bak` 备份）、TAR / TAR.GZ、ZIP、7z、Docker / OCI 镜像归档、磁盘内的 Docker 容器、iOS 本地备份、BCP 交换数据 |
+| 分区与卷 | GPT、MBR / EBR、APM、BSD 标签、LVM2 线性卷、mdadm RAID 成员、RAID0 / RAID5 重组 |
+| 文件系统 | NTFS、ext2/3/4、FAT12/16/32、exFAT、APFS、HFS+ / HFSX、Btrfs、ZFS、XFS（v1–v5）、ReFS、UFS / UFS2、SquashFS、ISO 9660 |
+| 加密与快照 | BitLocker（密码、恢复密钥、BEK、明文密钥、FVEK / VMK）、LUKS1 / LUKS2、VeraCrypt、加密 iOS 备份、NTFS 卷影副本（VSS） |
 
-支持范围取决于格式变体、文件系统特性和镜像完整性；删除项不保证内容可恢复，雕刻受块对齐与碎片化限制。独立孤儿扫描和丢失分区扫描尚未接入，时间线文件投影目前采用修改时间。早期 `.carve` 案件不兼容，需新建案件。
+支持程度取决于格式变体、文件系统特性和镜像完整性。各格式的实现范围、与 libyal 系列库的能力对照和已知限制见 [格式与读取器](docs/formats/README.md)。
 
-## 使用
+## 快速开始
 
-在 [GitHub Releases](https://github.com/LovelyTeams/LovelyCarve/releases) 下载已发布版本，或按下文从源码构建。启动后创建或打开案件，添加证据，再浏览、预览、校验或分析。
+1. 获取程序：Windows x64 预编译包通过 [GitHub Releases](https://github.com/LovelyTeams/LovelyCarve/releases) 发布，也可以按下文[从源码构建](#从源码构建)。运行需要 WebView2（Windows 10/11 通常已内置）；只读挂载另需 [Dokany](https://github.com/dokan-dev/dokany) 驱动，读取物理磁盘需要管理员权限。
+2. 在起始页或「案件管理」中新建案件，选择一个空目录。
+3. 「添加检材」选择镜像文件、文件夹、BCP 数据、RAID 成员或物理磁盘。分段镜像选第一段，其余分段放在同一目录。
+4. 检材加入后会自动识别平台并在后台建立卷快照和文件索引，进度在右上角「任务中心」查看。
+5. 在「镜像信息」查看分区、解锁加密卷、计算哈希；在「文件列表」浏览和预览；在「工具」中使用全局搜索、时间线和文件雕刻；在「任务中心 → 快速分析」运行插件，结果出现在「分析」中。
 
-操作说明见 [使用指南](docs/USAGE.md)，自动化接口见 [CLI 手册](docs/CLI.md)，Linux 工件来源见 [linuxinfo](docs/LINUXINFO.md)。Windows 只读挂载需要 Dokany 驱动。
+完整操作说明见 [使用指南](docs/USAGE.md)。
+
+## 命令行
+
+`lovelycarve-cli` 不启动窗口，直接复用桌面端的后端：
+
+```text
+lovelycarve-cli
+lovelycarve:/> open "D:\evidence\disk.E01"
+lovelycarve:/> list-partitions
+lovelycarve:/> select-partition 1
+lovelycarve:/...> ls
+lovelycarve:/...> grep -i password /
+```
+
+桌面端注册的每个命令都有同名 CLI 入口，也可以用 JSONL 会话编排一系列分析：
+
+```powershell
+Get-Content .\workflow.jsonl | lovelycarve-cli --events session
+```
+
+详见 [CLI 手册](docs/CLI.md)。
+
+## 插件
+
+插件是导出 `lovelycarve_plugin_v1` C ABI 的动态库，通过 LPP（LovelyCarve Plugin Protocol）只读访问证据，并把产物、时间线事件和线索交给宿主落库。SDK、隔离宿主 `lc-plugin-host` 和内置的 `linuxinfo` 由子模块 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 维护。已发现的插件被视为可信代码，进程隔离用于故障隔离，不是权限沙箱。
+
+协议与开发说明见 [插件协议](docs/PLUGIN_PROTOCOL.md) 和 [Linux 基本信息插件](docs/LINUXINFO.md)。
 
 ## 从源码构建
 
-默认构建关闭二维码识别和 OCR，不需要 OpenCV 或 CUDA。准备 Rust stable（最低 **1.99**）、Bun（版本见 `package.json`）、just、PowerShell 7、Visual Studio C++ x64 工具、Windows SDK、LLVM 工具组件、OpenSSL 开发文件和 WebView2。
+桌面开发与发布配方面向 Windows x64。默认构建不包含二维码识别和 OCR，不需要 OpenCV 或 CUDA。
 
-```text
+| 依赖 | 版本或说明 |
+| --- | --- |
+| Rust | stable，最低 1.99 |
+| [Bun](https://bun.sh/) | 版本见 `package.json` 的 `packageManager` |
+| [just](https://github.com/casey/just) | 1.53 或更新 |
+| PowerShell | 7 或更新 |
+| Visual Studio | C++ x64 生成工具与 Windows SDK |
+| OpenSSL | Windows 开发文件，默认位置 `C:\Program Files\OpenSSL-Win64` |
+| WebView2 | 运行时 |
+
+```powershell
 git clone --recurse-submodules https://github.com/LovelyTeams/LovelyCarve.git
 cd LovelyCarve
-just bootstrap
-just --list
-just dev
+just bootstrap   # 初始化插件子模块并安装前端依赖
+just dev         # 启动桌面开发版
 ```
-
-Windows 配方通过 `vswhere` 查找 Visual Studio；需要指定安装位置时设置 `VS_PATH`。OpenSSL 默认在 `C:\Program Files\OpenSSL-Win64`，其他位置通过 `OPENSSL_DIR` / `OPENSSL_LIB` 覆盖。环境变量、可选 QR/OCR 与跨平台 CLI 配置见 [开发指南](docs/DEVELOPMENT.md)。
 
 | 目的 | 命令 |
 | --- | --- |
 | 前端开发 / 生产构建 | `just dev-fe` / `just build-fe` |
-| Windows 桌面开发 | `just dev` |
 | 桌面安装包 / 便携包 | `just build-release` / `just pack` |
-| CLI 开发 / 发布 / Windows ZIP | `just run-cli` / `just build-cli` / `just pack-cli` |
-| linuxinfo 与隔离宿主 | `just build-plugins` / `just pack-plugins` |
-| 含 QR/OCR 的发行版 | `just build-release-full` / `just pack-full` / `just pack-cli-full` |
+| CLI 开发 / 发布 / Windows 压缩包 | `just run-cli` / `just build-cli` / `just pack-cli` |
+| 含二维码识别与 OCR 的版本 | `just build-release-full` / `just pack-full` / `just pack-cli-full` |
+| 全部检查 | `just verify-fe` / `just verify-rust` / `just verify-plugins` |
 
-仅前端运行无法读取证据。安装包位于 `src-tauri/target/release/bundle/`，便携包和插件包位于 `dist-pack/`。仓库使用本地构建与验证，发布步骤见 [发布指南](docs/RELEASING.md)。
+GitHub 自动生成的源码压缩包不含插件子模块，请使用 `--recurse-submodules` 克隆，已有克隆可运行 `git submodule update --init --recursive`。Visual Studio、OpenSSL 路径、可选 QR/OCR 依赖和跨平台 CLI 构建见 [开发指南](docs/DEVELOPMENT.md)；`just --list` 列出全部配方。
 
-## 开发
+## 文档
 
-```text
-just verify-fe
-just verify-rust
-just verify-plugins
-```
+| 主题 | 文档 |
+| --- | --- |
+| 使用 | [使用指南](docs/USAGE.md)、[CLI 手册](docs/CLI.md)、[iOS 备份](docs/IOS_BACKUPS.md) |
+| 格式与读取器 | [格式总览与维护要求](docs/formats/README.md)，以及 NTFS、ext、FAT、XFS、ReFS、GPT、MBR、LVM2、LUKS、BitLocker、VSS 专题 |
+| 插件 | [LPP 协议与 SDK](docs/PLUGIN_PROTOCOL.md)、[Linux 基本信息插件](docs/LINUXINFO.md) |
+| 开发 | [开发指南](docs/DEVELOPMENT.md)、[架构说明](docs/ARCHITECTURE.md)、[前端规范](docs/FRONTEND.md)、[前端模块与生命周期](docs/FRONTEND_STRUCTURE.md)、[发布指南](docs/RELEASING.md) |
 
-也可按 [贡献指南](CONTRIBUTING.md) 的改动范围选择单项验证配方。
+完整列表见 [文档导航](docs/README.md)。
 
-```text
-src/app/                主壳、工作区与跨功能装配
-src/features/           业务组件、状态、纯模型与测试
-src/components/         共享 UI、反馈、布局与显示组件
-src/lib/ipc/            类型化命令与事件边界
-src-tauri/src/app/       启停与跨域工作流
-src-tauri/src/commands/  Tauri 命令
-src-tauri/src/core/      取证核心引擎
-src-tauri/vendor/        维护中的解析器、读取器和来源声明
-plugins/                LovelyCarve-Plugins 子模块：SDK、隔离宿主与 linuxinfo
-scripts/                构建、资源准备与验证脚本
-docs/                   开发、架构、协议和使用说明
-```
+## 局限
 
-开发前阅读 [架构说明](docs/ARCHITECTURE.md)、[前端规范](docs/FRONTEND.md) 和 [仓库约定](AGENTS.md)。专题入口见 [文档导航](docs/README.md)。
+- 删除项和雕刻结果不保证内容完整：雕刻受块对齐、碎片化和格式覆盖范围限制，未命中不代表文件不存在。
+- 独立的孤儿文件扫描和丢失分区扫描尚未接入；文件时间线目前只投影修改时间。
+- 桌面开发与发布只在 Windows 上验证；macOS 和 Linux 需要自行构建和验证。
+- 当前案件格式不兼容早期开发版的 `.carve` 案件。
 
-插件由独立仓库 [LovelyCarve-Plugins](https://github.com/LovelyTeams/LovelyCarve-Plugins) 维护，当前内置 `linuxinfo 1.0.0`。已有克隆运行 `git submodule update --init --recursive` 或 `just bootstrap` 获取固定版本。GitHub 自动生成的源码压缩包不包含子模块，开发请使用递归克隆。
+## 参与贡献
 
-## 反馈与许可
+欢迎提交问题报告、格式样本线索、文档修正和代码。开始之前请阅读 [贡献指南](CONTRIBUTING.md) 和 [仓库约定](AGENTS.md)。报告读取问题时附版本、复现步骤和可公开的最小合成样本，**不要上传真实检材、案件目录、个人数据或凭据**。安全漏洞请按 [安全策略](SECURITY.md) 私下报告。
 
-通过 [Issues](https://github.com/LovelyTeams/LovelyCarve/issues) 报告问题，请附版本、复现步骤和可公开的合成样本，不上传真实检材、案件或凭据。贡献流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全问题见 [SECURITY.md](SECURITY.md)。
+## 许可与致谢
 
-项目代码采用 [AGPL-3.0-only](LICENSE)。Copyright (C) 2026 LovelyCarve contributors.
-第三方组件、衍生代码、模型和测试数据的来源及许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 与各 vendor 目录；发布时保留对应声明。
+LovelyCarve 以 [AGPL-3.0-only](LICENSE) 许可发布。Copyright (C) 2026 LovelyCarve contributors.
+
+项目使用并修改了许多开源读取器与解析库，包括 SecurityRonin 的 ewf / vmdk / vhd / vhdx / bitlocker / luks / veracrypt / vsc / ad1 / sqlite / ios-backup forensic 系列，以及 ntfs、ext4-view、rust-fatfs、exfat、xfuse、dpp（APFS / HFS+ / DMG）、backhand（SquashFS）、refsprogs 和 Google Magika 等；格式行为参照了 [libyal](https://github.com/libyal) 系列库与 [dfVFS](https://github.com/log2timeline/dfvfs) 的公开文档和样本，富文档预览使用 Flyfish File Viewer。各组件的来源、许可证与本地修改见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 和 [src-tauri/vendor/UPSTREAM.md](src-tauri/vendor/UPSTREAM.md)。

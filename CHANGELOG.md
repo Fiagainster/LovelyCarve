@@ -51,7 +51,7 @@
 
 ## [1.0.0] - 2026-10-12
 
-首次公开源码发布，对应 Git 标签 `v1.0`，采用 AGPL-3.0-only 许可证。桌面开发与发布配方面向 Windows x64。
+首次公开源码发布，对应 Git 标签 `v1.0.0`，采用 AGPL-3.0-only 许可证。桌面开发与发布配方面向 Windows x64。
 当前案件格式不兼容早期开发版的 `.carve` 案件，需要新建案件。
 
 ### Added
@@ -81,5 +81,5 @@
 - 可选二维码识别与 OCR 构建；默认轻量构建关闭这些功能，完整构建通过 `*-full` 配方启用。
 - 源码构建、Windows 安装包与便携包、CLI 和插件的本地打包配方，以及使用、开发、接口和第三方来源说明。
 
-[Unreleased]: https://github.com/LovelyTeams/LovelyCarve/compare/v1.0...HEAD
-[1.0.0]: https://github.com/LovelyTeams/LovelyCarve/releases/tag/v1.0
+[Unreleased]: https://github.com/LovelyTeams/LovelyCarve/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/LovelyTeams/LovelyCarve/releases/tag/v1.0.0

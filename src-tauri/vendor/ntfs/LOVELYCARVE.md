@@ -28,4 +28,4 @@ The host owns the pure Rust decoder and its regression fixtures. Validate with
 - Named streams still work by exact name when a damaged $UpCase cannot load.
 
 Reader-level regression: `just test-vendor ntfs`; host capability regressions:
-`just test ntfs --lib`. Full comparison: `docs/NTFS.md`.
+`just test ntfs --lib`. Full comparison: `docs/formats/NTFS.md`.

@@ -9,7 +9,7 @@
 //! sizes, Vista boot restoration, used-space-only EOW maps and direct VMK/FVEK
 //! keys. Password, recovery password, clear-key and BEK protectors are supported;
 //! TPM and SID protectors remain unsupported. See `LOVELYCARVE.md` and
-//! `../../../docs/BITLOCKER.md` for the comparison and validation boundaries.
+//! `../../../docs/formats/BITLOCKER.md` for the comparison and validation boundaries.
 //!
 //! Every primitive comes from an audited crate — `aes`, `cbc`, `ccm`, `sha2`,
 //! and `xts-mode` for the XTS methods — except the Elephant Diffuser, for which

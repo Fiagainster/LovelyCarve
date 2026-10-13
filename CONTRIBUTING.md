@@ -1,6 +1,6 @@
 # 贡献指南
 
-欢迎提交问题、文档修正、格式支持与功能改进。开始开发前阅读 [架构说明](docs/ARCHITECTURE.md) 与仓库 [AGENTS.md](AGENTS.md)。修改界面时同时阅读 [前端规范](docs/FRONTEND.md) 和 `src/styles/` 的主题、基元与动效样式。
+欢迎提交问题、文档修正、格式支持与功能改进。开始开发前阅读 [架构说明](docs/ARCHITECTURE.md) 与仓库约定 [AGENTS.md](AGENTS.md)。修改界面时同时阅读 [前端规范](docs/FRONTEND.md) 和 `src/styles/` 的主题、基元与动效样式；修改读取器时先读 [格式与读取器](docs/formats/README.md) 及对应的格式专题。
 
 ## 环境
 
@@ -27,7 +27,7 @@ just --list
 - 跨 IPC 功能同时更新核心实现、命令、注册表、TypeScript 类型和调用方。
 - 长任务接入取消、进度和错误反馈。整盘哈希与导出检查完整长度，失败或取消清理部分输出。
 - 界面文案中文优先，使用已有主题 token、`ui-*` 控件和 lucide 图标，验证三套主题与窄窗口。
-- 用户可见变化按 [Keep a Changelog 0.3.0](https://keepachangelog.com/zh-CN/0.3.0/) 更新 `CHANGELOG.md` 的 `[Unreleased]`，使用英文变更分类并概括用户影响；行为、配置或流程变化同步更新对应文档。
+- 用户可见变化按 [Keep a Changelog 0.3.0](https://keepachangelog.com/zh-CN/0.3.0/) 更新 `CHANGELOG.md` 的 `[Unreleased]`，使用英文变更分类并概括用户影响；行为、配置或流程变化同步更新对应文档（文档分工见 [文档导航](docs/README.md)）。
 - 新增第三方代码、数据或资源时保留版权、许可证和来源声明。
 
 ## 验证
@@ -47,7 +47,7 @@ just --list
 
 Fork 仓库后创建工作分支，在本地完成改动与对应验证，再向主仓库提交 Pull Request。较大的格式支持、架构变化或新依赖先通过 issue 说明范围，便于确认接口和回归样本。
 
-提交标题使用 Conventional Commits，例如 `fix(ntfs): ...`、`feat(plugin): ...`、`docs: ...`。分支名称可按仓库约定使用 `codex/` 前缀。
+提交标题使用 Conventional Commits，例如 `fix(ntfs): ...`、`feat(plugin): ...`、`docs: ...`。
 
 描述应写明问题、最终行为、相关 issue 和实际运行的 `just` 配方。界面变化附截图或录屏，性能变化附样本说明与测量结果。在 PR 中报告实际完成的本地验证。
 

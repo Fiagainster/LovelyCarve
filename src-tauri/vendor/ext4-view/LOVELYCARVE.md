@@ -14,6 +14,6 @@ GDT CRC16 and 64 KiB directory record lengths. Missing indirect subtrees are hol
 The application layer also maps all indirect levels and rejects allocated reads
 outside the evidence volume or short reads. No libfsext code or dependency is used.
 
-See [the capability matrix](../../../docs/EXT.md) for API/desktop distinctions and
+See [the capability matrix](../../../docs/formats/EXT.md) for API/desktop distinctions and
 remaining limitations. `just test-vendor ext4-view` runs the local regressions;
 the generated fixture's provenance and hash are in test_data/README.md.

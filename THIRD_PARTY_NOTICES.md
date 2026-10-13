@@ -61,7 +61,7 @@ in the Digler section below also apply to `librefs`; the Apache-2.0 terms
 are reproduced in the EWF section. Exact package checksums are recorded in
 `src-tauri/Cargo.lock`. These candidates are not used by the desktop/CLI
 ReFS adapter. Public disk images remain untracked under `fixtures/`; their
-sources and hashes are recorded in `docs/REFS.md`.
+sources and hashes are recorded in `docs/formats/REFS.md`.
 
 ## ios-backup-core / ios-backup-forensic (SecurityRonin)
 
@@ -408,7 +408,7 @@ reader is integrated, not the forensic analyzer; local changes are listed in
 `LOVELYCARVE.md`. The store-chain reconstruction follows the rules published in
 the libvshadow "Volume Shadow Snapshot (VSS) format" documentation by Joachim
 Metz and is differentially tested against libvshadow-python; the complete public
-API/source comparison is recorded in `docs/VSS.md`. No libvshadow code
+API/source comparison is recorded in `docs/formats/VSS.md`. No libvshadow code
 is included or distributed. The dfVFS `vss.raw` image used by the optional
 oracle test is not committed.
 
@@ -1142,4 +1142,4 @@ linking or distributing its C implementation or test corpus. The production read
 remains the BSD-2-Clause xfuse fork under `src-tauri/vendor/xfs-fuse`.
 The new Rust format code and the synthetic `minimal-v4.bin` fixture are local
 project work. Fixture generator, source statement and hash are recorded in
-`src-tauri/vendor/xfs-fuse/test_data/README.md`; full comparison is in `docs/XFS.md`.
+`src-tauri/vendor/xfs-fuse/test_data/README.md`; full comparison is in `docs/formats/XFS.md`.

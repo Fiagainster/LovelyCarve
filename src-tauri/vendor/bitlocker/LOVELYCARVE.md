@@ -26,7 +26,7 @@ Local changes (2026-10-13):
   no FFI, evidence-handle ownership cycle or whole-volume temporary extraction.
 
 Detailed pinned libbde comparison, limitations and reproduction:
-[docs/BITLOCKER.md](../../../docs/BITLOCKER.md).
+[docs/formats/BITLOCKER.md](../../../docs/formats/BITLOCKER.md).
 
 Tests: `just test-bitlocker`, `just clippy-bitlocker -- -D warnings`,
 `just test bde_image --lib`, `just test bitlocker_source --lib`, `just test-cli`.

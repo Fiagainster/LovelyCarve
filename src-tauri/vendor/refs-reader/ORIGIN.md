@@ -33,7 +33,7 @@ ignored fixture directory; no Python implementation was copied into this crate.
 
 The application-facing read-only port is complete. This is not a port of C
 write stubs, diagnostic printers or a compatible DLL ABI. See the repository's
-`docs/REFS.md` for reproducible fixture provenance and coverage.
+`docs/formats/REFS.md` for reproducible fixture provenance and coverage.
 The public image coverage is ReFS 3.14 with 4 KiB and 64 KiB clusters; earlier
 layout branches are retained but are not claimed to be image-validated.
 Metadata/data CRC or SHA authentication, damaged-volume salvage, deleted-file

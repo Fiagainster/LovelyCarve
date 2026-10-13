@@ -10,6 +10,6 @@ verified LUKS1/2 master-key unlock, UTF16 password conversion and unlocked UUID.
 LUKS2 area keys may have a different size/cipher from the payload master key.
 Independent Python-produced fixtures run unconditionally; external cryptsetup
 oracle tests remain environment-gated. Details, API mappings and deliberate
-differences from libluksde are in `docs/LUKS.md` at the repository root.
+differences from libluksde are in `docs/formats/LUKS.md` at the repository root.
 
 Header allocation is limited to 8 KiB–4 MiB and the available source length. The application additionally verifies the LUKS2 primary checksum and rejects unsupported segment/keyslot layouts before derivation. Fixed-size/multi-segment data and backup-header recovery are not supported.

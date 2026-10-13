@@ -1,4 +1,4 @@
-//! Read-only GPT analysis and detection. See `docs/GPT.md` for recovery policy.
+//! Read-only GPT analysis and detection. See `docs/formats/GPT.md` for recovery policy.
 
 mod metadata;
 mod reader;

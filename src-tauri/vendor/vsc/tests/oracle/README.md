@@ -42,5 +42,5 @@ image was downloaded, its source SHA-256 verified, and both whole-store hashes
 were exercised by the reader oracle, `just probe-vsc ... --blocks --hash`, and
 the application's env-gated VSS/NTFS tests. These use the existing independent
 20260714 oracle digests; neither the current libvshadow source nor the random
-corpus was rebuilt/rerun on that date. See `docs/VSS.md` for API parity,
+corpus was rebuilt/rerun on that date. See `docs/formats/VSS.md` for API parity,
 synthetic regressions and remaining limits.
