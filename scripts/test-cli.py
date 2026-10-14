@@ -6,6 +6,7 @@ from ctypes import wintypes
 import json
 import io
 import os
+import queue
 from pathlib import Path
 import struct
 import subprocess
@@ -13,6 +14,7 @@ import signal
 import sys
 import tempfile
 import tarfile
+import threading
 import zlib
 
 
@@ -39,9 +41,134 @@ def main():
         assert any(command["name"] == "fs_media_temp" for command in catalog)
         capabilities = json.loads(run(["capabilities", "--json"]).stdout)
         assert capabilities["windowless"] and capabilities["backend_commands"] == len(catalog)
+        assert capabilities["session"]["max_jobs"] == 64
+        assert next(command for command in catalog if command["name"] == "fs_read_range")["parallel"]
+        assert not next(command for command in catalog if command["name"] == "image_unload")["parallel"]
         run(["--help"])
         run(["fs-read", "--help"])
         run(["--unknown"], expected=2)
+        run(["session", "--jobs", "0"], expected=2)
+        run(["session", "--jobs", "65"], expected=2)
+
+        concurrent_requests = [
+            {"id": "open", "command": "image_load", "args": {"path": str(evidence)}},
+            {"id": "cd", "command": "cd", "args": {"path": evidence.name}},
+            {"id": "read", "command": "fs_read_range", "args": {"nodeId": node, "offset": 0, "length": 8}},
+            {"id": "digest", "command": "fs_digest", "args": {"nodeId": node, "algos": ["sha256"]}},
+            {"id": "stat", "command": "stat", "args": {"path": "hello.txt"}},
+            {"id": "dependent", "command": "fs_read_range", "args": {"nodeId": {"$ref": "stat#/node_id"}, "offset": 0, "length": 8}},
+            {"id": "bad", "command": "image_list", "args": {"typo": True}},
+            {"id": "invalid-args", "command": "image_list", "args": []},
+            {"id": "wait", "command": "wait"},
+            {"id": "close", "command": "image_unload", "args": {"imageId": {"$ref": "open#/id"}}},
+            {"id": "remaining", "command": "image_list"},
+        ]
+        result = run(["session", "--jobs", "4"], "\n".join(json.dumps(request) for request in concurrent_requests), expected=1)
+        concurrent_rows = {row["id"]: row for row in map(json.loads, result.stdout.splitlines())}
+        assert len(concurrent_rows) == len(concurrent_requests), result.stdout
+        assert concurrent_rows["read"]["result"]["data"] == content[:8].hex()
+        assert concurrent_rows["dependent"]["result"] == concurrent_rows["read"]["result"]
+        assert concurrent_rows["digest"]["result"]["sha256"] == hashlib.sha256(content).hexdigest()
+        assert concurrent_rows["remaining"]["result"] == []
+        assert all("result" in row for key, row in concurrent_rows.items() if key not in {"bad", "invalid-args"}), concurrent_rows
+        assert all("code" in concurrent_rows[key]["error"] and "message" in concurrent_rows[key]["error"] for key in ["bad", "invalid-args"])
+
+        # AI clients keep stdin open and wait for a response before sending more.
+        process = subprocess.Popen([str(executable), "--image", str(evidence), "session", "-j", "4"],
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, encoding="utf-8", cwd=root)
+        response_queue = queue.Queue()
+        reader_thread = threading.Thread(target=lambda: response_queue.put(process.stdout.readline()), daemon=True)
+        try:
+            process.stdin.write(json.dumps({"id": "live", "command": "fs_read_range", "args": {"nodeId": node, "offset": 0, "length": 8}}) + "\n")
+            process.stdin.flush()
+            reader_thread.start()
+            live = json.loads(response_queue.get(timeout=30))
+            assert live == {"id": "live", "result": concurrent_rows["read"]["result"]}, live
+            assert process.poll() is None, "session exited before stdin EOF"
+            process.stdin.close()
+            process.wait(timeout=30)
+            assert process.returncode == 0, process.stderr.read()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            for stream in [process.stdin, process.stdout, process.stderr]:
+                stream.close()
+            reader_thread.join(timeout=5)
+
+        # Optional private evidence stays outside the repository. Compare actual
+        # filesystem queries and bounded bytes between serial and parallel runs.
+        real_image = os.environ.get("LOVELYCARVE_CLI_TEST_IMAGE")
+        if real_image:
+            def real_queries(jobs):
+                # Keep one evidence session per mode, avoiding repeated E01 opens.
+                with tempfile.TemporaryFile(mode="w+t", encoding="utf-8") as diagnostics:
+                    process = subprocess.Popen([str(executable), "--image", real_image, "session", "--jobs", str(jobs)],
+                                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=diagnostics,
+                                               text=True, encoding="utf-8", cwd=root)
+                    replies = queue.Queue()
+                    def collect():
+                        for line in process.stdout:
+                            replies.put(line)
+                        replies.put(None)
+                    thread = threading.Thread(target=collect, daemon=True)
+                    thread.start()
+                    def batch(requests):
+                        for request in requests:
+                            process.stdin.write(json.dumps(request) + "\n")
+                        process.stdin.flush()
+                        pending = {request["id"] for request in requests}
+                        results = {}
+                        while pending:
+                            line = replies.get(timeout=120)
+                            assert line is not None, "real evidence session ended early"
+                            row = json.loads(line)
+                            assert row["id"] in pending and "result" in row, row
+                            pending.remove(row["id"])
+                            results[row["id"]] = row["result"]
+                        return results
+                    try:
+                        roots = batch([{"id": "roots", "command": "fs_children", "args": {"parentId": ""}}])
+                        directories = [entry["id"] for entry in roots["roots"] if entry["kind"] == "dir"][:4]
+                        requests = [{"id": f"dir-{index}", "command": "fs_children", "args": {"parentId": parent}}
+                                    for index, parent in enumerate(directories)]
+                        assert requests, "real evidence has no browsable volumes"
+                        directory_rows = batch(requests)
+                        files = sorted((entry for entries in directory_rows.values() for entry in entries
+                                        if entry["kind"] == "file" and entry["size"] > 0 and not entry["deleted"]),
+                                       key=lambda entry: entry["id"])[:4]
+                        # Files may live below a filesystem's top-level directories.
+                        children = sorted(entry["id"] for entries in directory_rows.values() for entry in entries
+                                          if entry["kind"] == "dir" and not entry["deleted"])[:8]
+                        if not files and children:
+                            nested = batch([{"id": f"nested-{index}", "command": "fs_children", "args": {"parentId": parent}}
+                                            for index, parent in enumerate(children)])
+                            directory_rows.update(nested)
+                            files = sorted((entry for entries in nested.values() for entry in entries
+                                            if entry["kind"] == "file" and entry["size"] > 0 and not entry["deleted"]),
+                                           key=lambda entry: entry["id"])[:4]
+                        assert files, "real evidence has no file for bounded read verification"
+                        byte_requests = [{"id": f"bytes-{index}", "command": "fs_read_range", "args": {
+                            "nodeId": entry["id"], "offset": 0, "length": min(4096, entry["size"])}}
+                            for index, entry in enumerate(files)]
+                        byte_rows = batch(byte_requests)
+                        process.stdin.close()
+                        process.wait(timeout=120)
+                        assert process.returncode == 0
+                        return directory_rows, byte_rows
+                    finally:
+                        if process.poll() is None:
+                            process.kill()
+                            process.wait()
+                        thread.join(timeout=5)
+                        process.stdin.close()
+                        process.stdout.close()
+            serial_directories, serial_bytes = real_queries(1)
+            parallel_directories, parallel_bytes = real_queries(4)
+            assert parallel_directories == serial_directories, "real evidence directory queries differ under concurrency"
+            assert parallel_bytes == serial_bytes, "real evidence range reads differ under concurrency"
+            print(f"Real evidence concurrency passed: {len(serial_directories)} directories, {len(serial_bytes)} bounded file reads", flush=True)
 
         # Parallels: an independently built split plain/sparse disk is exposed
         # as guest bytes by the same image_load/export/unload command surface.

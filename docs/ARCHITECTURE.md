@@ -117,6 +117,8 @@ src-tauri/src/
 
 `lib.rs` 保留 builder 和唯一的命令注册表。启动接线在 `app/setup.rs`，桌面退出和 CLI 共用 `app/lifecycle.rs` 的媒体、插件清理步骤，各入口保持原有收尾顺序。CLI 生成器沿模块声明解析嵌套命令路径，命令名、参数和帮助分组保持稳定。
 
+CLI JSONL 调度位于 `cli/session.rs`。`session --jobs N` 使用有界输入队列和查询工作线程，主协调器统一发布按请求 ID 关联的 JSON 响应；stdin 等待不会阻塞完成结果输出。并发查询复制派发时的 Shell 上下文，案件／检材／目录切换及其他未列入并发清单的命令先等待已有查询完成。结构化 `$ref` 等待先前请求结果，EOF 收齐请求后再等待后台任务。新增命令默认是屏障；确认其生命周期与并发安全后，才加入查询清单并通过命令目录的 `parallel` 字段公开。
+
 `src-tauri/examples/` 按用途分类，所有 example 目标在 Cargo 中显式声明，通过 `just run-example <名称>` 调用；`just check-examples` 检查这些目标，用法见 [后端探针](../src-tauri/examples/README.md)。新增模块使用 `<name>.rs` 加 `<name>/`，不新增 `mod.rs`。
 
 `core::evidence::image::DiskImage` 负责镜像源、分区布局、字节读取、解密和定位缓存。`AppState.images` 登记的对象是 `Arc<core::filesystem::evidence_session::EvidenceSession>`：它持有同一个字节读者，并拥有宿主 Docker、NTFS 删除记录投影及外部卷注册表。字节扫描、RAID、哈希和源字节导出借用 `disk_image()`；文件树、预览和插件证据浏览借用 session。原证据 ID、路径、序列化字段和分区寻址保持不变。
